@@ -1,0 +1,16 @@
+aws_region = "us-east-1"
+
+# Change these to unique names for your deployment
+raw_bucket_name         = "fxlake-raw-data-dem0"
+processed_bucket_name   = "fxlake-processed-data-dem0"
+athena_results_bucket   = "fxlake-athena-results-dem0"
+
+# Lambda and Glue job names
+lambda_function_name = "fxlake-api-ingest-lambda"
+glue_job_name       = "fxlake-glue-transform-job"
+
+# FX data configuration
+fx_start_date     = "2024-01-01"  # One year of data
+fx_end_date       = "2024-12-31"
+fx_base_currency  = "EUR"         # Base currency for rates
+fx_output_format  = "parquet"     # Output format: csv or parquet

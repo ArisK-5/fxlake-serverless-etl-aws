@@ -1,0 +1,7 @@
+**/.terraform/*
+*.tfvars
+*.tfstate
+*.backup
+tfplan
+lambda.zip
+sample.README.md
