@@ -1,7 +1,6 @@
-# IAM roles and policies for Lambda, Glue, and Step Functions
 data "aws_caller_identity" "current" {}
 
-# Lambda service role
+# Lambda service role & policies
 resource "aws_iam_role" "lambda_exec" {
   name = "fxlake_lambda_exec_role"
   assume_role_policy = jsonencode({
@@ -27,7 +26,6 @@ resource "aws_iam_policy" "lambda_s3_policy" {
       {
         Action = [
           "s3:PutObject",
-          "s3:PutObjectAcl",
           "s3:GetObject",
           "s3:ListBucket"
         ],
@@ -48,7 +46,7 @@ resource "aws_iam_role_policy_attachment" "lambda_s3_attach" {
   policy_arn = aws_iam_policy.lambda_s3_policy.arn
 }
 
-# Glue service role
+# Glue service role & policies
 resource "aws_iam_role" "glue_service_role" {
   name = "fxlake_glue_service_role"
   assume_role_policy = jsonencode({
@@ -61,18 +59,41 @@ resource "aws_iam_role" "glue_service_role" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "glue_s3" {
-  role       = aws_iam_role.glue_service_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+resource "aws_iam_policy" "glue_s3_policy" {
+  name = "fxlake-glue-s3"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        Effect = "Allow",
+        Resource = [
+          aws_s3_bucket.raw.arn,
+          "${aws_s3_bucket.raw.arn}/*",
+          aws_s3_bucket.processed.arn,
+          "${aws_s3_bucket.processed.arn}/*"
+        ]
+      }
+    ]
+  })
 }
 
-# Add Glue job run permissions
+resource "aws_iam_role_policy_attachment" "glue_s3" {
+  role       = aws_iam_role.glue_service_role.name
+  policy_arn = aws_iam_policy.glue_s3_policy.arn
+}
+
 resource "aws_iam_role_policy_attachment" "glue_service_basic" {
   role       = aws_iam_role.glue_service_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
 }
 
-# Step Functions role
+# Step Functions service role & policies
 resource "aws_iam_role" "sfn_role" {
   name = "fxlake_stepfunctions_role"
   assume_role_policy = jsonencode({
@@ -88,25 +109,33 @@ resource "aws_iam_role" "sfn_role" {
 resource "aws_iam_role_policy" "sfn_policy" {
   name = "fxlake_stepfunctions_policy"
   role = aws_iam_role.sfn_role.id
+
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
+      # --- Lambda Invocation ---
       {
-        Action = [
-          "s3:GetBucketLocation",
-          "s3:ListBucket",
-          "s3:GetObject",
-          "s3:PutObject"
-        ],
         Effect = "Allow",
-        Resource = [
-          aws_s3_bucket.athena_results.arn,
-          "${aws_s3_bucket.athena_results.arn}/*",
-          aws_s3_bucket.processed.arn,
-          "${aws_s3_bucket.processed.arn}/*"
-        ]
+        Action = [
+          "lambda:InvokeFunction"
+        ],
+        Resource = aws_lambda_function.api_ingest.arn
       },
+
+      # --- Glue Job Management ---
       {
+        Effect = "Allow",
+        Action = [
+          "glue:StartJobRun",
+          "glue:GetJobRun",
+          "glue:GetJobRuns"
+        ],
+        Resource = aws_glue_job.transform.arn
+      },
+
+      # --- Glue Catalog Read Access (for Athena) ---
+      {
+        Effect = "Allow",
         Action = [
           "glue:GetDatabase",
           "glue:GetDatabases",
@@ -115,27 +144,124 @@ resource "aws_iam_role_policy" "sfn_policy" {
           "glue:GetPartition",
           "glue:GetPartitions"
         ],
-        Effect = "Allow",
         Resource = [
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
         ]
       },
+
+      # --- Athena Query Execution ---
       {
-        Action   = ["lambda:InvokeFunction"],
-        Effect   = "Allow",
-        Resource = aws_lambda_function.api_ingest.arn
+        Effect = "Allow",
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults"
+        ],
+        # Resource = "*"
+        "Resource" : [
+          "arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:workgroup/primary",
+          "arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:datacatalog/AwsDataCatalog"
+        ]
+      },
+
+      # --- S3 access (processed + athena results buckets only) ---
+      {
+        Effect = "Allow",
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        Resource = [
+          aws_s3_bucket.athena_results.arn,
+          "${aws_s3_bucket.athena_results.arn}/*",
+          aws_s3_bucket.processed.arn,
+          "${aws_s3_bucket.processed.arn}/*"
+        ]
+      },
+
+      # --- CloudWatch Logs for Step Functions execution logging ---
+      {
+        Effect = "Allow",
+        Action = [
+          "logs:CreateLogDelivery",
+          "logs:GetLogDelivery",
+          "logs:UpdateLogDelivery",
+          "logs:DeleteLogDelivery",
+          "logs:ListLogDeliveries",
+          "logs:PutLogEvents",
+          "logs:CreateLogStream"
+        ],
+        Resource = "${aws_cloudwatch_log_group.stepfunctions_logs.arn}:*"
+      }
+    ]
+  })
+}
+
+# CloudTrail service role & policies
+resource "aws_iam_role" "cloudtrail_role" {
+  name = "fxlake-cloudtrail-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect = "Allow",
+      Principal = {
+        Service = "cloudtrail.amazonaws.com"
+      },
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "cloudtrail_policy" {
+  name = "fxlake-cloudtrail-policy"
+  role = aws_iam_role.cloudtrail_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        Resource = "${aws_cloudwatch_log_group.cloudtrail_logs.arn}:*"
+      }
+    ]
+  })
+}
+
+resource "aws_s3_bucket_policy" "cloudtrail_bucket_policy" {
+  bucket = var.cloudtrail_logs_bucket
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "AWSCloudTrailAclCheck",
+        Effect = "Allow",
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        },
+        Action   = "s3:GetBucketAcl",
+        Resource = "arn:aws:s3:::${var.cloudtrail_logs_bucket}"
       },
       {
-        Action   = ["glue:StartJobRun", "glue:GetJobRun", "glue:GetJobRuns"],
-        Effect   = "Allow",
-        Resource = "*"
-      },
-      {
-        Action   = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults"],
-        Effect   = "Allow",
-        Resource = "*"
+        Sid    = "AWSCloudTrailWrite",
+        Effect = "Allow",
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        },
+        Action   = "s3:PutObject",
+        Resource = "arn:aws:s3:::${var.cloudtrail_logs_bucket}/AWSLogs/${data.aws_caller_identity.current.account_id}/*",
+        Condition = {
+          StringEquals = {
+            "s3:x-amz-acl" = "bucket-owner-full-control"
+          }
+        }
       }
     ]
   })

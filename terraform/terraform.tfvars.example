@@ -1,9 +1,11 @@
 aws_region = "us-east-1"
 
 # Change these to unique names for your deployment
-raw_bucket_name         = "fxlake-raw-data-dem0"
-processed_bucket_name   = "fxlake-processed-data-dem0"
-athena_results_bucket   = "fxlake-athena-results-dem0"
+raw_bucket_name         = "fxlake-raw-data-unique"
+processed_bucket_name   = "fxlake-processed-data-unique"
+athena_results_bucket   = "fxlake-athena-results-unique"
+cloudtrail_logs_bucket = "fxlake-cloudtrail-logs-unique"
+sns_email_address    = "replace-with-desired-email-address"
 
 # Lambda and Glue job names
 lambda_function_name = "fxlake-api-ingest-lambda"

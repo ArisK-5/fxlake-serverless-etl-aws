@@ -6,13 +6,16 @@ variable "aws_region" {
 variable "raw_bucket_name" {
   description = "S3 bucket for raw API JSON"
   type        = string
-  default     = "fxlake-raw-data-2025-unique" # change to unique name
 }
 
 variable "processed_bucket_name" {
   description = "S3 bucket for processed CSV/Parquet"
   type        = string
-  default     = "fxlake-processed-data-2025-unique" # change to unique name
+}
+
+variable "cloudtrail_logs_bucket" {
+  description = "S3 bucket for CloudTrail logs"
+  type        = string
 }
 
 variable "lambda_function_name" {
@@ -25,6 +28,11 @@ variable "glue_job_name" {
   default = "fxlake-glue-transform-job"
 }
 
+variable "sns_email_address" {
+  description = "Email address for SNS notifications"
+  type        = string
+}
+
 variable "glue_script_s3_key" {
   description = "S3 key for Glue job script. If empty, update Glue job to use local script upload workflow."
   type        = string
@@ -32,8 +40,7 @@ variable "glue_script_s3_key" {
 }
 
 variable "athena_results_bucket" {
-  type    = string
-  default = "fxlake-athena-query-results-2025-unique" # change to unique name
+  type = string
 }
 
 variable "fx_start_date" {

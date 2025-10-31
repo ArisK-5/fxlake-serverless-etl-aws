@@ -4,7 +4,7 @@ resource "aws_lambda_function" "api_ingest" {
   handler          = "lambda_function.lambda_handler"
   runtime          = "python3.10"
   role             = aws_iam_role.lambda_exec.arn
-  filename         = "../lambda/lambda.zip" # zipped package
+  filename         = "../lambda/lambda.zip"
   timeout          = 60
   source_code_hash = filebase64sha256("../lambda/lambda.zip")
   environment {
