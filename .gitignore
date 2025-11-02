@@ -1,7 +1,19 @@
+# Local .terraform directories
 **/.terraform/*
-*.tfvars
+
+# Terraform state files — contain sensitive data!
 *.tfstate
+*.tfstate.*
+
+# Terraform plan output (binary)
+*.tfplan
+
+# Backup files created by Terraform
 *.backup
-tfplan
-lambda.zip
+
+# Sensitive variable definitions
+*.tfvars
+
+# Misc files
+*.zip
 sample.README.md

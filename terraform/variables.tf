@@ -6,23 +6,40 @@ variable "aws_region" {
 variable "raw_bucket_name" {
   description = "S3 bucket for raw API JSON"
   type        = string
-  default     = "fxlake-raw-data-2025-unique" # change to unique name
 }
 
 variable "processed_bucket_name" {
   description = "S3 bucket for processed CSV/Parquet"
   type        = string
-  default     = "fxlake-processed-data-2025-unique" # change to unique name
 }
 
-variable "lambda_function_name" {
+variable "athena_results_bucket_name" {
+  type = string
+}
+
+variable "cloudtrail_logs_bucket_name" {
+  description = "S3 bucket for CloudTrail logs"
+  type        = string
+}
+
+variable "lambda_ingestion_name" {
   type    = string
   default = "fxlake-api-ingest-lambda"
+}
+
+variable "lambda_check_name" {
+  type    = string
+  default = "fxlake-results-check-lambda"
 }
 
 variable "glue_job_name" {
   type    = string
   default = "fxlake-glue-transform-job"
+}
+
+variable "sns_email_address" {
+  description = "Email address for SNS notifications"
+  type        = string
 }
 
 variable "glue_script_s3_key" {
@@ -31,9 +48,10 @@ variable "glue_script_s3_key" {
   default     = "glue/glue_transform.py"
 }
 
-variable "athena_results_bucket" {
-  type    = string
-  default = "fxlake-athena-query-results-2025-unique" # change to unique name
+variable "fx_base_api_url" {
+  description = "Base API URL for exchange rates"
+  type        = string
+  default     = "https://api.frankfurter.app"
 }
 
 variable "fx_start_date" {

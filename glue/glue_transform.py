@@ -1,14 +1,32 @@
 # Glue Python Shell script — flatten exchange rates JSON to CSV/Parquet
+
+import io
 import json
-import os
+import logging
 import sys
+import traceback
 from typing import List
 
 import boto3
 import pandas as pd
 from awsglue.utils import getResolvedOptions
 
-# Get job parameters
+# -----------------------------
+# Logging configuration
+# -----------------------------
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter(
+    fmt="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+# -----------------------------
+# Job parameters
+# -----------------------------
 args = getResolvedOptions(sys.argv, ["RAW_BUCKET", "PROCESSED_BUCKET", "OUTPUT_FORMAT"])
 
 s3 = boto3.client("s3")
@@ -19,11 +37,14 @@ output_format = args["OUTPUT_FORMAT"].lower()
 if output_format not in ["csv", "parquet"]:
     raise ValueError("OUTPUT_FORMAT must be either 'csv' or 'parquet'")
 
-print(f"Starting ETL job with format: {output_format}")
-print(f"Raw bucket: {raw_bucket}")
-print(f"Processed bucket: {processed_bucket}")
+logger.info(f"Starting ETL job with format: {output_format}")
+logger.info(f"Raw bucket: {raw_bucket}")
+logger.info(f"Processed bucket: {processed_bucket}")
 
 
+# -----------------------------
+# Helper functions
+# -----------------------------
 def list_json_keys(bucket: str) -> List[str]:
     """List all JSON files in the bucket"""
     try:
@@ -35,8 +56,9 @@ def list_json_keys(bucket: str) -> List[str]:
                     o["Key"] for o in page["Contents"] if o["Key"].endswith(".json")
                 )
         return keys
-    except Exception as e:
-        print(f"Error listing objects in bucket {bucket}: {str(e)}")
+    except Exception:
+        logger.error(f"Error listing objects in bucket {bucket}")
+        logger.error(traceback.format_exc())
         raise
 
 
@@ -49,10 +71,9 @@ def process_key(key: str) -> str:
 
         # Extract data from Frankfurter format
         base = payload.get("base")
-        amount = payload.get("amount", 1.0)
         rates_by_date = payload.get("rates", {})
 
-        # Transform to rows - handle multiple dates
+        # Transform to rows
         rows = []
         for date, rates in rates_by_date.items():
             for currency, rate in rates.items():
@@ -60,74 +81,65 @@ def process_key(key: str) -> str:
                     {
                         "base_currency": base,
                         "target_currency": currency,
-                        "rate": rate * amount,  # Adjust for amount if not 1.0
+                        "rate": rate,
                         "date": date,
                     }
                 )
 
-        # Create DataFrame
         df = pd.DataFrame(rows)
 
-        # Determine output path - store in a subfolder that matches Athena table configuration
+        # Output path (Athena-compatible base folder)
         base_path = "exchange_rates"
-
-        # Prefer S3 object metadata for start/end/base so we can compute a
-        # deterministic output filename. This ensures re-runs for the same
-        # date-range overwrite the previous processed output instead of
-        # producing duplicates.
-        metadata = resp.get("Metadata", {}) or {}
-        start_date = metadata.get("start_date")
-        end_date = metadata.get("end_date")
-        base_meta = metadata.get("base_currency")
-
-        if start_date and end_date and base_meta:
-            filename = f"exchange_rates_{base_meta}_{start_date}_to_{end_date}.{output_format}"
-        else:
-            # Fall back to the raw key name if metadata isn't available
-            filename = os.path.basename(key).replace(".json", f".{output_format}")
-
+        filename = key.split("/")[-1].replace(".json", f".{output_format}")
         out_key = f"{base_path}/{filename}"
 
-        # Save in desired format
+        # Save in desired format using in-memory buffers
         if output_format == "parquet":
-            temp_file = "/tmp/temp.parquet"
-            df.to_parquet(temp_file, index=False)
-            with open(temp_file, "rb") as f:
-                s3.put_object(
-                    Bucket=processed_bucket,
-                    Key=out_key,
-                    Body=f.read(),
-                    ContentType="application/x-parquet",
-                )
-            os.remove(temp_file)  # Clean up
-        else:
-            csv_bytes = df.to_csv(index=False).encode("utf-8")
+            buffer = io.BytesIO()
+            df.to_parquet(buffer, index=False)
+            buffer.seek(0)
             s3.put_object(
                 Bucket=processed_bucket,
                 Key=out_key,
-                Body=csv_bytes,
+                Body=buffer.getvalue(),
+                ContentType="application/x-parquet",
+            )
+        else:
+            csv_buffer = io.StringIO()
+            df.to_csv(csv_buffer, index=False)
+            s3.put_object(
+                Bucket=processed_bucket,
+                Key=out_key,
+                Body=csv_buffer.getvalue(),
                 ContentType="text/csv",
             )
 
-        print(f"Successfully processed {key} to {out_key}")
+        logger.info(f"✅ Successfully processed {key} → {out_key}")
         return out_key
-    except Exception as e:
-        print(f"Error processing {key}: {str(e)}")
+
+    except Exception:
+        logger.error(f"❌ Error processing {key}")
+        logger.error(traceback.format_exc())
         raise
 
 
+# -----------------------------
+# Main execution
+# -----------------------------
 def main():
     """Main ETL process"""
     try:
         keys = list_json_keys(raw_bucket)
-        print(f"Found {len(keys)} files to process")
+        logger.info(f"Found {len(keys)} JSON files to process")
 
         for k in keys:
             process_key(k)
 
-        print("ETL job completed successfully")
-    except Exception as e:
-        print(f"ETL job failed: {str(e)}")
+        logger.info("🎉 ETL job completed successfully")
+
+    except Exception:
+        logger.error("ETL job failed")
+        logger.error(traceback.format_exc())
         raise
 
 

@@ -6,7 +6,11 @@ output "processed_bucket" {
   value = aws_s3_bucket.processed.bucket
 }
 
-output "lambda_function_name" {
+output "results_bucket" {
+  value = aws_s3_bucket.athena_results.bucket
+}
+
+output "lambda_ingestion_name" {
   value = aws_lambda_function.api_ingest.function_name
 }
 

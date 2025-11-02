@@ -2,35 +2,67 @@ resource "aws_sfn_state_machine" "etl" {
   name     = "fxlake-etl-state-machine"
   role_arn = aws_iam_role.sfn_role.arn
   definition = jsonencode({
-    Comment = "FXLake ETL: Invoke Lambda, then Glue, then Athena (sync)",
-    StartAt = "InvokeLambda",
+    Comment = "FXLake ETL: Lambda-Glue-Athena Pipeline",
+    StartAt = "Lambda-API-Ingestion",
     States = {
-      InvokeLambda = {
-        Type       = "Task",
-        Resource   = "arn:aws:states:::lambda:invoke",
-        Parameters = { FunctionName = aws_lambda_function.api_ingest.arn },
-        Next       = "StartGlueJob"
+      Lambda-API-Ingestion = {
+        Type           = "Task",
+        Resource       = "arn:aws:states:::lambda:invoke",
+        Parameters     = { FunctionName = aws_lambda_function.api_ingest.arn },
+        TimeoutSeconds = 30,
+        Next           = "Glue-JSON-to-Parquet"
       },
-      StartGlueJob = {
-        Type       = "Task",
-        Resource   = "arn:aws:states:::glue:startJobRun.sync",
-        Parameters = { JobName = aws_glue_job.transform.name },
-        Next       = "StartAthenaQuery"
+      Glue-JSON-to-Parquet = {
+        Type           = "Task",
+        Resource       = "arn:aws:states:::glue:startJobRun.sync",
+        Parameters     = { JobName = aws_glue_job.transform.name },
+        TimeoutSeconds = 180,
+        Next           = "Athena-Sample-Query"
       },
-      StartAthenaQuery = {
+      Athena-Sample-Query = {
         Type     = "Task",
         Resource = "arn:aws:states:::athena:startQueryExecution.sync",
         Parameters = {
-          QueryString = "SELECT * FROM exchange_rates LIMIT 100;",
+          QueryString = "SELECT * FROM exchange_rates LIMIT 100;", # sample query
           QueryExecutionContext = {
             Database = aws_glue_catalog_database.fxlake.name
           },
           ResultConfiguration = {
-            OutputLocation = "s3://${var.athena_results_bucket}/"
+            OutputLocation = "s3://${var.athena_results_bucket_name}/results/"
+          },
+          ResultReuseConfiguration = {
+            ResultReuseByAgeConfiguration = {
+              Enabled         = true,
+              MaxAgeInMinutes = 10
+            }
           }
         },
-        End = true
+        TimeoutSeconds = 90,
+        Next           = "Lambda-Validation-Query"
+      },
+      Lambda-Validation-Query = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = aws_lambda_function.check_query_results.arn,
+          Payload = {
+            "QueryExecutionId.$" = "$.QueryExecution.QueryExecutionId"
+          }
+        },
+        TimeoutSeconds = 30,
+        End            = true
       }
     }
   })
+
+  logging_configuration {
+    include_execution_data = true
+    level                  = "ALL"
+    log_destination        = "${aws_cloudwatch_log_group.stepfunctions_logs.arn}:*"
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.stepfunctions_logs,
+    aws_iam_role_policy.sfn_policy
+  ]
 }
