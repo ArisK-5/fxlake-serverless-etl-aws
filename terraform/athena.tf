@@ -51,20 +51,7 @@ resource "aws_athena_workgroup" "fxlake" {
     publish_cloudwatch_metrics_enabled = true
 
     result_configuration {
-      output_location = "s3://${aws_s3_bucket.athena_results.bucket}/query-results/"
+      output_location = "s3://${aws_s3_bucket.athena_results.bucket}/results/"
     }
   }
-}
-
-resource "aws_athena_named_query" "fxlake_sample_query" {
-  name        = "fxlake_sample_query"
-  description = "Sample Athena query to validate transformed FX data"
-  database    = aws_glue_catalog_database.fxlake.name
-  workgroup   = aws_athena_workgroup.fxlake.name
-
-  query = <<EOF
-SELECT *
-FROM ${aws_glue_catalog_table.exchange_rates.name}
-LIMIT 100;
-EOF
 }

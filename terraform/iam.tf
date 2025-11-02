@@ -188,11 +188,12 @@ resource "aws_iam_role_policy" "sfn_policy" {
           "athena:GetQueryExecution",
           "athena:GetQueryResults"
         ],
-        # Resource = "*"
-        "Resource" : [
-          "arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:workgroup/primary",
-          "arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:datacatalog/AwsDataCatalog"
-        ]
+        Resource = "*"
+        # Resource = [
+        #   "arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:workgroup/fxlake",
+        #   "arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:datacatalog/AwsDataCatalog",
+        #   "arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:query/*"
+        # ]
       },
 
       # --- S3 access (processed + athena results buckets only) ---

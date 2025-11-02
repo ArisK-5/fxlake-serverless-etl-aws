@@ -16,7 +16,7 @@ resource "aws_sfn_state_machine" "etl" {
         Type           = "Task",
         Resource       = "arn:aws:states:::glue:startJobRun.sync",
         Parameters     = { JobName = aws_glue_job.transform.name },
-        TimeoutSeconds = 90,
+        TimeoutSeconds = 180,
         Next           = "StartAthenaQuery"
       },
       StartAthenaQuery = {
@@ -63,7 +63,6 @@ resource "aws_sfn_state_machine" "etl" {
 
   depends_on = [
     aws_cloudwatch_log_group.stepfunctions_logs,
-    aws_iam_role_policy.sfn_policy,
-    aws_athena_named_query.fxlake_sample_query
+    aws_iam_role_policy.sfn_policy
   ]
 }
