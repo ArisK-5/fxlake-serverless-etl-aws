@@ -3,23 +3,23 @@ resource "aws_sfn_state_machine" "etl" {
   role_arn = aws_iam_role.sfn_role.arn
   definition = jsonencode({
     Comment = "FXLake ETL: Lambda-Glue-Athena Pipeline",
-    StartAt = "InvokeLambda",
+    StartAt = "Lambda-API-Ingestion",
     States = {
-      InvokeLambda = {
+      Lambda-API-Ingestion = {
         Type           = "Task",
         Resource       = "arn:aws:states:::lambda:invoke",
         Parameters     = { FunctionName = aws_lambda_function.api_ingest.arn },
         TimeoutSeconds = 30,
-        Next           = "StartGlueJob"
+        Next           = "Glue-JSON-to-Parquet"
       },
-      StartGlueJob = {
+      Glue-JSON-to-Parquet = {
         Type           = "Task",
         Resource       = "arn:aws:states:::glue:startJobRun.sync",
         Parameters     = { JobName = aws_glue_job.transform.name },
         TimeoutSeconds = 180,
-        Next           = "StartAthenaQuery"
+        Next           = "Athena-Sample-Query"
       },
-      StartAthenaQuery = {
+      Athena-Sample-Query = {
         Type     = "Task",
         Resource = "arn:aws:states:::athena:startQueryExecution.sync",
         Parameters = {
@@ -38,9 +38,9 @@ resource "aws_sfn_state_machine" "etl" {
           }
         },
         TimeoutSeconds = 90,
-        Next           = "CheckQueryResults"
+        Next           = "Lambda-Validation-Query"
       },
-      CheckQueryResults = {
+      Lambda-Validation-Query = {
         Type     = "Task",
         Resource = "arn:aws:states:::lambda:invoke",
         Parameters = {

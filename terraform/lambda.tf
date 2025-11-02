@@ -44,7 +44,7 @@ resource "aws_cloudwatch_event_rule" "daily" {
 
 resource "aws_cloudwatch_event_target" "invoke_lambda" {
   rule      = aws_cloudwatch_event_rule.daily.name
-  target_id = "invokeLambda"
+  target_id = "lambda-API-Ingestion"
   arn       = aws_lambda_function.api_ingest.arn
 }
 
