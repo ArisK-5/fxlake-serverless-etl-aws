@@ -34,7 +34,9 @@ resource "aws_iam_policy" "lambda_s3_policy" {
           aws_s3_bucket.raw.arn,
           "${aws_s3_bucket.raw.arn}/*",
           aws_s3_bucket.processed.arn,
-          "${aws_s3_bucket.processed.arn}/*"
+          "${aws_s3_bucket.processed.arn}/*",
+          aws_s3_bucket.athena_results.arn,
+          "${aws_s3_bucket.athena_results.arn}/*"
         ]
       }
     ]
@@ -44,6 +46,30 @@ resource "aws_iam_policy" "lambda_s3_policy" {
 resource "aws_iam_role_policy_attachment" "lambda_s3_attach" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_s3_policy.arn
+}
+
+resource "aws_iam_role_policy" "check_query_results_policy" {
+  role = aws_iam_role.lambda_exec.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "athena:GetQueryResults",
+          "athena:GetQueryExecution"
+        ],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "cloudwatch:PutMetricData"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 # Glue service role & policies
@@ -119,7 +145,10 @@ resource "aws_iam_role_policy" "sfn_policy" {
         Action = [
           "lambda:InvokeFunction"
         ],
-        Resource = aws_lambda_function.api_ingest.arn
+        Resource = [
+          aws_lambda_function.api_ingest.arn,
+          aws_lambda_function.check_query_results.arn
+        ]
       },
 
       # --- Glue Job Management ---
@@ -235,7 +264,7 @@ resource "aws_iam_role_policy" "cloudtrail_policy" {
 }
 
 resource "aws_s3_bucket_policy" "cloudtrail_bucket_policy" {
-  bucket = var.cloudtrail_logs_bucket
+  bucket = var.cloudtrail_logs_bucket_name
 
   policy = jsonencode({
     Version = "2012-10-17",
@@ -247,7 +276,7 @@ resource "aws_s3_bucket_policy" "cloudtrail_bucket_policy" {
           Service = "cloudtrail.amazonaws.com"
         },
         Action   = "s3:GetBucketAcl",
-        Resource = "arn:aws:s3:::${var.cloudtrail_logs_bucket}"
+        Resource = "arn:aws:s3:::${var.cloudtrail_logs_bucket_name}"
       },
       {
         Sid    = "AWSCloudTrailWrite",
@@ -256,7 +285,7 @@ resource "aws_s3_bucket_policy" "cloudtrail_bucket_policy" {
           Service = "cloudtrail.amazonaws.com"
         },
         Action   = "s3:PutObject",
-        Resource = "arn:aws:s3:::${var.cloudtrail_logs_bucket}/AWSLogs/${data.aws_caller_identity.current.account_id}/*",
+        Resource = "arn:aws:s3:::${var.cloudtrail_logs_bucket_name}/AWSLogs/${data.aws_caller_identity.current.account_id}/*",
         Condition = {
           StringEquals = {
             "s3:x-amz-acl" = "bucket-owner-full-control"

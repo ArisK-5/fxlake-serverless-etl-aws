@@ -15,5 +15,5 @@
 *.tfvars
 
 # Misc files
-lambda.zip
+*.zip
 sample.README.md

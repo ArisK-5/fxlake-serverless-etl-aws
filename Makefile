@@ -6,7 +6,7 @@
 # Variables
 TF_DIR=terraform
 LAMBDA_DIR=lambda
-LAMBDA_ZIP=lambda.zip
+LAMBDA_ZIP=lambda_ingestion_function.zip
 
 # Colors for output
 GREEN=\033[0;32m
@@ -33,9 +33,9 @@ help:
 # Lambda Packaging
 # -----------------------------------
 package:
-	@echo "$(YELLOW)Packaging Lambda function...$(NC)"
-	cd $(LAMBDA_DIR) && ./package_lambda.sh
-	@echo "$(GREEN)Lambda package created successfully!$(NC)"
+	@echo "$(YELLOW)Packaging Lambda functions...$(NC)"
+	cd $(LAMBDA_DIR) && ./package_lambdas.sh
+	@echo "$(GREEN)Lambda packages created successfully!$(NC)"
 
 # -----------------------------------
 # Terraform Commands
@@ -65,6 +65,6 @@ destroy:
 # -----------------------------------
 clean:
 	@echo "$(YELLOW)Cleaning up...$(NC)"
-	rm -f $(LAMBDA_DIR)/$(LAMBDA_ZIP)
+	rm -f $(LAMBDA_DIR)/lambda_ingestion_function.zip $(LAMBDA_DIR)/lambda_validation_function.zip
 	cd $(TF_DIR) && rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup
 	@echo "$(GREEN)Local cleanup complete.$(NC)"

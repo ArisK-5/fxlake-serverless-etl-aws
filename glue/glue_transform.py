@@ -1,15 +1,15 @@
 # Glue Python Shell script — flatten exchange rates JSON to CSV/Parquet
 
-import json
-import sys
 import io
+import json
+import logging
+import sys
 import traceback
 from typing import List
 
 import boto3
 import pandas as pd
 from awsglue.utils import getResolvedOptions
-import logging
 
 # -----------------------------
 # Logging configuration

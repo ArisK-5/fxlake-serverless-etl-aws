@@ -44,6 +44,38 @@ resource "aws_cloudwatch_metric_alarm" "glue_job_failure" {
   }
 }
 
+resource "aws_cloudwatch_metric_alarm" "athena_query_failures" {
+  alarm_name          = "fxlake-athena-query-failures"
+  alarm_description   = "Triggered when Athena query executions fail"
+  namespace           = "AWS/Athena"
+  metric_name         = "QueryFailed"
+  statistic           = "Sum"
+  period              = "60"
+  evaluation_periods  = "2"
+  threshold           = "0"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+
+  dimensions = {
+    WorkGroup = aws_athena_workgroup.fxlake.name
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "athena_empty_results" {
+  alarm_name          = "fxlake-athena-empty-results"
+  alarm_description   = "Triggered when Athena query returns zero rows"
+  namespace           = "AWS/Athena"
+  metric_name         = "EmptyQueryResults"
+  statistic           = "Sum"
+  period              = "60"
+  evaluation_periods  = "2"
+  threshold           = "0"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+}
+
 resource "aws_cloudwatch_metric_alarm" "step_function_execution_failed" {
   alarm_name          = "fxlake-stepfunctions-execution-failed"
   comparison_operator = "GreaterThanThreshold"

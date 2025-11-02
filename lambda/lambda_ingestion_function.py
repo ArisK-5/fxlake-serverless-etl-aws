@@ -1,6 +1,5 @@
 import json
 import os
-from datetime import datetime
 
 import boto3
 import requests
@@ -10,9 +9,9 @@ RAW_BUCKET = os.environ["RAW_BUCKET"]
 START_DATE = os.environ["START_DATE"]
 END_DATE = os.environ["END_DATE"]
 BASE_CURRENCY = os.environ["BASE_CURRENCY"]
+BASE_API_URL = os.environ["BASE_API_URL"]
 
 S3 = boto3.client("s3")
-BASE_API_URL = "https://api.frankfurter.dev/v1"
 
 
 def fetch_exchange_rates():

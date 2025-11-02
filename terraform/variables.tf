@@ -13,14 +13,23 @@ variable "processed_bucket_name" {
   type        = string
 }
 
-variable "cloudtrail_logs_bucket" {
+variable "athena_results_bucket_name" {
+  type = string
+}
+
+variable "cloudtrail_logs_bucket_name" {
   description = "S3 bucket for CloudTrail logs"
   type        = string
 }
 
-variable "lambda_function_name" {
+variable "lambda_ingestion_name" {
   type    = string
   default = "fxlake-api-ingest-lambda"
+}
+
+variable "lambda_check_name" {
+  type    = string
+  default = "fxlake-results-check-lambda"
 }
 
 variable "glue_job_name" {
@@ -39,8 +48,10 @@ variable "glue_script_s3_key" {
   default     = "glue/glue_transform.py"
 }
 
-variable "athena_results_bucket" {
-  type = string
+variable "fx_base_api_url" {
+  description = "Base API URL for exchange rates"
+  type        = string
+  default     = "https://api.frankfurter.app"
 }
 
 variable "fx_start_date" {

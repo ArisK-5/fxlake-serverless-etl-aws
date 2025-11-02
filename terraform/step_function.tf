@@ -9,29 +9,48 @@ resource "aws_sfn_state_machine" "etl" {
         Type           = "Task",
         Resource       = "arn:aws:states:::lambda:invoke",
         Parameters     = { FunctionName = aws_lambda_function.api_ingest.arn },
-        TimeoutSeconds = 300,
+        TimeoutSeconds = 30,
         Next           = "StartGlueJob"
       },
       StartGlueJob = {
         Type           = "Task",
         Resource       = "arn:aws:states:::glue:startJobRun.sync",
         Parameters     = { JobName = aws_glue_job.transform.name },
-        TimeoutSeconds = 300,
+        TimeoutSeconds = 90,
         Next           = "StartAthenaQuery"
       },
       StartAthenaQuery = {
         Type     = "Task",
         Resource = "arn:aws:states:::athena:startQueryExecution.sync",
         Parameters = {
-          QueryString = "SELECT * FROM exchange_rates LIMIT 100;",
+          QueryString = "SELECT * FROM exchange_rates LIMIT 100;", # sample query
           QueryExecutionContext = {
             Database = aws_glue_catalog_database.fxlake.name
           },
           ResultConfiguration = {
-            OutputLocation = "s3://${var.athena_results_bucket}/"
+            OutputLocation = "s3://${var.athena_results_bucket_name}/results/"
+          },
+          ResultReuseConfiguration = {
+            ResultReuseByAgeConfiguration = {
+              Enabled         = true,
+              MaxAgeInMinutes = 10
+            }
           }
         },
-        End = true
+        TimeoutSeconds = 90,
+        Next           = "CheckQueryResults"
+      },
+      CheckQueryResults = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = aws_lambda_function.check_query_results.arn,
+          Payload = {
+            "QueryExecutionId.$" = "$.QueryExecution.QueryExecutionId"
+          }
+        },
+        TimeoutSeconds = 30,
+        End            = true
       }
     }
   })
@@ -44,6 +63,7 @@ resource "aws_sfn_state_machine" "etl" {
 
   depends_on = [
     aws_cloudwatch_log_group.stepfunctions_logs,
-    aws_iam_role_policy.sfn_policy
+    aws_iam_role_policy.sfn_policy,
+    aws_athena_named_query.fxlake_sample_query
   ]
 }

@@ -3,15 +3,17 @@ aws_region = "us-east-1"
 # Change these to unique names for your deployment
 raw_bucket_name         = "fxlake-raw-data-unique"
 processed_bucket_name   = "fxlake-processed-data-unique"
-athena_results_bucket   = "fxlake-athena-results-unique"
-cloudtrail_logs_bucket = "fxlake-cloudtrail-logs-unique"
-sns_email_address    = "replace-with-desired-email-address"
+athena_results_bucket_name   = "fxlake-athena-results-unique"
+cloudtrail_logs_bucket_name = "fxlake-cloudtrail-logs-unique"
 
 # Lambda and Glue job names
-lambda_function_name = "fxlake-api-ingest-lambda"
+lambda_ingestion_name = "fxlake-api-ingest-lambda"
+lambda_check_name     = "fxlake-check-query-results"
 glue_job_name       = "fxlake-glue-transform-job"
+sns_email_address    = "your@email"
 
 # FX data configuration
+fx_base_api_url  = "https://api.frankfurter.dev/v1"
 fx_start_date     = "2024-01-01"  # One year of data
 fx_end_date       = "2024-12-31"
 fx_base_currency  = "EUR"         # Base currency for rates
