@@ -17,7 +17,7 @@ ICONS_DIR = ROOT_DIR / "assets/icons"
 DIAGRAMS_DIR = ROOT_DIR / "assets/diagrams"
 
 with Diagram(
-    "FXLake: Serverless ETL on AWS\n(pipeline architecture)",
+    "FXLake: Serverless ETL on AWS\n(cloud architecture)",
     filename=str(DIAGRAMS_DIR / "cloud-architecture"),
     show=False,
     direction="LR",
