@@ -10,6 +10,7 @@ resource "aws_sns_topic_subscription" "alerts_email" {
 
 resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   alarm_name          = "fxlake-lambda-errors"
+  alarm_description   = "This metric monitors lambda function errors"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "2"
   metric_name         = "Errors"
@@ -18,7 +19,6 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   statistic           = "Sum"
   threshold           = "0"
   treat_missing_data  = "notBreaching"
-  alarm_description   = "This metric monitors lambda function errors"
   alarm_actions       = [aws_sns_topic.alerts.arn]
 
   dimensions = {
@@ -28,6 +28,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
 
 resource "aws_cloudwatch_metric_alarm" "glue_job_failure" {
   alarm_name          = "fxlake-glue-job-failure"
+  alarm_description   = "This metric monitors Glue job failures"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = "2"
   metric_name         = "glue.driver.aggregate.numFailedTasks"
@@ -36,7 +37,6 @@ resource "aws_cloudwatch_metric_alarm" "glue_job_failure" {
   statistic           = "Sum"
   threshold           = "0"
   treat_missing_data  = "notBreaching"
-  alarm_description   = "This metric monitors Glue job failures"
   alarm_actions       = [aws_sns_topic.alerts.arn]
 
   dimensions = {
