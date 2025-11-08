@@ -213,14 +213,18 @@ resource "aws_iam_role_policy" "sfn_policy" {
         Effect = "Allow",
         Action = [
           "logs:CreateLogDelivery",
+          "logs:CreateLogStream",
           "logs:GetLogDelivery",
           "logs:UpdateLogDelivery",
           "logs:DeleteLogDelivery",
           "logs:ListLogDeliveries",
           "logs:PutLogEvents",
-          "logs:CreateLogStream"
+          "logs:PutResourcePolicy",
+          "logs:DescribeResourcePolicies",
+          "logs:DescribeLogGroups"
         ],
-        Resource = "${aws_cloudwatch_log_group.stepfunctions_logs.arn}:*"
+        Resource = "*"
+        # Resource = "${aws_cloudwatch_log_group.stepfunctions_logs.arn}:*"
       }
     ]
   })
