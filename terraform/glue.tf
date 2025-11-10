@@ -4,7 +4,7 @@ resource "aws_glue_job" "transform" {
 
   command {
     name            = "glueetl"
-    script_location = "s3://${aws_s3_bucket.raw.bucket}/${var.glue_script_s3_key}"
+    script_location = "s3://${aws_s3_bucket.processed.bucket}/${var.glue_script_s3_key}"
     python_version  = "3"
   }
 
@@ -24,7 +24,7 @@ resource "aws_glue_job" "transform" {
 }
 
 resource "aws_s3_object" "glue_script" {
-  bucket = aws_s3_bucket.raw.bucket
+  bucket = aws_s3_bucket.processed.bucket
   key    = var.glue_script_s3_key
   source = "../glue/glue_transform.py"
 }

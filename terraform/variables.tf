@@ -43,7 +43,7 @@ variable "sns_email_address" {
 }
 
 variable "glue_script_s3_key" {
-  description = "S3 key for Glue job script. If empty, update Glue job to use local script upload workflow."
+  description = "S3 key for Glue job script"
   type        = string
   default     = "glue/glue_transform.py"
 }

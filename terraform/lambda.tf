@@ -30,7 +30,8 @@ resource "aws_lambda_function" "check_query_results" {
 
   environment {
     variables = {
-      LOG_LEVEL = "INFO"
+      LOG_LEVEL        = "INFO"
+      METRIC_NAMESPACE = "FXLake/Athena"
     }
   }
 }
