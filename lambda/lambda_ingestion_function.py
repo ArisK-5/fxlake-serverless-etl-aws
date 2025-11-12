@@ -1,15 +1,18 @@
 import json
+import logging
 import os
 
 import boto3
 import requests
 
-# Configuration from environment variables (set via terraform.tfvars)
 RAW_BUCKET = os.environ["RAW_BUCKET"]
 START_DATE = os.environ["START_DATE"]
 END_DATE = os.environ["END_DATE"]
 BASE_CURRENCY = os.environ["BASE_CURRENCY"]
 BASE_API_URL = os.environ["BASE_API_URL"]
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 S3 = boto3.client("s3")
 
@@ -22,9 +25,10 @@ def fetch_exchange_rates():
     try:
         resp = requests.get(api_url, params=params, timeout=30)
         resp.raise_for_status()
+        logger.debug("Successfully fetched exchange rates from API")
         return resp.json()
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching data from Frankfurter API: {str(e)}")
+        logger.error(f"Error fetching data from Frankfurter API: {str(e)}")
         raise
 
 
@@ -45,23 +49,18 @@ def save_to_s3(data):
                 "source": "frankfurter",
             },
         )
+        logger.debug(f"Saved exchange rates data to S3 as {filename}")
         return filename
     except Exception as e:
-        print(f"Error saving to S3: {str(e)}")
+        logger.error(f"Error saving to S3: {str(e)}")
         raise
 
 
 def lambda_handler(event, context):
-    """
-    Lambda handler that fetches historical exchange rates from Frankfurter API.
-    All configuration is done through terraform.tfvars.
-    """
     try:
-        # Fetch data from Frankfurter API
         data = fetch_exchange_rates()
-
-        # Save to S3
         filename = save_to_s3(data)
+        logger.info(f"Lambda ingestion succeeded, saved file: {filename}")
 
         return {
             "status": "ok",
@@ -72,5 +71,5 @@ def lambda_handler(event, context):
         }
 
     except Exception as e:
-        print(f"Error in lambda execution: {str(e)}")
-        return {"status": "error", "error": str(e)}
+        logger.error(f"Error in lambda execution: {str(e)}")
+        raise

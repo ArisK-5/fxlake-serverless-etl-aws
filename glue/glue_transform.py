@@ -1,5 +1,3 @@
-# Glue Python Shell script — flatten exchange rates JSON to CSV/Parquet
-
 import io
 import json
 import logging
@@ -12,10 +10,27 @@ import pandas as pd
 from awsglue.utils import getResolvedOptions
 
 # -----------------------------
+# Job parameters
+# -----------------------------
+args = getResolvedOptions(
+    sys.argv, ["RAW_BUCKET", "PROCESSED_BUCKET", "OUTPUT_FORMAT", "LOG_LEVEL"]
+)
+
+s3 = boto3.client("s3")
+raw_bucket = args["RAW_BUCKET"]
+processed_bucket = args["PROCESSED_BUCKET"]
+output_format = args["OUTPUT_FORMAT"].lower()
+log_level = args["LOG_LEVEL"].upper()
+
+if output_format not in ["csv", "parquet"]:
+    raise ValueError("OUTPUT_FORMAT must be either 'csv' or 'parquet'")
+
+# -----------------------------
 # Logging configuration
 # -----------------------------
+
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(log_level)
 handler = logging.StreamHandler(sys.stdout)
 formatter = logging.Formatter(
     fmt="%(asctime)s | %(levelname)s | %(message)s",
@@ -23,19 +38,6 @@ formatter = logging.Formatter(
 )
 handler.setFormatter(formatter)
 logger.addHandler(handler)
-
-# -----------------------------
-# Job parameters
-# -----------------------------
-args = getResolvedOptions(sys.argv, ["RAW_BUCKET", "PROCESSED_BUCKET", "OUTPUT_FORMAT"])
-
-s3 = boto3.client("s3")
-raw_bucket = args["RAW_BUCKET"]
-processed_bucket = args["PROCESSED_BUCKET"]
-output_format = args["OUTPUT_FORMAT"].lower()
-
-if output_format not in ["csv", "parquet"]:
-    raise ValueError("OUTPUT_FORMAT must be either 'csv' or 'parquet'")
 
 logger.info(f"Starting ETL job with format: {output_format}")
 logger.info(f"Raw bucket: {raw_bucket}")

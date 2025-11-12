@@ -19,7 +19,7 @@ resource "aws_lambda_function" "api_ingest" {
 }
 
 resource "aws_lambda_function" "check_query_results" {
-  function_name    = var.lambda_check_name
+  function_name    = var.lambda_validation_name
   description      = "Checks Athena query results and publishes custom CloudWatch metric"
   handler          = "lambda_validation_function.lambda_handler"
   runtime          = "python3.12"
@@ -27,11 +27,10 @@ resource "aws_lambda_function" "check_query_results" {
   filename         = "../lambda/lambda_validation_function.zip"
   timeout          = 60
   source_code_hash = filebase64sha256("../lambda/lambda_validation_function.zip")
-
   environment {
     variables = {
-      LOG_LEVEL        = "INFO"
-      METRIC_NAMESPACE = "FXLake/Athena"
+      METRIC_NAMESPACE = "${var.metric_namespace_prefix}/Athena"
+      PIPELINE         = var.pipeline
     }
   }
 }
