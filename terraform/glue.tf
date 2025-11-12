@@ -20,6 +20,7 @@ resource "aws_glue_job" "transform" {
     "--OUTPUT_FORMAT"                    = var.fx_output_format
     "--enable-continuous-cloudwatch-log" = "true"
     "--enable-metrics"                   = "true"
+    "--LOG_LEVEL"                        = "INFO"
   }
 }
 

@@ -3,6 +3,12 @@ variable "aws_region" {
   default = "us-east-1"
 }
 
+variable "pipeline" {
+  type        = string
+  description = "Pipeline name"
+  default     = "fxlake-etl"
+}
+
 variable "raw_bucket_name" {
   description = "S3 bucket for raw API JSON"
   type        = string
@@ -22,12 +28,23 @@ variable "cloudtrail_logs_bucket_name" {
   type        = string
 }
 
+variable "metric_namespace_prefix" {
+  description = "Prefix for CloudWatch metric namespaces"
+  type        = string
+  default     = "FXLake"
+}
+
+variable "sns_email_address" {
+  description = "Email address for SNS notifications"
+  type        = string
+}
+
 variable "lambda_ingestion_name" {
   type    = string
   default = "fxlake-api-ingest-lambda"
 }
 
-variable "lambda_check_name" {
+variable "lambda_validation_name" {
   type    = string
   default = "fxlake-results-check-lambda"
 }
@@ -35,11 +52,6 @@ variable "lambda_check_name" {
 variable "glue_job_name" {
   type    = string
   default = "fxlake-glue-transform-job"
-}
-
-variable "sns_email_address" {
-  description = "Email address for SNS notifications"
-  type        = string
 }
 
 variable "glue_script_s3_key" {

@@ -55,3 +55,16 @@ resource "aws_cloudtrail" "fxlake" {
     aws_s3_bucket_policy.cloudtrail_bucket_policy
   ]
 }
+
+resource "aws_cloudwatch_log_metric_filter" "unauthorized_api_calls" {
+  name           = "UnauthorizedAPICalls"
+  log_group_name = aws_cloudwatch_log_group.cloudtrail_logs.name
+
+  pattern = "{ ($.errorCode = \"AccessDenied*\" || $.errorCode = \"UnauthorizedOperation\") }"
+
+  metric_transformation {
+    name      = "UnauthorizedAPICallCount"
+    namespace = "CloudTrailMetrics"
+    value     = "1"
+  }
+}

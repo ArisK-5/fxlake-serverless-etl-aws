@@ -8,9 +8,11 @@ cloudtrail_logs_bucket_name = "fxlake-cloudtrail-logs-unique"
 
 # Lambda and Glue job names
 lambda_ingestion_name = "fxlake-api-ingest-lambda"
-lambda_check_name     = "fxlake-check-query-results"
+lambda_validation_name     = "fxlake-check-query-results"
 glue_job_name       = "fxlake-glue-transform-job"
+
 sns_email_address    = "your@email"
+metric_namespace_prefix = "FXLake"
 
 # FX data configuration
 fx_base_api_url  = "https://api.frankfurter.dev/v1"
