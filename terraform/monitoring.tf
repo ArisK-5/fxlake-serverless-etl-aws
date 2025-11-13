@@ -144,13 +144,14 @@ resource "aws_cloudwatch_metric_alarm" "step_function_throttles" {
 resource "aws_cloudwatch_metric_alarm" "unauthorized_api_alarm" {
   alarm_name          = "fxlake-unauthorized-api-calls"
   comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = "1"
+  evaluation_periods  = 3
+  datapoints_to_alarm = 2
   metric_name         = "UnauthorizedAPICallCount"
   namespace           = "CloudTrailMetrics"
-  period              = "300"
+  period              = 300
   statistic           = "Sum"
-  threshold           = "0"
-  alarm_description   = "Triggers if any unauthorized AWS API calls are detected"
+  threshold           = 1
+  alarm_description   = "Triggers if multiple unauthorized AWS API calls are detected"
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }
 
