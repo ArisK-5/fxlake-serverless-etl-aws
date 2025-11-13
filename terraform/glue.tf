@@ -10,7 +10,7 @@ resource "aws_glue_job" "transform" {
 
   glue_version = "3.0"
 
-  max_capacity = 1 # or 0.0625
+  max_capacity = 0.0625 # 0.0625 or 1
 
   max_retries = 0
 
