@@ -52,6 +52,9 @@ with Diagram(
             cloudtrail = Cloudtrail("CloudTrail\n(Audit Logs)")
             iam = IAM("IAM\n(Access Management)")
             sns = SNS("SNS\n(Notification Service)")
+            cloudwatch_dashboard = Custom(
+                "Monitoring Dashboard", str(ICONS_DIR / "dashboard.png")
+            )
 
         # Orchestration
         (
@@ -89,3 +92,7 @@ with Diagram(
         (
             cloudwatch - sns >> Edge(label="alert") >> dev
         )  # Email notifications for pipeline failures
+
+        (
+            cloudwatch >> cloudwatch_dashboard << Edge(label="monitor metrics") << dev
+        )  # Monitoring
