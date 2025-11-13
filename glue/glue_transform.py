@@ -2,7 +2,6 @@ import io
 import json
 import logging
 import sys
-import traceback
 from typing import List
 
 import boto3
@@ -11,7 +10,7 @@ import pyarrow.parquet as pq
 from awsglue.utils import getResolvedOptions
 
 # -----------------------------
-# Job parameters using Glue parser
+# Parameters
 # -----------------------------
 args = getResolvedOptions(
     sys.argv,
@@ -23,72 +22,60 @@ processed_bucket = args["PROCESSED_BUCKET"]
 output_format = args["OUTPUT_FORMAT"].lower()
 log_level = args["LOG_LEVEL"].upper()
 
-if output_format not in ["csv", "parquet"]:
+if output_format not in ("csv", "parquet"):
     raise ValueError("OUTPUT_FORMAT must be either 'csv' or 'parquet'")
 
-# -----------------------------
-# Setup boto3 client
-# -----------------------------
 s3 = boto3.client("s3")
 
 # -----------------------------
-# Logging configuration
+# Logging
 # -----------------------------
 logger = logging.getLogger()
 logger.setLevel(log_level)
 handler = logging.StreamHandler(sys.stdout)
-formatter = logging.Formatter(
-    fmt="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-logger.info(f"Starting ETL job with format: {output_format}")
-logger.info(f"Raw bucket: {raw_bucket}")
-logger.info(f"Processed bucket: {processed_bucket}")
+logger.info(f"Starting ETL with format={output_format}")
+logger.info(f"Raw bucket={raw_bucket}, Processed bucket={processed_bucket}")
 
 
 # -----------------------------
-# Helper functions
+# Helpers
 # -----------------------------
 def list_json_keys(bucket: str) -> List[str]:
-    """List all JSON files in the bucket"""
     try:
         paginator = s3.get_paginator("list_objects_v2")
         keys = []
         for page in paginator.paginate(Bucket=bucket):
-            if "Contents" in page:
-                keys.extend(
-                    o["Key"] for o in page["Contents"] if o["Key"].endswith(".json")
-                )
+            keys.extend(
+                [
+                    obj["Key"]
+                    for obj in page.get("Contents", [])
+                    if obj["Key"].endswith(".json")
+                ]
+            )
         return keys
     except Exception:
-        logger.error(f"Error listing objects in bucket {bucket}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Failed to list JSON keys in {bucket}", exc_info=True)
         raise
 
 
 def process_key(key: str) -> str:
-    """Process a single JSON file and convert to CSV or Parquet"""
     try:
-        resp = s3.get_object(Bucket=raw_bucket, Key=key)
-        payload = json.loads(resp["Body"].read())
+        obj = s3.get_object(Bucket=raw_bucket, Key=key)
+        payload = json.load(obj["Body"])
 
         base = payload.get("base")
-        rates_by_date = payload.get("rates", {})
+        rates = payload.get("rates", {})
 
-        rows = []
-        for date, rates in rates_by_date.items():
-            for currency, rate in rates.items():
-                rows.append(
-                    {
-                        "base_currency": base,
-                        "target_currency": currency,
-                        "rate": rate,
-                        "date": date,
-                    }
-                )
+        # Flatten with list comprehension
+        rows = [
+            {"base_currency": base, "target_currency": tgt, "rate": rate, "date": dt}
+            for dt, daily_rates in rates.items()
+            for tgt, rate in daily_rates.items()
+        ]
 
         df = pl.DataFrame(rows)
 
@@ -97,7 +84,6 @@ def process_key(key: str) -> str:
         out_key = f"{base_path}/{filename}"
 
         if output_format == "parquet":
-            # Convert Polars DataFrame to Arrow Table
             table = df.to_arrow()
             buffer = io.BytesIO()
             pq.write_table(table, buffer)
@@ -117,31 +103,29 @@ def process_key(key: str) -> str:
                 ContentType="text/csv",
             )
 
-        logger.info(f"✅ Successfully processed {key} → {out_key}")
+        logger.info(f"Processed {key} → {out_key}")
         return out_key
 
     except Exception:
-        logger.error(f"❌ Error processing {key}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Error processing {key}", exc_info=True)
         raise
 
 
 # -----------------------------
-# Main execution
+# Main
 # -----------------------------
 def main():
     try:
         keys = list_json_keys(raw_bucket)
-        logger.info(f"Found {len(keys)} JSON files to process")
+        logger.info(f"Found {len(keys)} JSON files")
 
         for key in keys:
             process_key(key)
 
-        logger.info("🎉 ETL job completed successfully")
+        logger.info("ETL completed successfully")
 
     except Exception:
-        logger.error("ETL job failed")
-        logger.error(traceback.format_exc())
+        logger.error("ETL failed", exc_info=True)
         raise
 
 
