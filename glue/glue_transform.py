@@ -9,14 +9,16 @@ import boto3
 import pandas as pd
 from awsglue.utils import getResolvedOptions
 
+s3 = boto3.client("s3")
+
 # -----------------------------
 # Job parameters
 # -----------------------------
 args = getResolvedOptions(
-    sys.argv, ["RAW_BUCKET", "PROCESSED_BUCKET", "OUTPUT_FORMAT", "LOG_LEVEL"]
+    sys.argv,
+    ["RAW_BUCKET", "PROCESSED_BUCKET", "OUTPUT_FORMAT", "LOG_LEVEL"],
 )
 
-s3 = boto3.client("s3")
 raw_bucket = args["RAW_BUCKET"]
 processed_bucket = args["PROCESSED_BUCKET"]
 output_format = args["OUTPUT_FORMAT"].lower()
@@ -25,10 +27,10 @@ log_level = args["LOG_LEVEL"].upper()
 if output_format not in ["csv", "parquet"]:
     raise ValueError("OUTPUT_FORMAT must be either 'csv' or 'parquet'")
 
+
 # -----------------------------
 # Logging configuration
 # -----------------------------
-
 logger = logging.getLogger()
 logger.setLevel(log_level)
 handler = logging.StreamHandler(sys.stdout)
@@ -67,15 +69,12 @@ def list_json_keys(bucket: str) -> List[str]:
 def process_key(key: str) -> str:
     """Process a single JSON file and convert to CSV or Parquet"""
     try:
-        # Read and parse JSON
         resp = s3.get_object(Bucket=raw_bucket, Key=key)
         payload = json.loads(resp["Body"].read())
 
-        # Extract data from Frankfurter format
         base = payload.get("base")
         rates_by_date = payload.get("rates", {})
 
-        # Transform to rows
         rows = []
         for date, rates in rates_by_date.items():
             for currency, rate in rates.items():
@@ -90,12 +89,10 @@ def process_key(key: str) -> str:
 
         df = pd.DataFrame(rows)
 
-        # Output path (Athena-compatible base folder)
         base_path = "exchange_rates"
         filename = key.split("/")[-1].replace(".json", f".{output_format}")
         out_key = f"{base_path}/{filename}"
 
-        # Save in desired format using in-memory buffers
         if output_format == "parquet":
             buffer = io.BytesIO()
             df.to_parquet(buffer, index=False)
@@ -129,13 +126,12 @@ def process_key(key: str) -> str:
 # Main execution
 # -----------------------------
 def main():
-    """Main ETL process"""
     try:
         keys = list_json_keys(raw_bucket)
         logger.info(f"Found {len(keys)} JSON files to process")
 
-        for k in keys:
-            process_key(k)
+        for key in keys:
+            process_key(key)
 
         logger.info("🎉 ETL job completed successfully")
 

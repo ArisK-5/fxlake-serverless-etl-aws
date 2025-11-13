@@ -3,24 +3,26 @@ resource "aws_glue_job" "transform" {
   role_arn = aws_iam_role.glue_service_role.arn
 
   command {
-    name            = "glueetl"
+    name            = "pythonshell"
     script_location = "s3://${aws_s3_bucket.processed.bucket}/${var.glue_script_s3_key}"
-    python_version  = "3"
+    python_version  = "3.9"
   }
 
   glue_version = "3.0"
-  max_capacity = 1
-  max_retries  = 0
+
+  max_capacity = 0.0625 # 1
+
+  max_retries = 0
 
   default_arguments = {
-    "--TempDir"                          = "s3://${aws_s3_bucket.raw.bucket}/tmp/"
-    "--job-language"                     = "python"
     "--RAW_BUCKET"                       = aws_s3_bucket.raw.bucket
     "--PROCESSED_BUCKET"                 = aws_s3_bucket.processed.bucket
     "--OUTPUT_FORMAT"                    = var.fx_output_format
+    "--LOG_LEVEL"                        = "INFO"
     "--enable-continuous-cloudwatch-log" = "true"
     "--enable-metrics"                   = "true"
-    "--LOG_LEVEL"                        = "INFO"
+
+    "--additional-python-modules" = "pandas==1.3.5,pyarrow==5.0.0"
   }
 }
 
