@@ -6,13 +6,12 @@ import traceback
 from typing import List
 
 import boto3
-import pandas as pd
+import polars as pl
+import pyarrow.parquet as pq
 from awsglue.utils import getResolvedOptions
 
-s3 = boto3.client("s3")
-
 # -----------------------------
-# Job parameters
+# Job parameters using Glue parser
 # -----------------------------
 args = getResolvedOptions(
     sys.argv,
@@ -27,6 +26,10 @@ log_level = args["LOG_LEVEL"].upper()
 if output_format not in ["csv", "parquet"]:
     raise ValueError("OUTPUT_FORMAT must be either 'csv' or 'parquet'")
 
+# -----------------------------
+# Setup boto3 client
+# -----------------------------
+s3 = boto3.client("s3")
 
 # -----------------------------
 # Logging configuration
@@ -87,15 +90,17 @@ def process_key(key: str) -> str:
                     }
                 )
 
-        df = pd.DataFrame(rows)
+        df = pl.DataFrame(rows)
 
         base_path = "exchange_rates"
         filename = key.split("/")[-1].replace(".json", f".{output_format}")
         out_key = f"{base_path}/{filename}"
 
         if output_format == "parquet":
+            # Convert Polars DataFrame to Arrow Table
+            table = df.to_arrow()
             buffer = io.BytesIO()
-            df.to_parquet(buffer, index=False)
+            pq.write_table(table, buffer)
             buffer.seek(0)
             s3.put_object(
                 Bucket=processed_bucket,
@@ -104,12 +109,11 @@ def process_key(key: str) -> str:
                 ContentType="application/x-parquet",
             )
         else:
-            csv_buffer = io.StringIO()
-            df.to_csv(csv_buffer, index=False)
+            csv_str = df.write_csv()
             s3.put_object(
                 Bucket=processed_bucket,
                 Key=out_key,
-                Body=csv_buffer.getvalue(),
+                Body=csv_str,
                 ContentType="text/csv",
             )
 
