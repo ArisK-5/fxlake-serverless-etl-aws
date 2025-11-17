@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from diagrams import Diagram, Edge
-
+from diagrams import Cluster, Diagram, Edge
 from diagrams.custom import Custom
 from diagrams.onprem.iac import Terraform
 from diagrams.onprem.vcs import Git, Github
@@ -16,6 +15,7 @@ with Diagram(
     filename=str(DIAGRAMS_DIR / "dev-workflow"),
     show=False,
     direction="LR",
+    graph_attr={"size": "12,8"},
 ):
     # Developer environment
     dev = Custom("Developer", str(ICONS_DIR / "dev.jpg"))
@@ -30,3 +30,9 @@ with Diagram(
     )  # Version control interaction with GitHub
 
     git >> Edge(label="Trigger") >> terraform  # Trigger IaC on code push
+
+    with Cluster("AWS Cloud"):
+        aws_cloud = Custom(
+            "", str(ICONS_DIR / "aws.png")
+        )  # Intentionally left blank label and missing icon for AWS cluster representation
+        terraform >> Edge(label="provision") >> aws_cloud  # Provision AWS resources
