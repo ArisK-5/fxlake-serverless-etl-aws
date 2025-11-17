@@ -1,10 +1,9 @@
 # FXLake — Serverless ETL on AWS
 
-This repository contains a deployable scaffold for a serverless ETL pipeline on AWS. It automates the ingestion, transformation, and validation of financial exchange (FX) data using a **modern, event-driven, and cost-efficient architecture**.
+This repository provides a deployable scaffold for a **serverless, event-driven, and cost-efficient ETL pipeline** on AWS. It automates ingestion, transformation, and validation of financial exchange (FX) data using modern cloud-native services.
 
-Technologies currently in use:
-
-Terraform · S3 · Lambda · Glue · Athena · StepFunctions · EventBridge · IAM · SNS · Cloudwatch · Cloudtrail · Git · Python (Polars)
+**Technologies used:**  
+Terraform · S3 · Lambda · Glue · Athena · Step Functions · EventBridge · IAM · SNS · CloudWatch · CloudTrail · Git · Python (Polars)
 
 ---
 
@@ -16,7 +15,9 @@ Terraform · S3 · Lambda · Glue · Athena · StepFunctions · EventBridge · I
   - [🛠 Development Workflow](#🛠-development-workflow)
   - [✨ Features](#✨-features)
   - [🧠 Skills Demonstrated](#🧠-skills-demonstrated)
-- [⚙️ Prerequisites & Setup](#⚙️-prerequisites--setup)
+- [⚙️ Getting Started](#⚙️-getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Setup & Deployment](#setup--deployment)
 - [🚀 Future Improvements](#🚀-future-improvements)
 
 ## 📖 Overview
@@ -100,22 +101,80 @@ The architectural diagrams of the project were made using [Diagrams](https://dia
 - **Monitoring & Alerting Setup**: Configuring CloudWatch and SNS for real-time pipeline health tracking.
 - **Version Control & Collaboration**: Using Git and GitHub for code management and team workflows.
 
-## ⚙️ Prerequisites & Setup
+## ⚙️ Getting Started
 
-Before deploying, make sure you have the following:
+### Prerequisites
 
-- macOS / Linux terminal
-- AWS CLI configured with credentials
-- Terraform￼
-- Python 3.10+￼
+Ensure your development environment has the following:
 
-Quick setup:
+- **Operating System**: macOS or Linux (Windows WSL also supported)
+- **AWS CLI**: Installed and configured with proper AWS credentials and permissions
+- **Terraform**: Version 1.0+ (install via Terraform downloads￼ or Homebrew)
+- **Python**: Version 3.10+. I used [uv](https://docs.astral.sh/uv/#highlights) for Python environment and dependency management during development but you should be able to deploy the project without using Python.
+- **Git**: For version control
+- **Make**: Installed to run provided Makefile targets (usually pre-installed on macOS/Linux)
+- **VSCode (optional)**: Recommended IDE with Terraform and Python extensions
 
-1. Edit `terraform/terraform.tfvars.example` → save as `terraform.tfvars` and replace default bucket names with globally unique ones.
-2. Prepare the Lambda package: `make package` (creates two Lambda `.zip` files)
-3. `make deploy`
-4. (Optional) Run Step Function execution or wait for daily scheduled EventBridge trigger.
+### Setup & Deployment:
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/ArisK-5/fxlake-serverless-etl-aws.git
+cd fxlake-serverless-etl-aws
+```
+
+2. Configure Terraform variables
+
+```bash
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+```
+
+Open terraform/terraform.tfvars and replace the required values to avoid deployment conflicts.
+
+3. Package Lambda functions:
+
+```bash
+make package # packages Python Lambdas into deployable zip files.
+```
+
+4. Initialize Terraform backend and providers:
+
+```bash
+make init
+```
+
+5. Preview planned infrastructure changes:
+
+```bash
+make plan
+```
+
+6. Deploy infrastructure and Lambda packages:
+
+```bash
+make deploy
+```
+
+7. (Optional) Run Step Functions manually or wait for the daily scheduled EventBridge trigger:
+
+   - You can start an execution of the deployed Step Function via the AWS Console or AWS CLI.
+   - Otherwise, the pipeline runs automatically daily as configured by EventBridge.
+
+8. Tear down all deployed resources:
+
+```bash
+make destroy # optional but recommended to save costs when you're done.
+```
+
+9. (Optional) Clean up local build artifacts and Terraform state:
+
+```bash
+make clean
+```
 
 ## 🚀 Future Improvements
 
-- Add CI/CD deployment with GitHub Actions
+- Use a more rich data source.
+- Add CI/CD with GitHub Actions.
+- Introduce parameterization for environment-specific deployments (dev, staging, prod).

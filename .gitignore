@@ -6,7 +6,7 @@
 *.tfstate.*
 
 # Terraform plan output (binary)
-*.tfplan 
+tfplan 
 
 # Backup files created by Terraform
 *.backup
