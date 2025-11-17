@@ -21,7 +21,7 @@ with Diagram(
     filename=str(DIAGRAMS_DIR / "cloud-architecture"),
     show=False,
     direction="LR",
-    graph_attr={"size": "12,8"}
+    graph_attr={"size": "16,10", "dpi": "240"},
 ):
     # External factors
     dev = Custom("Developer", str(ICONS_DIR / "dev.jpg"))

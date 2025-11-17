@@ -15,7 +15,7 @@ with Diagram(
     filename=str(DIAGRAMS_DIR / "dev-workflow"),
     show=False,
     direction="LR",
-    graph_attr={"size": "12,8"},
+    graph_attr={"size": "16,10", "dpi": "120"},
 ):
     # Developer environment
     dev = Custom("Developer", str(ICONS_DIR / "dev.jpg"))
