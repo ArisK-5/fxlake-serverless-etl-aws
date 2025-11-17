@@ -26,7 +26,7 @@ with Diagram(
     # External factors
     dev = Custom("Developer", str(ICONS_DIR / "dev.jpg"))
     api_source = APIService("Frankfurter API")
-    terraform = Terraform("(Infrastructure as Code)")
+    terraform = Terraform("")
 
     with Cluster("AWS Cloud"):
         aws_cloud = Custom(
@@ -35,24 +35,24 @@ with Diagram(
         terraform >> Edge(label="provision") >> aws_cloud  # Provision AWS resources
 
         with Cluster("Orchestration"):
-            step_function = StepFunctions("Step Functions\n(Workflow Orchestration)")
-            eventbridge = Eventbridge("EventBridge\n(Event Routing)")
+            step_function = StepFunctions("Step Functions")
+            eventbridge = Eventbridge("EventBridge")
 
         with Cluster("ETL Pipeline"):
-            lambda_function = Lambda("Lambda\n(Serverless Compute)")
-            glue = Glue("Glue\n(ETL Service)")
-            athena = Athena("Athena\n(Query Service)")
+            lambda_function = Lambda("Lambda")
+            glue = Glue("Glue)")
+            athena = Athena("Athena")
 
         with Cluster("Data Lake"):
-            s3_raw = S3("S3 Raw Bucket\n(Raw Data)")
-            s3_processed = S3("S3 Processed Bucket\n(Processed Data)")
-            s3_athena_results = S3("S3 Athena Results\n(Sample Queries)")
+            s3_raw = S3("S3 Raw Bucket")
+            s3_processed = S3("S3 Processed Bucket")
+            s3_athena_results = S3("S3 Athena Results")
 
         with Cluster("Monitoring & Security"):
-            cloudwatch = Cloudwatch("CloudWatch\n(Monitoring)")
-            cloudtrail = Cloudtrail("CloudTrail\n(Audit Logs)")
-            iam = IAM("IAM\n(Access Management)")
-            sns = SNS("SNS\n(Notification Service)")
+            cloudwatch = Cloudwatch("CloudWatch")
+            cloudtrail = Cloudtrail("CloudTrail")
+            iam = IAM("IAM")
+            sns = SNS("SNS")
             cloudwatch_dashboard = Custom(
                 "Monitoring Dashboard", str(ICONS_DIR / "dashboard.png")
             )

@@ -19,9 +19,9 @@ with Diagram(
 ):
     # Developer environment
     dev = Custom("Developer", str(ICONS_DIR / "dev.jpg"))
-    git = Git("Git\n(Version Control)")
-    github = Github("GitHub\n(Repository Hosting)")
-    terraform = Terraform("(Infrastructure as Code)")
+    git = Git("Git")
+    github = Github("GitHub")
+    terraform = Terraform("")
 
     dev >> Edge(label="Develop") >> git  # Developer pushes to version control
 
