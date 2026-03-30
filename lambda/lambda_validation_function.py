@@ -4,8 +4,8 @@ import os
 
 import boto3
 
-NAMESPACE = os.getenv("METRIC_NAMESPACE")
-PIPELINE = os.getenv("PIPELINE")
+NAMESPACE = os.environ["METRIC_NAMESPACE"]
+PIPELINE = os.environ["PIPELINE"]
 
 athena = boto3.client("athena")
 cloudwatch = boto3.client("cloudwatch")

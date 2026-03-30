@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,16 +38,19 @@ class TestPublishCustomMetric:
         metric = call_kwargs["MetricData"][0]
         assert metric["MetricName"] == "EmptyQueryResults"
         assert metric["Value"] == 1
+        assert metric["Unit"] == "Count"
         dims = {d["Name"]: d["Value"] for d in metric["Dimensions"]}
         assert dims["WorkGroup"] == "fxlake"
         assert dims["Pipeline"] == "fxlake-etl-test"
 
-    def test_does_not_raise_on_cloudwatch_error(self):
+    def test_does_not_raise_on_cloudwatch_error(self, caplog):
         mock_cw = MagicMock()
         mock_cw.put_metric_data.side_effect = Exception("CW error")
-        with patch.object(validation, "cloudwatch", mock_cw):
-            # Should log but not raise
-            validation.publish_custom_metric(0, "fxlake")
+        with caplog.at_level(logging.ERROR):
+            with patch.object(validation, "cloudwatch", mock_cw):
+                validation.publish_custom_metric(0, "fxlake")
+
+        assert "Failed to publish metric" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +72,6 @@ class TestLambdaHandler:
         assert result["rows"] == 5
         assert result["is_empty"] is False
         assert result["status"] == "SUCCEEDED"
-
-        # EmptyQueryResults metric should be 0 (not empty)
         metric_val = mock_cw.put_metric_data.call_args[1]["MetricData"][0]["Value"]
         assert metric_val == 0
 
@@ -88,8 +90,6 @@ class TestLambdaHandler:
         assert result["rows"] == 0
         assert result["is_empty"] is True
         assert result["status"] == "FAILED"
-
-        # EmptyQueryResults metric should be 1 (empty)
         metric_val = mock_cw.put_metric_data.call_args[1]["MetricData"][0]["Value"]
         assert metric_val == 1
 
@@ -105,6 +105,23 @@ class TestLambdaHandler:
                     {"QueryExecutionId": "abc-123"}, None
                 )
 
+    @pytest.mark.parametrize("state", ["RUNNING", "QUEUED"])
+    def test_non_terminal_state_raises(self, state):
+        mock_athena = MagicMock()
+        mock_athena.get_query_execution.return_value = _make_execution_response(
+            state=state
+        )
+
+        with patch.object(validation, "athena", mock_athena):
+            with pytest.raises(RuntimeError, match="did not succeed"):
+                validation.lambda_handler(
+                    {"QueryExecutionId": "abc-123"}, None
+                )
+
     def test_missing_execution_id_raises(self):
         with pytest.raises(ValueError, match="Missing QueryExecutionId"):
             validation.lambda_handler({}, None)
+
+    def test_none_execution_id_raises(self):
+        with pytest.raises(ValueError, match="Missing QueryExecutionId"):
+            validation.lambda_handler({"QueryExecutionId": None}, None)

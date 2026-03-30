@@ -79,6 +79,15 @@ The pipeline is orchestrated by **Step Functions** and runs on a daily **EventBr
 - **Athena results:** `results/` (1-day TTL)
 - **CloudTrail logs:** `AWSLogs/{account-id}/...`
 
-## No Tests
+## Tests
 
-There is no test suite. Pipeline correctness is validated at runtime by the Validation Lambda (Athena row count check) and the CloudWatch alarms.
+Tests live in `tests/` and use pytest + moto v5 + responses.
+
+```bash
+uv run pytest tests/ -v              # Run all tests
+uv run pytest tests/test_lambda_ingestion.py -v  # Single file
+```
+
+- `awsglue.utils` is mocked in `conftest.py` via `sys.modules` before any import of `glue_transform`
+- Module-level env vars are set in `conftest.py` before Lambda modules are imported
+- `s3_mock` fixture activates `mock_aws()` and creates both S3 buckets

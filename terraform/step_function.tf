@@ -21,7 +21,8 @@ resource "aws_sfn_state_machine" "etl" {
         Catch = [
           {
             ErrorEquals = ["States.ALL"],
-            Next        = "Ingestion-Failed"
+            Next        = "Ingestion-Failed",
+            ResultPath  = "$.errorInfo"
           }
         ],
         Next = "Glue-JSON-to-Parquet"
@@ -33,16 +34,17 @@ resource "aws_sfn_state_machine" "etl" {
         TimeoutSeconds = 180,
         Retry = [
           {
-            ErrorEquals     = ["States.TaskFailed"],
+            ErrorEquals     = ["Glue.ConcurrentRunsExceededException", "States.HeartbeatTimeout"],
             IntervalSeconds = 10,
-            MaxAttempts     = 1,
-            BackoffRate     = 1.0
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
           }
         ],
         Catch = [
           {
             ErrorEquals = ["States.ALL"],
-            Next        = "Transform-Failed"
+            Next        = "Transform-Failed",
+            ResultPath  = "$.errorInfo"
           }
         ],
         Next = "Athena-Sample-Query"
@@ -51,7 +53,7 @@ resource "aws_sfn_state_machine" "etl" {
         Type     = "Task",
         Resource = "arn:aws:states:::athena:startQueryExecution.sync",
         Parameters = {
-          QueryString = "SELECT * FROM exchange_rates LIMIT 100;", # sample query
+          QueryString = "SELECT * FROM exchange_rates LIMIT 100;",
           QueryExecutionContext = {
             Database = aws_glue_catalog_database.fxlake.name
           },
@@ -77,7 +79,8 @@ resource "aws_sfn_state_machine" "etl" {
         Catch = [
           {
             ErrorEquals = ["States.ALL"],
-            Next        = "Query-Failed"
+            Next        = "Query-Failed",
+            ResultPath  = "$.errorInfo"
           }
         ],
         Next = "Lambda-Validation-Query"
@@ -103,30 +106,31 @@ resource "aws_sfn_state_machine" "etl" {
         Catch = [
           {
             ErrorEquals = ["States.ALL"],
-            Next        = "Validation-Failed"
+            Next        = "Validation-Failed",
+            ResultPath  = "$.errorInfo"
           }
         ],
         End = true
       },
       Ingestion-Failed = {
-        Type  = "Fail",
-        Error = "IngestionError",
-        Cause = "Lambda ingestion failed: unable to fetch exchange rates from API or write to S3 raw bucket."
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
       },
       Transform-Failed = {
-        Type  = "Fail",
-        Error = "TransformError",
-        Cause = "Glue transform job failed: unable to process raw JSON and write Parquet to the processed S3 bucket."
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
       },
       Query-Failed = {
-        Type  = "Fail",
-        Error = "AthenaQueryError",
-        Cause = "Athena query execution failed: unable to run sample query against the processed exchange rates table."
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
       },
       Validation-Failed = {
-        Type  = "Fail",
-        Error = "ValidationError",
-        Cause = "Validation Lambda failed: unable to verify Athena query results or publish CloudWatch metric."
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
       }
     }
   })

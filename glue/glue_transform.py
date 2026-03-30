@@ -8,6 +8,7 @@ import boto3
 import polars as pl
 import pyarrow.parquet as pq
 from awsglue.utils import getResolvedOptions
+from botocore.exceptions import ClientError
 
 # -----------------------------
 # Parameters
@@ -57,7 +58,7 @@ def list_json_keys(bucket: str) -> List[str]:
                 ]
             )
         return keys
-    except Exception:
+    except ClientError:
         logger.error(f"Failed to list JSON keys in {bucket}", exc_info=True)
         raise
 
@@ -67,15 +68,18 @@ def process_key(key: str) -> str:
         obj = s3.get_object(Bucket=raw_bucket, Key=key)
         payload = json.load(obj["Body"])
 
-        base = payload.get("base")
+        base = payload["base"]
         rates = payload.get("rates", {})
 
-        # Flatten with list comprehension
+        # One row per (date, target_currency) pair
         rows = [
             {"base_currency": base, "target_currency": tgt, "rate": rate, "date": dt}
             for dt, daily_rates in rates.items()
             for tgt, rate in daily_rates.items()
         ]
+
+        if not rows:
+            logger.warning(f"No rates found in {key}, writing empty file")
 
         df = pl.DataFrame(rows)
 

@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 import requests
 import responses
+from botocore.exceptions import ClientError
 
 import lambda_ingestion_function as ingestion
 
@@ -34,14 +35,22 @@ class TestFetchExchangeRates:
         assert "2024-01-02" in result["rates"]
 
     @responses.activate
+    def test_base_currency_param_sent(self):
+        responses.add(responses.GET, API_URL, json=SAMPLE_API_RESPONSE, status=200)
+
+        ingestion.fetch_exchange_rates()
+
+        assert "base=EUR" in responses.calls[0].request.url
+
+    @responses.activate
     def test_api_timeout(self):
         responses.add(
             responses.GET,
             API_URL,
-            body=requests.exceptions.ConnectionError("Connection timed out"),
+            body=requests.exceptions.Timeout("Request timed out"),
         )
 
-        with pytest.raises(requests.exceptions.ConnectionError):
+        with pytest.raises(requests.exceptions.Timeout):
             ingestion.fetch_exchange_rates()
 
     @responses.activate
@@ -65,14 +74,17 @@ class TestSaveToS3:
         body = json.loads(obj["Body"].read())
         assert body == SAMPLE_API_RESPONSE
         assert obj["ContentType"] == "application/json"
+        assert obj["Metadata"]["start_date"] == "2024-01-01"
+        assert obj["Metadata"]["end_date"] == "2024-01-31"
         assert obj["Metadata"]["base_currency"] == "EUR"
         assert obj["Metadata"]["source"] == "frankfurter"
 
     def test_s3_write_failure(self, s3_mock):
+        error_response = {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}
         with patch.object(ingestion, "S3") as mock_s3:
-            mock_s3.put_object.side_effect = Exception("Access Denied")
+            mock_s3.put_object.side_effect = ClientError(error_response, "PutObject")
 
-            with pytest.raises(Exception, match="Access Denied"):
+            with pytest.raises(ClientError):
                 ingestion.save_to_s3(SAMPLE_API_RESPONSE)
 
 

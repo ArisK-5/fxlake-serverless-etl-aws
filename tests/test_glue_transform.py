@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 
 import boto3
 import polars as pl
@@ -71,6 +72,19 @@ class TestProcessKeyParquet:
 
         assert out_key == "exchange_rates/rates.parquet"
 
+    def test_prefixed_key_strips_prefix(self, s3_mock):
+        _put_json(s3_mock, "prefix/rates.json", SAMPLE_RATES_JSON)
+
+        out_key = glue_transform.process_key("prefix/rates.json")
+
+        assert out_key == "exchange_rates/rates.parquet"
+        df = _read_parquet_from_s3(s3_mock, "exchange_rates/rates.parquet")
+        assert df.shape == (4, 4)
+
+    def test_missing_key_raises(self, s3_mock):
+        with pytest.raises(Exception):
+            glue_transform.process_key("nonexistent.json")
+
 
 # ---------------------------------------------------------------------------
 # process_key() — CSV output
@@ -92,10 +106,13 @@ class TestProcessKeyCSV:
 # process_key() — empty input
 # ---------------------------------------------------------------------------
 class TestProcessKeyEmpty:
-    def test_empty_rates(self, s3_mock):
+    def test_empty_rates(self, s3_mock, caplog):
         _put_json(s3_mock, "empty.json", {"base": "EUR", "rates": {}})
 
-        glue_transform.process_key("empty.json")
+        with caplog.at_level(logging.WARNING):
+            glue_transform.process_key("empty.json")
+
+        assert "No rates found" in caplog.text
 
         # Empty DataFrame produces a valid but empty Parquet file
         df = _read_parquet_from_s3(s3_mock, "exchange_rates/empty.parquet")
@@ -119,3 +136,11 @@ class TestListJsonKeys:
         keys = glue_transform.list_json_keys("test-raw-bucket")
 
         assert keys == []
+
+    def test_lists_multiple_files(self, s3_mock):
+        for i in range(5):
+            _put_json(s3_mock, f"file{i}.json", {})
+
+        keys = glue_transform.list_json_keys("test-raw-bucket")
+
+        assert len(keys) == 5

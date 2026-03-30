@@ -4,6 +4,7 @@ import os
 
 import boto3
 import requests
+from botocore.exceptions import ClientError
 
 RAW_BUCKET = os.environ["RAW_BUCKET"]
 START_DATE = os.environ["START_DATE"]
@@ -35,12 +36,13 @@ def fetch_exchange_rates():
 def save_to_s3(data):
     """Save data to S3 with proper naming"""
     filename = f"exchange_rates_{BASE_CURRENCY}_{START_DATE}_to_{END_DATE}.json"
+    body = json.dumps(data)
 
     try:
         S3.put_object(
             Bucket=RAW_BUCKET,
             Key=filename,
-            Body=json.dumps(data),
+            Body=body,
             ContentType="application/json",
             Metadata={
                 "start_date": START_DATE,
@@ -51,25 +53,20 @@ def save_to_s3(data):
         )
         logger.debug(f"Saved exchange rates data to S3 as {filename}")
         return filename
-    except Exception as e:
+    except ClientError as e:
         logger.error(f"Error saving to S3: {str(e)}")
         raise
 
 
 def lambda_handler(event, context):
-    try:
-        data = fetch_exchange_rates()
-        filename = save_to_s3(data)
-        logger.info(f"Lambda ingestion succeeded, saved file: {filename}")
+    data = fetch_exchange_rates()
+    filename = save_to_s3(data)
+    logger.info(f"Lambda ingestion succeeded, saved file: {filename}")
 
-        return {
-            "status": "ok",
-            "key": filename,
-            "start_date": START_DATE,
-            "end_date": END_DATE,
-            "base": BASE_CURRENCY,
-        }
-
-    except Exception as e:
-        logger.error(f"Error in lambda execution: {str(e)}")
-        raise
+    return {
+        "status": "ok",
+        "key": filename,
+        "start_date": START_DATE,
+        "end_date": END_DATE,
+        "base": BASE_CURRENCY,
+    }
