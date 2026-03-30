@@ -12,7 +12,7 @@ resource "aws_sfn_state_machine" "etl" {
         TimeoutSeconds = 30,
         Retry = [
           {
-            ErrorEquals     = ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
             IntervalSeconds = 3,
             MaxAttempts     = 2,
             BackoffRate     = 2.0
@@ -70,7 +70,7 @@ resource "aws_sfn_state_machine" "etl" {
         TimeoutSeconds = 90,
         Retry = [
           {
-            ErrorEquals     = ["States.TaskFailed"],
+            ErrorEquals     = ["Athena.InternalServerException", "Athena.TooManyRequestsException"],
             IntervalSeconds = 5,
             MaxAttempts     = 2,
             BackoffRate     = 2.0

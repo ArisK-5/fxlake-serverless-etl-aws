@@ -32,6 +32,7 @@ def publish_custom_metric(value, workgroup):
         )
         logger.info(f"Published metric EmptyQueryResults={value} to {NAMESPACE}")
     except Exception as e:
+        # Metric failure must not crash the handler — log and continue
         logger.error(f"Failed to publish metric: {e}")
 
 

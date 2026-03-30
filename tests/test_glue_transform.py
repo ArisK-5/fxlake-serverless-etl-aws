@@ -2,11 +2,10 @@ import io
 import json
 import logging
 
-import boto3
 import polars as pl
 import pyarrow.parquet as pq
 import pytest
-from moto import mock_aws
+from botocore.exceptions import ClientError
 
 import glue_transform
 
@@ -82,8 +81,14 @@ class TestProcessKeyParquet:
         assert df.shape == (4, 4)
 
     def test_missing_key_raises(self, s3_mock):
-        with pytest.raises(Exception):
+        with pytest.raises(ClientError):
             glue_transform.process_key("nonexistent.json")
+
+    def test_missing_base_field_raises(self, s3_mock):
+        _put_json(s3_mock, "no_base.json", {"rates": {"2024-01-02": {"USD": 1.1}}})
+
+        with pytest.raises(KeyError):
+            glue_transform.process_key("no_base.json")
 
 
 # ---------------------------------------------------------------------------
