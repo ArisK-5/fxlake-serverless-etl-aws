@@ -1,0 +1,25 @@
+[project]
+name = "fxlake-serverless-etl-aws"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.40.72",
+    "diagrams>=0.24.4",
+    "pandas>=2.3.3",
+    "tree>=0.2.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "moto[s3,cloudwatch,athena]>=5.0",
+    "responses>=0.25",
+    "polars>=0.18.8",
+    "pyarrow>=14.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["lambda", "glue"]

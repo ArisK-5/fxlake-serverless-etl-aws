@@ -10,14 +10,42 @@ resource "aws_sfn_state_machine" "etl" {
         Resource       = "arn:aws:states:::lambda:invoke",
         Parameters     = { FunctionName = aws_lambda_function.api_ingest.arn },
         TimeoutSeconds = 30,
-        Next           = "Glue-JSON-to-Parquet"
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 3,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Ingestion-Failed"
+          }
+        ],
+        Next = "Glue-JSON-to-Parquet"
       },
       Glue-JSON-to-Parquet = {
         Type           = "Task",
         Resource       = "arn:aws:states:::glue:startJobRun.sync",
         Parameters     = { JobName = aws_glue_job.transform.name },
         TimeoutSeconds = 180,
-        Next           = "Athena-Sample-Query"
+        Retry = [
+          {
+            ErrorEquals     = ["States.TaskFailed"],
+            IntervalSeconds = 10,
+            MaxAttempts     = 1,
+            BackoffRate     = 1.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Transform-Failed"
+          }
+        ],
+        Next = "Athena-Sample-Query"
       },
       Athena-Sample-Query = {
         Type     = "Task",
@@ -38,7 +66,21 @@ resource "aws_sfn_state_machine" "etl" {
           }
         },
         TimeoutSeconds = 90,
-        Next           = "Lambda-Validation-Query"
+        Retry = [
+          {
+            ErrorEquals     = ["States.TaskFailed"],
+            IntervalSeconds = 5,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Query-Failed"
+          }
+        ],
+        Next = "Lambda-Validation-Query"
       },
       Lambda-Validation-Query = {
         Type     = "Task",
@@ -50,7 +92,41 @@ resource "aws_sfn_state_machine" "etl" {
           }
         },
         TimeoutSeconds = 30,
-        End            = true
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 3,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Validation-Failed"
+          }
+        ],
+        End = true
+      },
+      Ingestion-Failed = {
+        Type  = "Fail",
+        Error = "IngestionError",
+        Cause = "Lambda ingestion failed: unable to fetch exchange rates from API or write to S3 raw bucket."
+      },
+      Transform-Failed = {
+        Type  = "Fail",
+        Error = "TransformError",
+        Cause = "Glue transform job failed: unable to process raw JSON and write Parquet to the processed S3 bucket."
+      },
+      Query-Failed = {
+        Type  = "Fail",
+        Error = "AthenaQueryError",
+        Cause = "Athena query execution failed: unable to run sample query against the processed exchange rates table."
+      },
+      Validation-Failed = {
+        Type  = "Fail",
+        Error = "ValidationError",
+        Cause = "Validation Lambda failed: unable to verify Athena query results or publish CloudWatch metric."
       }
     }
   })
