@@ -54,6 +54,17 @@ class TestFetchExchangeRates:
             ingestion.fetch_exchange_rates()
 
     @responses.activate
+    def test_api_connection_error(self):
+        responses.add(
+            responses.GET,
+            API_URL,
+            body=requests.exceptions.ConnectionError("DNS resolution failed"),
+        )
+
+        with pytest.raises(requests.exceptions.ConnectionError):
+            ingestion.fetch_exchange_rates()
+
+    @responses.activate
     def test_api_http_error(self):
         responses.add(responses.GET, API_URL, json={"error": "not found"}, status=404)
 
@@ -79,7 +90,7 @@ class TestSaveToS3:
         assert obj["Metadata"]["base_currency"] == "EUR"
         assert obj["Metadata"]["source"] == "frankfurter"
 
-    def test_s3_write_failure(self, s3_mock):
+    def test_s3_write_failure(self):
         error_response = {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}
         with patch.object(ingestion, "S3") as mock_s3:
             mock_s3.put_object.side_effect = ClientError(error_response, "PutObject")

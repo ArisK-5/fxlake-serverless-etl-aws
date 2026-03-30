@@ -2,6 +2,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 import lambda_validation_function as validation
 
@@ -24,6 +25,12 @@ def _make_results_response(data_row_count: int):
     return {"ResultSet": {"Rows": rows}}
 
 
+def _make_client_error(code="InternalError", message="error"):
+    return ClientError(
+        {"Error": {"Code": code, "Message": message}}, "TestOperation"
+    )
+
+
 # ---------------------------------------------------------------------------
 # publish_custom_metric()
 # ---------------------------------------------------------------------------
@@ -43,14 +50,21 @@ class TestPublishCustomMetric:
         assert dims["WorkGroup"] == "fxlake"
         assert dims["Pipeline"] == "fxlake-etl-test"
 
-    def test_does_not_raise_on_cloudwatch_error(self, caplog):
+    def test_does_not_raise_on_cloudwatch_client_error(self, caplog):
         mock_cw = MagicMock()
-        mock_cw.put_metric_data.side_effect = Exception("CW error")
+        mock_cw.put_metric_data.side_effect = _make_client_error()
         with caplog.at_level(logging.ERROR):
             with patch.object(validation, "cloudwatch", mock_cw):
                 validation.publish_custom_metric(0, "fxlake")
 
-        assert "Failed to publish metric" in caplog.text
+        assert "Failed to publish EmptyQueryResults metric" in caplog.text
+
+    def test_non_client_error_propagates(self):
+        mock_cw = MagicMock()
+        mock_cw.put_metric_data.side_effect = TypeError("bad value")
+        with patch.object(validation, "cloudwatch", mock_cw):
+            with pytest.raises(TypeError, match="bad value"):
+                validation.publish_custom_metric(0, "fxlake")
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +128,31 @@ class TestLambdaHandler:
 
         with patch.object(validation, "athena", mock_athena):
             with pytest.raises(RuntimeError, match="did not succeed"):
+                validation.lambda_handler(
+                    {"QueryExecutionId": "abc-123"}, None
+                )
+
+    def test_get_query_execution_client_error_raises(self):
+        mock_athena = MagicMock()
+        mock_athena.get_query_execution.side_effect = _make_client_error(
+            "InvalidRequestException", "Query not found"
+        )
+
+        with patch.object(validation, "athena", mock_athena):
+            with pytest.raises(ClientError):
+                validation.lambda_handler(
+                    {"QueryExecutionId": "bad-id"}, None
+                )
+
+    def test_get_query_results_client_error_raises(self):
+        mock_athena = MagicMock()
+        mock_athena.get_query_execution.return_value = _make_execution_response()
+        mock_athena.get_query_results.side_effect = _make_client_error(
+            "AccessDeniedException", "Not authorized"
+        )
+
+        with patch.object(validation, "athena", mock_athena):
+            with pytest.raises(ClientError):
                 validation.lambda_handler(
                     {"QueryExecutionId": "abc-123"}, None
                 )

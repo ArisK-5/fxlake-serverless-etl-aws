@@ -1,6 +1,9 @@
+import importlib
 import io
 import json
 import logging
+import sys
+from unittest.mock import MagicMock
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -149,3 +152,59 @@ class TestListJsonKeys:
         keys = glue_transform.list_json_keys("test-raw-bucket")
 
         assert len(keys) == 5
+
+    def test_nonexistent_bucket_raises_client_error(self, s3_mock):
+        with pytest.raises(ClientError):
+            glue_transform.list_json_keys("nonexistent-bucket")
+
+
+# ---------------------------------------------------------------------------
+# main()
+# ---------------------------------------------------------------------------
+class TestMain:
+    def test_processes_all_files(self, s3_mock):
+        _put_json(s3_mock, "a.json", SAMPLE_RATES_JSON)
+        _put_json(s3_mock, "b.json", SAMPLE_RATES_JSON)
+
+        glue_transform.main()
+
+        df_a = _read_parquet_from_s3(s3_mock, "exchange_rates/a.parquet")
+        df_b = _read_parquet_from_s3(s3_mock, "exchange_rates/b.parquet")
+        assert df_a.shape == (4, 4)
+        assert df_b.shape == (4, 4)
+
+    def test_reraises_on_bad_file(self, s3_mock):
+        _put_json(s3_mock, "good.json", SAMPLE_RATES_JSON)
+        s3_mock.put_object(
+            Bucket="test-raw-bucket", Key="bad.json", Body=b"not json"
+        )
+
+        with pytest.raises(Exception):
+            glue_transform.main()
+
+
+# ---------------------------------------------------------------------------
+# Module-level OUTPUT_FORMAT guard
+# ---------------------------------------------------------------------------
+class TestOutputFormatGuard:
+    def test_invalid_output_format_raises(self):
+        mock = MagicMock()
+        mock.getResolvedOptions.return_value = {
+            "RAW_BUCKET": "test-raw-bucket",
+            "PROCESSED_BUCKET": "test-processed-bucket",
+            "OUTPUT_FORMAT": "xml",
+            "LOG_LEVEL": "INFO",
+        }
+        sys.modules["awsglue.utils"] = mock
+
+        with pytest.raises(ValueError, match="OUTPUT_FORMAT must be either"):
+            importlib.reload(glue_transform)
+
+        # Restore valid config so other tests aren't affected
+        mock.getResolvedOptions.return_value = {
+            "RAW_BUCKET": "test-raw-bucket",
+            "PROCESSED_BUCKET": "test-processed-bucket",
+            "OUTPUT_FORMAT": "parquet",
+            "LOG_LEVEL": "INFO",
+        }
+        importlib.reload(glue_transform)
