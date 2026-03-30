@@ -29,6 +29,13 @@ def fetch_exchange_rates() -> dict:
         resp.raise_for_status()
         logger.debug("Successfully fetched exchange rates from API")
         return resp.json()
+    except json.JSONDecodeError as e:
+        logger.error(
+            f"API returned non-JSON response from {api_url}: "
+            f"status={resp.status_code}, body={resp.text[:200]}",
+            exc_info=True,
+        )
+        raise
     except requests.exceptions.Timeout as e:
         logger.error(f"Timeout fetching {api_url}: {e}")
         raise

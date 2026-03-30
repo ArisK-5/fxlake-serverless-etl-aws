@@ -33,12 +33,11 @@ def publish_custom_metric(value: int, workgroup: str) -> None:
             ],
         )
         logger.info(f"Published metric EmptyQueryResults={value} to {NAMESPACE}")
-    except ClientError as e:
+    except Exception as e:
         # CloudWatch is non-critical; metric failure must not abort validation
         logger.error(
             f"Failed to publish EmptyQueryResults metric to {NAMESPACE} "
-            f"(workgroup={workgroup}, value={value}): "
-            f"{e.response['Error']['Code']}",
+            f"(workgroup={workgroup}, value={value}): {type(e).__name__}: {e}",
             exc_info=True,
         )
 

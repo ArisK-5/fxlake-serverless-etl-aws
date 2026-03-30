@@ -59,12 +59,14 @@ class TestPublishCustomMetric:
 
         assert "Failed to publish EmptyQueryResults metric" in caplog.text
 
-    def test_non_client_error_propagates(self):
+    def test_non_client_error_does_not_propagate(self, caplog):
         mock_cw = MagicMock()
         mock_cw.put_metric_data.side_effect = TypeError("bad value")
-        with patch.object(validation, "cloudwatch", mock_cw):
-            with pytest.raises(TypeError, match="bad value"):
+        with caplog.at_level(logging.ERROR):
+            with patch.object(validation, "cloudwatch", mock_cw):
                 validation.publish_custom_metric(0, "fxlake")
+
+        assert "TypeError: bad value" in caplog.text
 
 
 # ---------------------------------------------------------------------------

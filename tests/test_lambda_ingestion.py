@@ -65,6 +65,13 @@ class TestFetchExchangeRates:
             ingestion.fetch_exchange_rates()
 
     @responses.activate
+    def test_api_non_json_response(self):
+        responses.add(responses.GET, API_URL, body="<html>error</html>", status=200)
+
+        with pytest.raises(requests.exceptions.JSONDecodeError):
+            ingestion.fetch_exchange_rates()
+
+    @responses.activate
     def test_api_http_error(self):
         responses.add(responses.GET, API_URL, json={"error": "not found"}, status=404)
 
