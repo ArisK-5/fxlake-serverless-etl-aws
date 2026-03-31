@@ -284,3 +284,30 @@ class TestLambdaHandlerIncremental:
         # START_DATE is 2024-01-01, so fetch starts from 2024-01-02
         assert result["status"] == "ok"
         assert result["start_date"] == "2024-01-02"
+
+    @responses.activate
+    def test_state_not_updated_on_fetch_failure(self, aws_mock):
+        """DynamoDB state must remain unchanged when the API fetch fails."""
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-14"},
+            },
+        )
+        fetch_url = "https://api.frankfurter.app/2024-01-15..2024-01-31"
+        responses.add(responses.GET, fetch_url, json={"error": "server error"}, status=500)
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ):
+            with pytest.raises(requests.exceptions.HTTPError):
+                ingestion.lambda_handler({}, None)
+
+        # State must be unchanged — DynamoDB should still hold the pre-failure date
+        item = aws_mock["dynamodb"].get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-14"

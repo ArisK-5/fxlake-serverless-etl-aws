@@ -110,7 +110,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 45 tests, 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 46 tests, 97% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests

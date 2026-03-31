@@ -146,7 +146,7 @@ def _incremental_ingest() -> dict:
     last_processed = get_last_processed_date()
     fetch_start = (date.fromisoformat(last_processed) + timedelta(days=1)).isoformat()
     today = date.today().isoformat()
-    fetch_end = min(today, END_DATE)
+    fetch_end = min(today, END_DATE)  # ISO format: string comparison == date comparison
 
     if fetch_start > fetch_end:
         logger.info(

@@ -367,6 +367,20 @@ After completing, update:
 - docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
+#### Post-review fixes (2026-03-31)
+
+**Status:** ✅ COMPLETED (2026-03-31)
+
+Three issues from PR #11 review were addressed before merge:
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| HIGH | `TimeoutSeconds = 30` < Lambda timeout 60s in `step_function.tf` | Changed to `90` (60s Lambda + buffer) |
+| MEDIUM | Missing test: DynamoDB not updated when API fetch fails | Added `test_state_not_updated_on_fetch_failure` to `TestLambdaHandlerIncremental` |
+| LOW | `min(today, END_DATE)` string comparison needs explanation | Added inline comment: `# ISO format: string comparison == date comparison` |
+
+**Test count after fixes:** 46 (was 45) — all passing.
+
 ---
 
 ### Day 3-4: Multi-Source Ingestion

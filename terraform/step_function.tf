@@ -9,7 +9,7 @@ resource "aws_sfn_state_machine" "etl" {
         Type           = "Task",
         Resource       = "arn:aws:states:::lambda:invoke",
         Parameters     = { FunctionName = aws_lambda_function.api_ingest.arn },
-        TimeoutSeconds = 30,
+        TimeoutSeconds = 90,
         Retry = [
           {
             ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],

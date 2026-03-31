@@ -252,6 +252,12 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Decision:** Choice state checks `$.Payload.status == "no_new_data"` to route to `Pipeline-Already-Up-To-Date` (Succeed); default continues to Glue.
 **Rationale:** Using the Payload envelope is the standard Step Functions pattern for Lambda invocations. The Succeed state (not End) correctly marks the execution as successful — "no new data" is not a failure.
 
+### D25: Step Functions Lambda state TimeoutSeconds set to 90s
+
+**Context:** `Lambda-API-Ingestion` state had `TimeoutSeconds = 30`, which is less than the Lambda function's own `timeout = 60s`. If the Lambda ran for 40–60 seconds, Step Functions would abort it with `States.Timeout` before it could complete.
+**Decision:** Set `TimeoutSeconds = 90` (60s Lambda timeout + 30s buffer for Step Functions overhead and cold start).
+**Rationale:** The Step Functions timeout must always exceed the Lambda timeout. A 30s Step Functions timeout on a 60s Lambda is a guaranteed failure for slow API responses. Buffer of 30s accounts for cold starts and SDK retry jitter.
+
 ### D20: Test coverage significantly exceeded plan
 
 **Context:** Day 1 planned ~20 tests with 80%+ coverage as nice-to-have.
