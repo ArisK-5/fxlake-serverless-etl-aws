@@ -45,9 +45,9 @@ resource "aws_sfn_state_machine" "etl" {
         Type = "Succeed"
       },
       Glue-JSON-to-Parquet = {
-        Type           = "Task",
-        Resource       = "arn:aws:states:::glue:startJobRun.sync",
-        Parameters     = { JobName = aws_glue_job.transform.name },
+        Type       = "Task",
+        Resource   = "arn:aws:states:::glue:startJobRun.sync",
+        Parameters = { JobName = aws_glue_job.transform.name },
         # ResultPath preserves $.ingestion so Lambda-Update-State can read end_date.
         ResultPath     = "$.glue",
         TimeoutSeconds = 180,
@@ -76,7 +76,7 @@ resource "aws_sfn_state_machine" "etl" {
         Parameters = {
           FunctionName = aws_lambda_function.api_ingest.arn,
           Payload = {
-            "action"    = "update_state",
+            "action"     = "update_state",
             "end_date.$" = "$.ingestion.Payload.end_date"
           }
         },
