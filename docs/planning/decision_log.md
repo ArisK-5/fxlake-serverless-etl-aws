@@ -150,3 +150,41 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 
 **Assessment: VALID.** Migrating 47 resources into modules requires `moved` blocks for each, high risk of destroy+recreate. Current 11 files organized by service domain are already clean. Interviewers don't ask about Terraform modules.
 **Action:** Day 7 reduced to: S3 remote state backend + bootstrap, reusable `modules/lambda_function/` for new sources only. Existing resources untouched. Interview talking point: "I'd migrate the rest in a separate PR with `moved` blocks."
+
+---
+
+## Day 1 Implementation Decisions (2026-03-30)
+
+### D16: Broad `except Exception` justified in `publish_custom_metric`
+
+**Context:** PR review recommended narrowing `except Exception` to `except ClientError` in `publish_custom_metric()`. A follow-up review reversed this.
+**Decision:** Keep `except Exception` — this is the ONE place where broad catching is correct.
+**Rationale:** CloudWatch metric publishing is non-critical. A `BotoCoreError` (connection-level), `EndpointConnectionError`, or even a `TypeError` from bad metric data must NOT crash the validation handler. `ClientError` only covers AWS API errors — it misses the entire `BotoCoreError` hierarchy. The function's explicit purpose is "log and continue regardless."
+**Interview talking point:** "I can explain why every except clause has the scope it has."
+
+### D17: Lambda handler outer try/except restored with structured context
+
+**Context:** First review said to remove the outer `try/except` in `lambda_handler()` (duplicate logging). Third review said removal went too far.
+**Decision:** Restore with `exc_info=True` + structured `extra` context (start_date, end_date, base_currency).
+**Rationale:** Without the outer catch, an unexpected exception between `fetch_exchange_rates()` and `save_to_s3()` would produce zero application-level log context — only a raw Python traceback. The `extra` dict provides structured context for CloudWatch Logs Insights queries.
+
+### D18: Service-specific retry errors in Step Functions
+
+**Context:** Original plan specified generic `States.TaskFailed` for Glue/Athena retries and only `Lambda.ServiceException` + `Lambda.TooManyRequestsException` for Lambda.
+**Decision:** Use service-specific error classes:
+- Lambda: `ServiceException`, `AWSLambdaException`, `TooManyRequestsException`
+- Glue: `ConcurrentRunsExceededException`, `States.HeartbeatTimeout`
+- Athena: `Athena.InternalServerException`, `Athena.TooManyRequestsException`
+**Rationale:** Generic `States.TaskFailed` retries ALL failures including data-level errors (bad JSON, missing field) that will never succeed on retry. Service-specific errors ensure retries only fire on transient infrastructure issues.
+
+### D19: Dynamic `ErrorPath`/`CausePath` in Fail states
+
+**Context:** Original plan specified static `Error`/`Cause` strings on Fail states.
+**Decision:** Use `ErrorPath: "$.errorInfo.Error"` and `CausePath: "$.errorInfo.Cause"` with `ResultPath: "$.errorInfo"` on Catch blocks.
+**Rationale:** Static strings lose the actual error detail. Dynamic paths pass through the real AWS error message, making CloudWatch Events and execution history useful for debugging without checking CloudWatch Logs.
+
+### D20: Test coverage significantly exceeded plan
+
+**Context:** Day 1 planned ~20 tests with 80%+ coverage as nice-to-have.
+**Delivered:** 37 tests, 96% coverage.
+**Reason:** Three rounds of iterative PR review (`/pr-review-toolkit:review-pr`) surfaced edge cases that were genuine gaps, not test padding. Each test covers a real failure mode (non-JSON API response, connection errors vs timeouts, `ClientError` vs `KeyError` distinction, parametrized Athena states). The coverage increase was organic, not targeted.

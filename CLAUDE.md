@@ -53,11 +53,19 @@ The pipeline is orchestrated by **Step Functions** and runs on a daily **EventBr
 3. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
 4. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
 
+### Step Functions Error Handling
+
+Every state has Retry and Catch blocks:
+- **Lambda states**: retry on `Lambda.ServiceException`, `Lambda.AWSLambdaException`, `Lambda.TooManyRequestsException`
+- **Glue state**: retry on `Glue.ConcurrentRunsExceededException`, `States.HeartbeatTimeout`
+- **Athena state**: retry on `Athena.InternalServerException`, `Athena.TooManyRequestsException`
+- **All Catch blocks**: `ResultPath = "$.errorInfo"` preserves the actual error; Fail states use `ErrorPath`/`CausePath` to surface the real cause in execution history
+
 ### Key Terraform Files
 
 | File | What it defines |
 |------|----------------|
-| `step_function.tf` | ASL definition for the 4-stage orchestration |
+| `step_function.tf` | ASL definition for the 4-stage orchestration with Retry/Catch + 4 Fail states |
 | `lambda.tf` | Both Lambda functions + EventBridge daily trigger |
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow dependencies) |
 | `athena.tf` | Athena database, table schema, and results bucket config |
@@ -79,15 +87,41 @@ The pipeline is orchestrated by **Step Functions** and runs on a daily **EventBr
 - **Athena results:** `results/` (1-day TTL)
 - **CloudTrail logs:** `AWSLogs/{account-id}/...`
 
+## Error Handling Patterns
+
+All source files follow these conventions:
+
+- **Module-level config**: `os.environ[]` (not `os.getenv`) — fails fast at cold start if vars are missing
+- **Exception catches are type-specific**: `ClientError` for AWS SDK errors, `Timeout`/`HTTPError`/`ConnectionError` for HTTP, `json.JSONDecodeError`/`KeyError`/`ValueError` for data parsing
+- **All catches re-raise** after logging — no silent swallowing (except `publish_custom_metric` which catches `Exception` because metric failure must not abort validation)
+- **All error logs include context**: bucket names, filenames, API URLs, query IDs, error codes
+- **Type annotations** on all function signatures
+
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses.
+Tests live in `tests/` and use pytest + moto v5 + responses. 37 tests, 96% coverage.
 
 ```bash
-uv run pytest tests/ -v              # Run all tests
-uv run pytest tests/test_lambda_ingestion.py -v  # Single file
+uv run pytest tests/ -v                              # Run all tests
+uv run pytest tests/test_lambda_ingestion.py -v      # Single file
+uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With coverage
 ```
 
-- `awsglue.utils` is mocked in `conftest.py` via `sys.modules` before any import of `glue_transform`
-- Module-level env vars are set in `conftest.py` before Lambda modules are imported
-- `s3_mock` fixture activates `mock_aws()` and creates both S3 buckets
+### Test Setup (conftest.py)
+
+- `awsglue.utils` is mocked in `conftest.py` via `sys.modules` before any import of `glue_transform` — required because `getResolvedOptions` runs at module level
+- Module-level env vars (`RAW_BUCKET`, `START_DATE`, etc.) are set via `os.environ.setdefault` before Lambda modules are imported
+- `s3_mock` fixture activates `mock_aws()` and creates both S3 buckets (`test-raw-bucket`, `test-processed-bucket`)
+
+### Test Coverage
+
+| File | Coverage |
+|------|----------|
+| `lambda/lambda_ingestion_function.py` | 100% |
+| `lambda/lambda_validation_function.py` | 100% |
+| `glue/glue_transform.py` | 92% (uncovered: generic `except Exception` fallthrough in `list_json_keys`/`process_key`, `if __name__` guard) |
+
+## Planning
+
+- `docs/planning/revised_plan.md` — 10-day extension plan with session prompts
+- `docs/planning/decision_log.md` — architectural decisions and trade-offs
