@@ -17,8 +17,9 @@ tfplan
 # Misc files
 *.zip
 main.py
-pyproject.toml
 .python-version
 .venv/
 uv.lock
 .Ds_store
+__pycache__/
+*.py[cod]

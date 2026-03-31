@@ -31,7 +31,36 @@ Each "Day" below is a logical work unit of 5-8 hours, NOT a calendar day. At 2-3
 
 ### Day 1: Foundation — Testing Framework + Step Function Resilience
 
+**Status:** ✅ COMPLETED (2026-03-30)
+**Branch:** `day-01-testing-foundation`
+**PRs:** #9 (→ fxlake-v2-production)
+
 **Rationale:** Tests must exist BEFORE any refactoring. Step Function error handling is quick and prevents cascading failures during development.
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| ~20 unit tests | 37 tests (10 ingestion, 12 validation, 15 transform) | Scope expanded by iterative PR reviews |
+| 80%+ coverage (nice-to-have) | 96% coverage (ingestion 97%, validation 95%, transform 95%) | Exceeded target — reviews drove edge-case tests |
+| Retry/Catch in Step Functions | Retry/Catch + service-specific errors + `ResultPath` + dynamic `ErrorPath`/`CausePath` | See D16-D20 in decision_log.md |
+| No source code changes planned | Error handling hardened across all 3 source files | Unplanned — discovered through 3 rounds of code review |
+| No type annotations planned | Type annotations added to all function signatures | Unplanned — reviewer recommendation |
+| No dependency cleanup planned | Removed spurious `pandas` + `tree` from pyproject.toml (~150MB saved) | Unplanned — reviewer caught unused deps |
+
+#### Key Differences Explained
+
+1. **37 tests vs ~20:** Three rounds of PR review (`/pr-review-toolkit:review-pr`) surfaced missing edge cases (non-JSON API response, connection errors, missing `base` field, `ClientError` specificity, parametrized non-terminal Athena states). Each review round added tests.
+
+2. **Error handling hardening (unplanned):** Reviews revealed issues in production code that should be fixed before building on top of it:
+   - `fetch_exchange_rates()`: `json.JSONDecodeError` fell through all catches (not a `RequestException` subclass)
+   - `save_to_s3()`: bare `except Exception` → narrowed to `ClientError`
+   - `publish_custom_metric()`: `except ClientError` was too narrow for its purpose → widened back to `except Exception` (justified — see D16)
+   - `lambda_handler()`: outer try/except removed then restored with structured context (see D17)
+
+3. **Step Function error classes refined (unplanned):** Generic `States.TaskFailed` replaced with service-specific errors (`Athena.InternalServerException`, `Lambda.AWSLambdaException`, `Glue.ConcurrentRunsExceededException`). See D18-D19.
+
+4. **`importlib.reload` test pattern:** The `TestOutputFormatGuard` test validates module-level config via `importlib.reload(glue_transform)` — must restore valid config after test to avoid affecting other tests.
 
 #### Session 1A: Testing scaffold (morning)
 
@@ -73,6 +102,11 @@ Add a pytest test suite for the FXLake project. Create tests/ directory with:
 Add to pyproject.toml: pytest, moto[s3,cloudwatch,athena], responses as dev dependencies via uv.
 
 Do NOT modify the Glue script's getResolvedOptions usage — mock it in tests.
+
+After completing, update:
+- CLAUDE.md: update Tests section with test count, coverage, and any new patterns
+- docs/planning/revised_plan.md: mark Session 1A complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 #### Session 1B: Step Function Retry/Catch (afternoon)
@@ -104,6 +138,11 @@ Add Retry and Catch blocks to every state in terraform/step_function.tf:
 
 Add the 4 Fail states at the end. Each should have descriptive Error and Cause strings.
 Keep the inline jsonencode() pattern — do NOT extract to a separate ASL JSON file.
+
+After completing, update:
+- CLAUDE.md: update Step Functions section with error handling patterns
+- docs/planning/revised_plan.md: mark Session 1B complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions (e.g., error class choices)
 ```
 
 ---
@@ -149,6 +188,11 @@ Convert the ingestion Lambda from static date range to incremental daily process
 5. Update terraform/step_function.tf: add a Choice state after ingestion that checks for "no_new_data" and skips to End if nothing to process.
 
 6. Update tests to cover the new incremental logic.
+
+After completing, update:
+- CLAUDE.md: update Architecture section with incremental processing details
+- docs/planning/revised_plan.md: mark Session 2A complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 #### Session 2B: S3 partitioning + CI/CD (afternoon)
@@ -205,6 +249,11 @@ Create GitHub Actions CI/CD pipeline:
    - Use OIDC for AWS authentication (add placeholder for role ARN)
 
 Add ruff to pyproject.toml dev dependencies.
+
+After completing, update:
+- CLAUDE.md: update with CI/CD section and S3 partitioning details
+- docs/planning/revised_plan.md: mark Session 2B complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 #### Session 2C: Fix EventBridge Daily Trigger (evening)
@@ -268,6 +317,11 @@ Fix the EventBridge daily trigger to invoke Step Functions instead of Lambda dir
 6. Update any references to the old target name.
 
 CRITICAL: This must be done BEFORE Session 3B (Parallel state), otherwise the daily trigger will still only run the old single Lambda.
+
+After completing, update:
+- CLAUDE.md: update Architecture section with EventBridge → Step Functions change
+- docs/planning/revised_plan.md: mark Session 2C complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 ---
@@ -318,6 +372,11 @@ Create a multi-source ingestion architecture:
 5. Update tests: test both handlers, test base class.
 
 IMPORTANT: Keep the existing lambda_handler function signature unchanged for backward compatibility with Terraform.
+
+After completing, update:
+- CLAUDE.md: update Architecture section with multi-source ingestion details
+- docs/planning/revised_plan.md: mark Session 3A complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 #### Session 3B: Terraform + Step Functions Parallel (Day 3 afternoon)
@@ -353,6 +412,11 @@ Add the ECB ingestion Lambda to Terraform and convert Step Functions to parallel
    - Grant Step Functions permission to invoke new Lambda
 
 4. Update terraform/variables.tf with ECB-specific defaults.
+
+After completing, update:
+- CLAUDE.md: update Architecture section with Parallel state and new Lambda
+- docs/planning/revised_plan.md: mark Session 3B complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 #### Session 4A: Third source + testing (Day 4 morning)
@@ -395,6 +459,11 @@ Add a third data source — Alpha Vantage (stock/commodity prices) or FRED (Fede
    Adding a new FX source requires zero transform code. Adding a new data domain is a deliberate decision.
 
 6. Update terraform/athena.tf: add second Glue catalog table for economic_indicators.
+
+After completing, update:
+- CLAUDE.md: update with third source, hybrid schema, and new Athena tables
+- docs/planning/revised_plan.md: mark Session 4A complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 #### Session 4B: Glue multi-source transform (Day 4 afternoon)
@@ -446,6 +515,11 @@ Build a data quality framework integrated into the Glue transform:
 5. Add custom CloudWatch metrics: DataQualityChecksFailed, RecordsQuarantined.
 
 6. Write tests with known-bad data (nulls, negatives, duplicates).
+
+After completing, update:
+- CLAUDE.md: update with data quality framework section
+- docs/planning/revised_plan.md: mark Session 5A complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 #### Session 6A: Quality dashboard + alerting (Day 6 morning)
@@ -467,6 +541,11 @@ Extend monitoring for data quality:
    - Instead of SELECT * LIMIT 100, run a data freshness check:
      SELECT MAX(date) as latest_date, COUNT(*) as total_records FROM exchange_rates
    - Validation Lambda checks if latest_date is recent (within 2 days)
+
+After completing, update:
+- CLAUDE.md: update monitoring section with quality dashboard details
+- docs/planning/revised_plan.md: mark Session 6A complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 ---
@@ -507,6 +586,11 @@ Add Terraform remote state and a reusable Lambda module:
 
 Do NOT migrate existing resources into modules — that requires moved blocks and is high-risk mid-sprint.
 The existing 11 .tf flat files are already well-organized by service domain.
+
+After completing, update:
+- CLAUDE.md: update Terraform section with remote state and module details
+- docs/planning/revised_plan.md: mark Session 7A complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 #### Session 7B: Structured logging + observability (Day 7 afternoon)
@@ -529,6 +613,11 @@ Add structured JSON logging and observability across all Lambda functions:
    - terraform/lambda.tf: add tracing_config { mode = "Active" }
    - Add aws-xray-sdk to Lambda dependencies
    - Instrument boto3 calls
+
+After completing, update:
+- CLAUDE.md: update with structured logging and observability details
+- docs/planning/revised_plan.md: mark Session 7B complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 ---
@@ -554,6 +643,11 @@ Create integration tests that validate the full pipeline logic locally:
    - Verify Glue handles multiple input schemas
 
 3. Add Makefile target: make test-integration
+
+After completing, update:
+- CLAUDE.md: update Tests section with integration test details
+- docs/planning/revised_plan.md: mark Session 8A complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 ---
@@ -579,6 +673,11 @@ Add backfill mode to the pipeline:
    - Calls: aws stepfunctions start-execution with backfill input
 
 4. Write tests for backfill mode.
+
+After completing, update:
+- CLAUDE.md: update with backfill capability details
+- docs/planning/revised_plan.md: mark Session 9A complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 #### Session 9B: Architecture Decision Records (Day 9 afternoon)
@@ -605,6 +704,11 @@ Create docs/adr/ directory with Architecture Decision Records:
    - Decision: In Glue transform for single-pass efficiency
 
 Use the standard ADR template (Title, Status, Context, Decision, Consequences).
+
+After completing, update:
+- CLAUDE.md: add ADR section with links
+- docs/planning/revised_plan.md: mark Session 9B complete with planned-vs-delivered
+- docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
 ---
@@ -634,6 +738,11 @@ Update README.md and architecture diagrams to reflect all changes:
    - Link to ADRs
 
 3. Regenerate diagrams: uv run assets/cloud-architecture.py
+
+After completing, update:
+- CLAUDE.md: final review — ensure all sections reflect current state
+- docs/planning/revised_plan.md: mark Session 10A complete, update Day 10 checklist
+- docs/planning/decision_log.md: add any final decisions
 ```
 
 #### Session 10B: Final validation (Day 10 afternoon)

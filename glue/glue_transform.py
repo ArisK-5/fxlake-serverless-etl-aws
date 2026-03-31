@@ -8,6 +8,7 @@ import boto3
 import polars as pl
 import pyarrow.parquet as pq
 from awsglue.utils import getResolvedOptions
+from botocore.exceptions import ClientError
 
 # -----------------------------
 # Parameters
@@ -17,10 +18,10 @@ args = getResolvedOptions(
     ["RAW_BUCKET", "PROCESSED_BUCKET", "OUTPUT_FORMAT", "LOG_LEVEL"],
 )
 
-raw_bucket = args["RAW_BUCKET"]
-processed_bucket = args["PROCESSED_BUCKET"]
-output_format = args["OUTPUT_FORMAT"].lower()
-log_level = args["LOG_LEVEL"].upper()
+raw_bucket: str = args["RAW_BUCKET"]
+processed_bucket: str = args["PROCESSED_BUCKET"]
+output_format: str = args["OUTPUT_FORMAT"].lower()
+log_level: str = args["LOG_LEVEL"].upper()
 
 if output_format not in ("csv", "parquet"):
     raise ValueError("OUTPUT_FORMAT must be either 'csv' or 'parquet'")
@@ -47,7 +48,7 @@ logger.info(f"Raw bucket={raw_bucket}, Processed bucket={processed_bucket}")
 def list_json_keys(bucket: str) -> List[str]:
     try:
         paginator = s3.get_paginator("list_objects_v2")
-        keys = []
+        keys: List[str] = []
         for page in paginator.paginate(Bucket=bucket):
             keys.extend(
                 [
@@ -57,8 +58,17 @@ def list_json_keys(bucket: str) -> List[str]:
                 ]
             )
         return keys
+    except ClientError as e:
+        logger.error(
+            f"S3 ClientError listing keys in bucket={bucket}: "
+            f"{e.response['Error']['Code']}",
+            exc_info=True,
+        )
+        raise
     except Exception:
-        logger.error(f"Failed to list JSON keys in {bucket}", exc_info=True)
+        logger.error(
+            f"Unexpected error listing keys in bucket={bucket}", exc_info=True
+        )
         raise
 
 
@@ -67,15 +77,18 @@ def process_key(key: str) -> str:
         obj = s3.get_object(Bucket=raw_bucket, Key=key)
         payload = json.load(obj["Body"])
 
-        base = payload.get("base")
+        base = payload["base"]
         rates = payload.get("rates", {})
 
-        # Flatten with list comprehension
+        # One row per (date, target_currency) pair
         rows = [
             {"base_currency": base, "target_currency": tgt, "rate": rate, "date": dt}
             for dt, daily_rates in rates.items()
             for tgt, rate in daily_rates.items()
         ]
+
+        if not rows:
+            logger.warning(f"No rates found in {key}, writing empty file")
 
         df = pl.DataFrame(rows)
 
@@ -106,15 +119,24 @@ def process_key(key: str) -> str:
         logger.info(f"Processed {key} → {out_key}")
         return out_key
 
+    except ClientError as e:
+        logger.error(
+            f"S3 error processing key={key}: {e.response['Error']['Code']}",
+            exc_info=True,
+        )
+        raise
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        logger.error(f"Malformed payload in key={key}: {e}", exc_info=True)
+        raise
     except Exception:
-        logger.error(f"Error processing {key}", exc_info=True)
+        logger.error(f"Unexpected error processing key={key}", exc_info=True)
         raise
 
 
 # -----------------------------
 # Main
 # -----------------------------
-def main():
+def main() -> None:
     try:
         keys = list_json_keys(raw_bucket)
         logger.info(f"Found {len(keys)} JSON files")
