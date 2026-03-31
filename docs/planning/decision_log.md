@@ -252,6 +252,19 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Decision:** Choice state checks `$.Payload.status == "no_new_data"` to route to `Pipeline-Already-Up-To-Date` (Succeed); default continues to Glue.
 **Rationale:** Using the Payload envelope is the standard Step Functions pattern for Lambda invocations. The Succeed state (not End) correctly marks the execution as successful — "no new data" is not a failure.
 
+### D26: DynamoDB state commit moved to post-Glue Lambda-Update-State step
+
+**Context:** The original design updated DynamoDB at the end of the ingestion Lambda, before Step Functions proceeded to Glue. If Glue failed after ingestion returned `ok`, DynamoDB would record `fetch_end` as already processed — causing the next daily run to skip the range that was never transformed into Parquet.
+**Decision:** Remove `update_last_processed_date()` from the ingestion Lambda. Add a `Lambda-Update-State` Step Functions state between Glue and Athena that invokes the ingestion Lambda with `{"action": "update_state", "end_date": "..."}`. State is only committed when Glue has confirmed success.
+**Implementation:** `ResultPath = "$.ingestion"` on the ingestion state preserves `end_date` across subsequent states (Glue, Athena each use their own `ResultPath`). The validation Lambda reads `$.athena.QueryExecution.QueryExecutionId`.
+**Rationale:** Saga/checkpoint pattern: state ownership belongs to the step that confirms completion. This eliminates the silent data-gap failure mode where Glue failures produce permanent gaps in Athena-queryable data.
+
+### D27: get_last_processed_date() re-raises on infrastructure errors
+
+**Context:** Original code caught all `ClientError` and fell back to `START_DATE`. This masked `AccessDeniedException` and `ResourceNotFoundException` — infrastructure misconfigurations that would cause every run to re-fetch the full date range and duplicate raw S3 data silently.
+**Decision:** Re-raise immediately on `ResourceNotFoundException` and `AccessDeniedException`. Reserve the fallback for transient errors (`ProvisionedThroughputExceededException`, `InternalServerError`, etc.) where a single-run fallback is a reasonable degradation.
+**Rationale:** Infrastructure misconfiguration must be surfaced as a pipeline failure, not hidden as a quiet mode change.
+
 ### D25: Step Functions Lambda state TimeoutSeconds set to 90s
 
 **Context:** `Lambda-API-Ingestion` state had `TimeoutSeconds = 30`, which is less than the Lambda function's own `timeout = 60s`. If the Lambda ran for 40–60 seconds, Step Functions would abort it with `States.Timeout` before it could complete.

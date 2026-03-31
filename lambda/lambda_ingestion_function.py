@@ -39,9 +39,18 @@ def get_last_processed_date() -> str:
         if item:
             return item["last_processed_date"]["S"]
     except ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code in ("ResourceNotFoundException", "AccessDeniedException"):
+            logger.error(
+                f"DynamoDB table {STATE_TABLE} is inaccessible (code={code}). "
+                "Check that the table exists and the Lambda execution role has GetItem permission.",
+                exc_info=True,
+            )
+            raise
+        # Transient errors (throttling, internal errors) — fall back with warning
         logger.warning(
-            f"Failed to read state from DynamoDB table {STATE_TABLE}: "
-            f"{e.response['Error']['Code']}, defaulting to START_DATE={START_DATE}"
+            f"Transient DynamoDB read error for table {STATE_TABLE} "
+            f"(code={code}), defaulting to START_DATE={START_DATE}"
         )
     return START_DATE
 
@@ -57,7 +66,9 @@ def update_last_processed_date(processed_date: str) -> None:
                 "last_processed_date": {"S": processed_date},
             },
         )
-        logger.debug(f"Updated DynamoDB state: last_processed_date={processed_date}")
+        logger.info(
+            f"Updated DynamoDB state: table={STATE_TABLE}, last_processed_date={processed_date}"
+        )
     except ClientError as e:
         logger.error(
             f"Failed to update state in DynamoDB table {STATE_TABLE}: "
@@ -127,8 +138,10 @@ def save_to_s3(data: dict, start_date: str, end_date: str) -> str:
         raise
 
 
-def lambda_handler(event: dict, context: Any) -> dict:
+def lambda_handler(event: dict, _context: Any) -> dict:
     try:
+        if event.get("action") == "update_state":
+            return _handle_update_state(event)
         if STATE_TABLE:
             return _incremental_ingest()
         return _static_ingest()
@@ -139,6 +152,13 @@ def lambda_handler(event: dict, context: Any) -> dict:
             extra={"base": BASE_CURRENCY},
         )
         raise
+
+
+def _handle_update_state(event: dict) -> dict:
+    """Commit last_processed_date to DynamoDB. Called by Step Functions after Glue succeeds."""
+    end_date: str = event["end_date"]
+    update_last_processed_date(end_date)
+    return {"status": "state_updated", "last_processed_date": end_date}
 
 
 def _incremental_ingest() -> dict:
@@ -156,7 +176,6 @@ def _incremental_ingest() -> dict:
 
     data = fetch_exchange_rates(fetch_start, fetch_end)
     filename = save_to_s3(data, fetch_start, fetch_end)
-    update_last_processed_date(fetch_end)
 
     logger.info(
         f"Incremental ingestion succeeded: {fetch_start}..{fetch_end}, file: {filename}"

@@ -367,11 +367,11 @@ After completing, update:
 - docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
-#### Post-review fixes (2026-03-31)
+#### Post-review fixes — round 1 (2026-03-31)
 
 **Status:** ✅ COMPLETED (2026-03-31)
 
-Three issues from PR #11 review were addressed before merge:
+Three issues from first PR review pass were addressed:
 
 | Severity | Issue | Fix |
 |----------|-------|-----|
@@ -380,6 +380,27 @@ Three issues from PR #11 review were addressed before merge:
 | LOW | `min(today, END_DATE)` string comparison needs explanation | Added inline comment: `# ISO format: string comparison == date comparison` |
 
 **Test count after fixes:** 46 (was 45) — all passing.
+
+#### Post-review fixes — round 2 (2026-03-31)
+
+**Status:** ✅ COMPLETED (2026-03-31)
+
+Second comprehensive review (code + tests + error handling) surfaced additional issues addressed before merge:
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| CRITICAL | DynamoDB updated before Glue — Glue failure creates silent data gap | Moved state commit to new `Lambda-Update-State` SFN state post-Glue. Ingestion Lambda now only returns `end_date` in payload. |
+| HIGH | `get_last_processed_date()` falls back to START_DATE on all `ClientError` — masks `AccessDeniedException`/`ResourceNotFoundException` | Re-raise on infrastructure errors; fallback only for transient errors |
+| HIGH | `_write_partition()` has no error handling — partition key/bucket missing from failure logs | Added try/except with `out_key` + bucket context in both `ClientError` and `Exception` handlers |
+| IMPORTANT | CI runs `pytest` without `--cov-fail-under` — coverage regression passes silently | Added `--cov=lambda --cov=glue --cov-report=term-missing --cov-fail-under=80` |
+| IMPORTANT | Missing test: DynamoDB not updated when S3 write fails | Added `test_state_not_updated_on_s3_write_failure` |
+| IMPORTANT | No explicit boundary test for `last_processed_date == END_DATE` | Added `test_no_new_data_when_last_processed_equals_end_date` |
+| MEDIUM | `main()` loop logs "ETL failed" without naming the failing key | Added per-key try/except logging `key` + progress before re-raise |
+| MEDIUM | Successful DynamoDB write logged at DEBUG (invisible under INFO) | Elevated to `INFO` with table name |
+| LOW | `TestMain` only reads one partition — second partition write undetected | Updated to assert all 4 output files (2 dates × 2 source files) |
+| LOW | Unused `context` parameter in `lambda_handler` | Renamed to `_context` |
+
+**Test count after fixes:** 52 (was 46) — all passing, ruff clean, terraform validate clean.
 
 ---
 

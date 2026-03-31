@@ -48,17 +48,18 @@ uv run assets/dev-workflow.py
 
 The pipeline is orchestrated by **Step Functions** and triggered daily by **EventBridge**, which invokes the Step Functions state machine directly (not the Lambda):
 
-1. **Lambda (Ingestion)** — reads `last_processed_date` from DynamoDB state table, computes incremental fetch range (`last_processed_date+1` to today capped at `END_DATE`), fetches FX rates JSON from Frankfurter API → saves to S3 raw bucket, then updates DynamoDB. Returns `status: "no_new_data"` if already caught up.
+1. **Lambda (Ingestion)** — reads `last_processed_date` from DynamoDB state table, computes incremental fetch range (`last_processed_date+1` to today capped at `END_DATE`), fetches FX rates JSON from Frankfurter API → saves to S3 raw bucket. Returns `status: "no_new_data"` if already caught up. **Does not update DynamoDB** — that is deferred to step 4.
 2. **Choice (Check-New-Data)** — if ingestion returned `no_new_data`, routes to `Pipeline-Already-Up-To-Date` (Succeed); otherwise continues to Glue.
 3. **Glue Job (Python Shell)** — reads raw JSON from S3, flattens nested `{date: {currency: rate}}` structure using **Polars**, writes Parquet/CSV to processed S3 bucket
-4. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
-5. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
+4. **Lambda (Update-State)** — commits `last_processed_date` to DynamoDB **only after Glue succeeds**, preventing state corruption on Glue failure. Invokes the ingestion Lambda with `{"action": "update_state", "end_date": "..."}`.
+5. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
+6. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
 
 ### Incremental Processing
 
 The ingestion Lambda supports two modes controlled by the `STATE_TABLE` env var:
 
-- **Incremental mode** (`STATE_TABLE` set): reads `last_processed_date` from DynamoDB (`pipeline_id="fxlake"`, `source="frankfurter"`), defaults to `START_DATE` on first run. Fetches `last_processed_date+1` to `min(today, END_DATE)`. Updates state after successful S3 write.
+- **Incremental mode** (`STATE_TABLE` set): reads `last_processed_date` from DynamoDB (`pipeline_id="fxlake"`, `source="frankfurter"`), defaults to `START_DATE` on first run. Fetches `last_processed_date+1` to `min(today, END_DATE)`. Returns `end_date` in payload for Step Functions to pass to the `Lambda-Update-State` step.
 - **Static fallback** (`STATE_TABLE` not set): fetches the full `START_DATE..END_DATE` range (original behavior, used for backfills/testing).
 
 ### Step Functions Error Handling
@@ -73,7 +74,7 @@ Every state has Retry and Catch blocks:
 
 | File | What it defines |
 |------|----------------|
-| `step_function.tf` | ASL definition for 5-stage orchestration: Ingestion → Choice → Glue → Athena → Validation, with Retry/Catch + 4 Fail states + Succeed state |
+| `step_function.tf` | ASL definition for 6-stage orchestration: Ingestion → Choice → Glue → Update-State → Athena → Validation, with Retry/Catch + 5 Fail states + Succeed state. Uses `ResultPath` throughout to preserve state across stages. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
 | `lambda.tf` | Both Lambda functions + EventBridge rule/target (→ Step Functions) |
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow dependencies) |
@@ -110,7 +111,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 46 tests, 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 52 tests, 97% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests

@@ -74,23 +74,38 @@ def list_json_keys(bucket: str) -> List[str]:
 
 def _write_partition(df: "pl.DataFrame", out_key: str) -> None:
     """Write a single-date DataFrame to S3 in the configured output format."""
-    if output_format == "parquet":
-        buffer = io.BytesIO()
-        pq.write_table(df.to_arrow(), buffer)
-        buffer.seek(0)
-        s3.put_object(
-            Bucket=processed_bucket,
-            Key=out_key,
-            Body=buffer.getvalue(),
-            ContentType="application/x-parquet",
+    try:
+        if output_format == "parquet":
+            buffer = io.BytesIO()
+            pq.write_table(df.to_arrow(), buffer)
+            buffer.seek(0)
+            s3.put_object(
+                Bucket=processed_bucket,
+                Key=out_key,
+                Body=buffer.getvalue(),
+                ContentType="application/x-parquet",
+            )
+        else:
+            s3.put_object(
+                Bucket=processed_bucket,
+                Key=out_key,
+                Body=df.write_csv(),
+                ContentType="text/csv",
+            )
+    except ClientError as e:
+        logger.error(
+            f"S3 error writing partition s3://{processed_bucket}/{out_key}: "
+            f"{e.response['Error']['Code']}",
+            exc_info=True,
         )
-    else:
-        s3.put_object(
-            Bucket=processed_bucket,
-            Key=out_key,
-            Body=df.write_csv(),
-            ContentType="text/csv",
+        raise
+    except Exception:
+        logger.error(
+            f"Failed to write partition s3://{processed_bucket}/{out_key} "
+            f"(format={output_format})",
+            exc_info=True,
         )
+        raise
 
 
 def process_key(key: str) -> List[str]:
@@ -153,8 +168,15 @@ def main() -> None:
         keys = list_json_keys(raw_bucket)
         logger.info(f"Found {len(keys)} JSON files")
 
-        for key in keys:
-            process_key(key)
+        for i, key in enumerate(keys):
+            try:
+                process_key(key)
+            except Exception:
+                logger.error(
+                    f"ETL failed on key={key} ({i}/{len(keys)} files processed before failure)",
+                    exc_info=True,
+                )
+                raise
 
         logger.info("ETL completed successfully")
 

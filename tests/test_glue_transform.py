@@ -178,10 +178,16 @@ class TestMain:
 
         glue_transform.main()
 
-        df_a = _read_parquet_from_s3(s3_mock, f"{PARTITION_JAN02}/a.parquet")
-        df_b = _read_parquet_from_s3(s3_mock, f"{PARTITION_JAN02}/b.parquet")
-        assert df_a.shape == (2, 4)
-        assert df_b.shape == (2, 4)
+        # Check both partition dates for both files (4 output files total)
+        df_a_jan02 = _read_parquet_from_s3(s3_mock, f"{PARTITION_JAN02}/a.parquet")
+        df_a_jan03 = _read_parquet_from_s3(s3_mock, f"{PARTITION_JAN03}/a.parquet")
+        df_b_jan02 = _read_parquet_from_s3(s3_mock, f"{PARTITION_JAN02}/b.parquet")
+        df_b_jan03 = _read_parquet_from_s3(s3_mock, f"{PARTITION_JAN03}/b.parquet")
+        assert df_a_jan02.shape == (2, 4)
+        assert df_a_jan03.shape == (2, 4)
+        assert df_b_jan02.shape == (2, 4)
+        assert df_b_jan03.shape == (2, 4)
+        assert len(_list_processed_keys(s3_mock)) == 4
 
     def test_reraises_on_bad_file(self, s3_mock):
         _put_json(s3_mock, "good.json", SAMPLE_RATES_JSON)
