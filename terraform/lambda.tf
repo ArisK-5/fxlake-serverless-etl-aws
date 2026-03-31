@@ -14,6 +14,7 @@ resource "aws_lambda_function" "api_ingest" {
       END_DATE      = var.fx_end_date
       BASE_CURRENCY = var.fx_base_currency
       BASE_API_URL  = var.fx_base_api_url
+      STATE_TABLE   = aws_dynamodb_table.pipeline_state.name
     }
   }
 }

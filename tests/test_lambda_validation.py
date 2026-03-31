@@ -1,10 +1,9 @@
 import logging
 from unittest.mock import MagicMock, patch
 
+import lambda_validation_function as validation
 import pytest
 from botocore.exceptions import ClientError
-
-import lambda_validation_function as validation
 
 
 def _make_execution_response(state="SUCCEEDED", workgroup="fxlake"):

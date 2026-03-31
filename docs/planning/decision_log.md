@@ -153,6 +153,38 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 
 ---
 
+## Day 2 Session 2B Decisions (2026-03-31)
+
+### D25: Partition projection over MSCK REPAIR TABLE
+
+**Context:** Athena requires partition metadata to query Hive-partitioned data. Two options: `MSCK REPAIR TABLE` (manual or scheduled) or partition projection (Athena-native, automatic).
+**Decision:** Partition projection with integer type and `digits=2` for month and day.
+**Rationale:** Partition projection eliminates all partition management — no Lambda to run MSCK, no Glue crawler, no stale partition metadata. The `digits=2` setting ensures Athena generates zero-padded paths (`month=01`) matching the S3 layout. Interview talking point: "I know when to use each Athena partition strategy and why projection is preferred for predictable date ranges."
+
+### D26: One Parquet file per date per source file (not one file per date globally)
+
+**Context:** When partitioning by date, one option is to merge all source records for a date into one file; another is to keep source-file granularity within each partition.
+**Decision:** `exchange_rates/year=YYYY/month=MM/day=DD/{source_stem}.parquet` — the source filename is preserved within each partition directory.
+**Rationale:** Avoids S3 read-modify-write for incremental appends. Each daily Lambda run produces a new source file; the Glue job writes it into the correct partition without touching existing files. Enables per-run traceability and idempotent reprocessing.
+
+### D27: OIDC for AWS authentication in CI, no long-lived keys
+
+**Context:** GitHub Actions needs AWS credentials to run Terraform. Options: IAM user keys stored as secrets, or OIDC token exchange.
+**Decision:** OIDC via `aws-actions/configure-aws-credentials@v4` with `role-to-assume`. The role ARN is the only secret stored in GitHub.
+**Rationale:** OIDC tokens are short-lived (15 min), scoped to a specific repo and branch, and rotate automatically. No rotation policy required, no key leakage risk. This is the AWS-recommended pattern for CI/CD. Interview talking point: "I used OIDC rather than IAM keys because there's no secret to rotate or leak."
+
+### D28: GitHub secrets bound to `env:` vars before use in `run:` steps
+
+**Context:** The deploy workflow must write a `terraform.tfvars` file from GitHub secrets. A naive approach inlines `${{ secrets.* }}` directly in the `run:` shell command, which can enable injection if a secret contains shell metacharacters.
+**Decision:** Bind all secrets to job-level `env:` variables first; reference them as `$VAR` (shell variable, not GitHub expression) inside the heredoc.
+**Rationale:** Shell variables in a heredoc are just string substitutions — no expression evaluation, no injection surface. GitHub expressions `${{ ... }}` are template-expanded before the runner sees the shell, so they can inject if the value contains backticks, semicolons, etc. This is the pattern recommended by GitHub's security guide.
+
+### D29: Glue `process_key` returns `List[str]` instead of `str`
+
+**Context:** With partitioned output, one input file produces N output files (one per date). The original `str` return type was wrong.
+**Decision:** Return `List[str]`, empty list for no-data input.
+**Rationale:** Callers (`main()` currently ignores the return; future callers like a manifest writer would need all output keys). `[]` for empty input is cleaner than writing an empty file to a catch-all path. Existing `main()` loop required no change.
+
 ## Day 1 Implementation Decisions (2026-03-30)
 
 ### D16: Broad `except Exception` justified in `publish_custom_metric`
@@ -182,6 +214,34 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** Original plan specified static `Error`/`Cause` strings on Fail states.
 **Decision:** Use `ErrorPath: "$.errorInfo.Error"` and `CausePath: "$.errorInfo.Cause"` with `ResultPath: "$.errorInfo"` on Catch blocks.
 **Rationale:** Static strings lose the actual error detail. Dynamic paths pass through the real AWS error message, making CloudWatch Events and execution history useful for debugging without checking CloudWatch Logs.
+
+---
+
+## Day 2 Implementation Decisions (2026-03-31)
+
+### D21: `os.getenv` for STATE_TABLE, `os.environ[]` for all other env vars
+
+**Context:** Incremental mode requires a new `STATE_TABLE` env var. The existing convention uses `os.environ["VAR"]` at module level (fails fast at cold start).
+**Decision:** Use `os.getenv("STATE_TABLE")` — returns `None` if absent, enabling static fallback without requiring a DynamoDB table.
+**Rationale:** STATE_TABLE is genuinely optional: backfills, local testing, and the static mode all work without it. Using `os.environ[]` would break all existing deployments and tests without any benefit. The distinction (`os.environ` = required, `os.getenv` = optional) becomes an explicit contract visible at module level.
+
+### D22: Private `_incremental_ingest` and `_static_ingest` helpers over branching in lambda_handler
+
+**Context:** Adding incremental logic to `lambda_handler` would push it toward 40+ lines with 4 nesting levels.
+**Decision:** Extract `_incremental_ingest()` and `_static_ingest()` as private helpers; `lambda_handler` only branches and handles the outer try/except.
+**Rationale:** Each helper is under 20 lines and tests a single concern. The outer handler stays readable. Interview talking point: "separation of orchestration from business logic."
+
+### D23: DYNAMODB client initialized conditionally at module level
+
+**Context:** `boto3.client("dynamodb")` at module level would require moto's DynamoDB to be active for every test, even those that never touch DynamoDB.
+**Decision:** `DYNAMODB = boto3.client("dynamodb") if STATE_TABLE else None` — client is `None` when STATE_TABLE is absent.
+**Rationale:** Tests that patch `STATE_TABLE` also patch `DYNAMODB` directly via `patch.object`. This avoids polluting the existing test fixtures and keeps the S3-only tests independent.
+
+### D24: Step Functions Choice state checks `$.Payload.status`
+
+**Context:** Lambda invoked via `arn:aws:states:::lambda:invoke` wraps the function response in a `Payload` envelope. The Lambda returns `{status: "no_new_data"}` or `{status: "ok"}`.
+**Decision:** Choice state checks `$.Payload.status == "no_new_data"` to route to `Pipeline-Already-Up-To-Date` (Succeed); default continues to Glue.
+**Rationale:** Using the Payload envelope is the standard Step Functions pattern for Lambda invocations. The Succeed state (not End) correctly marks the execution as successful — "no new data" is not a failure.
 
 ### D20: Test coverage significantly exceeded plan
 

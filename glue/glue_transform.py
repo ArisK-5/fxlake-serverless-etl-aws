@@ -72,7 +72,33 @@ def list_json_keys(bucket: str) -> List[str]:
         raise
 
 
-def process_key(key: str) -> str:
+def _write_partition(df: "pl.DataFrame", out_key: str) -> None:
+    """Write a single-date DataFrame to S3 in the configured output format."""
+    if output_format == "parquet":
+        buffer = io.BytesIO()
+        pq.write_table(df.to_arrow(), buffer)
+        buffer.seek(0)
+        s3.put_object(
+            Bucket=processed_bucket,
+            Key=out_key,
+            Body=buffer.getvalue(),
+            ContentType="application/x-parquet",
+        )
+    else:
+        s3.put_object(
+            Bucket=processed_bucket,
+            Key=out_key,
+            Body=df.write_csv(),
+            ContentType="text/csv",
+        )
+
+
+def process_key(key: str) -> List[str]:
+    """Transform one raw JSON file into date-partitioned output files.
+
+    Returns a list of S3 keys written (one per date in the source data).
+    Returns an empty list if the source contains no rate rows.
+    """
     try:
         obj = s3.get_object(Bucket=raw_bucket, Key=key)
         payload = json.load(obj["Body"])
@@ -80,7 +106,6 @@ def process_key(key: str) -> str:
         base = payload["base"]
         rates = payload.get("rates", {})
 
-        # One row per (date, target_currency) pair
         rows = [
             {"base_currency": base, "target_currency": tgt, "rate": rate, "date": dt}
             for dt, daily_rates in rates.items()
@@ -88,36 +113,23 @@ def process_key(key: str) -> str:
         ]
 
         if not rows:
-            logger.warning(f"No rates found in {key}, writing empty file")
+            logger.warning(f"No rates found in {key}, skipping output")
+            return []
 
         df = pl.DataFrame(rows)
+        stem = key.split("/")[-1].replace(".json", "")
+        out_keys: List[str] = []
 
-        base_path = "exchange_rates"
-        filename = key.split("/")[-1].replace(".json", f".{output_format}")
-        out_key = f"{base_path}/{filename}"
+        for dt in sorted(df["date"].unique().to_list()):
+            year, month, day = dt.split("-")
+            partition = f"year={year}/month={month}/day={day}"
+            out_key = f"exchange_rates/{partition}/{stem}.{output_format}"
 
-        if output_format == "parquet":
-            table = df.to_arrow()
-            buffer = io.BytesIO()
-            pq.write_table(table, buffer)
-            buffer.seek(0)
-            s3.put_object(
-                Bucket=processed_bucket,
-                Key=out_key,
-                Body=buffer.getvalue(),
-                ContentType="application/x-parquet",
-            )
-        else:
-            csv_str = df.write_csv()
-            s3.put_object(
-                Bucket=processed_bucket,
-                Key=out_key,
-                Body=csv_str,
-                ContentType="text/csv",
-            )
+            _write_partition(df.filter(pl.col("date") == dt), out_key)
+            out_keys.append(out_key)
+            logger.info(f"Processed {key} → {out_key}")
 
-        logger.info(f"Processed {key} → {out_key}")
-        return out_key
+        return out_keys
 
     except ClientError as e:
         logger.error(

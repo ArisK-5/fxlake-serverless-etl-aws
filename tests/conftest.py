@@ -42,6 +42,8 @@ import boto3
 import pytest
 from moto import mock_aws
 
+TEST_STATE_TABLE = "test-state-table"
+
 
 @pytest.fixture()
 def s3_mock():
@@ -51,3 +53,27 @@ def s3_mock():
         client.create_bucket(Bucket="test-raw-bucket")
         client.create_bucket(Bucket="test-processed-bucket")
         yield client
+
+
+@pytest.fixture()
+def aws_mock():
+    """Activate moto AWS mock with S3 buckets and DynamoDB state table."""
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-raw-bucket")
+        s3.create_bucket(Bucket="test-processed-bucket")
+
+        ddb = boto3.client("dynamodb", region_name="us-east-1")
+        ddb.create_table(
+            TableName=TEST_STATE_TABLE,
+            AttributeDefinitions=[
+                {"AttributeName": "pipeline_id", "AttributeType": "S"},
+                {"AttributeName": "source", "AttributeType": "S"},
+            ],
+            KeySchema=[
+                {"AttributeName": "pipeline_id", "KeyType": "HASH"},
+                {"AttributeName": "source", "KeyType": "RANGE"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        yield {"s3": s3, "dynamodb": ddb}

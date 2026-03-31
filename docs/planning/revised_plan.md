@@ -33,7 +33,7 @@ Each "Day" below is a logical work unit of 5-8 hours, NOT a calendar day. At 2-3
 
 **Status:** ✅ COMPLETED (2026-03-30)
 **Branch:** `day-01-testing-foundation`
-**PRs:** #9 (→ fxlake-v2-production)
+**PRs:** #10 (→ fxlake-v2-production)
 
 **Rationale:** Tests must exist BEFORE any refactoring. Step Function error handling is quick and prevents cascading failures during development.
 
@@ -153,19 +153,35 @@ After completing, update:
 
 #### Session 2A: Incremental ingestion (morning)
 
+**Status:** ✅ COMPLETED (2026-03-31)
+
 **Approach:** REFACTOR existing Lambda + Terraform
 **Files affected:**
 - `lambda/lambda_ingestion_function.py` — dynamic date resolution
 - `terraform/lambda.tf` — update env vars
 - `terraform/variables.tf` — add DynamoDB table variable
-- `terraform/step_function.tf` — pass date params from input
+- `terraform/step_function.tf` — Choice state after ingestion
 
 **New files:**
 - `terraform/dynamodb.tf` — state tracking table
-- `terraform/iam.tf` — add DynamoDB permissions to Lambda role
+- `terraform/iam.tf` — DynamoDB permissions for Lambda role
 
 **Dependencies:** Tests from Day 1 (run before + after refactor)
 **Validation:** `uv run pytest tests/test_lambda_ingestion.py -v` + `cd terraform && terraform validate`
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| DynamoDB state table (partition: pipeline_id, sort: source) | ✅ Delivered | `fxlake-pipeline-state` via `terraform/dynamodb.tf` |
+| Incremental fetch with DynamoDB read/write | ✅ Delivered | `get_last_processed_date` + `update_last_processed_date` |
+| `no_new_data` early return | ✅ Delivered | Returns `{status: "no_new_data"}` when caught up |
+| Static fallback without STATE_TABLE | ✅ Delivered | `_static_ingest()` path, tested explicitly |
+| Choice state in Step Functions | ✅ Delivered | `Check-New-Data` Choice + `Pipeline-Already-Up-To-Date` Succeed state |
+| IAM DynamoDB policy | ✅ Delivered | `fxlake-lambda-dynamodb` policy with `GetItem`/`PutItem` only |
+| Update existing tests | ✅ Delivered | 8 new tests; existing tests updated for new function signatures |
+| Test count: ~20 incremental tests | 18 ingestion tests total (8 new + 10 updated) | Kept focused on real failure modes |
+| Coverage: maintain 96% | 97% total, ingestion Lambda 100% | Improved |
 
 **Claude Code prompt:**
 ```
@@ -197,10 +213,13 @@ After completing, update:
 
 #### Session 2B: S3 partitioning + CI/CD (afternoon)
 
+**Status:** ✅ COMPLETED (2026-03-31)
+
 **Approach:** REFACTOR Glue + NET-NEW CI/CD
 **Files affected:**
 - `glue/glue_transform.py` — add partitioned output paths
 - `terraform/athena.tf` — add partition projection
+- `pyproject.toml` — add ruff + ruff config
 
 **New files:**
 - `.github/workflows/ci.yml` — lint + test on PR
@@ -208,6 +227,19 @@ After completing, update:
 
 **Dependencies:** Tests passing
 **Validation:** `uv run pytest -v` + `cd terraform && terraform validate`
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| Partitioned Glue output | ✅ Delivered | `year=YYYY/month=MM/day=DD/` Hive partitions, one file per date |
+| Partition projection in Athena | ✅ Delivered | Integer type + `digits=2` for zero-padded paths, no MSCK REPAIR needed |
+| `ci.yml` — lint + test on PR | ✅ Delivered | ruff + pytest jobs, both jobs must pass |
+| `ci.yml` — terraform validate on PR | ✅ Delivered | init -backend=false + validate + fmt -check |
+| `deploy.yml` — plan + apply with OIDC | ✅ Delivered | Plan artifact → manual-approval Apply via `production` environment |
+| Ruff added as dev dep | ✅ Delivered | Configured in `pyproject.toml` with E/F/W/I rules |
+| Ruff CI-clean code | Fixed 3 isort violations | Auto-fixed by `ruff --fix`; root cause: import ordering in test files |
+| Secrets in `run:` — safe pattern | ✅ Used env: indirection | Secrets bound to job-level `env:`, referenced as `$VAR` in heredoc — not inline `${{ secrets.* }}` |
 
 **Claude Code prompt (Part 1 — Partitioning):**
 ```

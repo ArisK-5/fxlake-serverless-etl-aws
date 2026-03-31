@@ -48,6 +48,28 @@ resource "aws_iam_role_policy_attachment" "lambda_s3_attach" {
   policy_arn = aws_iam_policy.lambda_s3_policy.arn
 }
 
+resource "aws_iam_policy" "lambda_dynamodb_policy" {
+  name = "fxlake-lambda-dynamodb"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+        ],
+        Effect   = "Allow",
+        Resource = aws_dynamodb_table.pipeline_state.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_dynamodb_attach" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_dynamodb_policy.arn
+}
+
 resource "aws_iam_role_policy" "check_query_results_policy" {
   role = aws_iam_role.lambda_exec.id
   policy = jsonencode({

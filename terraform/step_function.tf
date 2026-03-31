@@ -25,7 +25,21 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
-        Next = "Glue-JSON-to-Parquet"
+        Next = "Check-New-Data"
+      },
+      Check-New-Data = {
+        Type = "Choice",
+        Choices = [
+          {
+            Variable     = "$.Payload.status"
+            StringEquals = "no_new_data"
+            Next         = "Pipeline-Already-Up-To-Date"
+          }
+        ],
+        Default = "Glue-JSON-to-Parquet"
+      },
+      Pipeline-Already-Up-To-Date = {
+        Type = "Succeed"
       },
       Glue-JSON-to-Parquet = {
         Type           = "Task",
