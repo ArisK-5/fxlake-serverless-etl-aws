@@ -252,6 +252,32 @@ resource "aws_iam_role_policy" "sfn_policy" {
   })
 }
 
+# EventBridge role to invoke Step Functions
+resource "aws_iam_role" "eventbridge_sfn_invoke_role" {
+  name = "fxlake-eventbridge-sfn-invoke-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
+      Principal = { Service = "events.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "eventbridge_sfn_invoke_policy" {
+  name = "fxlake-eventbridge-sfn-invoke-policy"
+  role = aws_iam_role.eventbridge_sfn_invoke_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect   = "Allow",
+      Action   = "states:StartExecution",
+      Resource = aws_sfn_state_machine.etl.arn
+    }]
+  })
+}
+
 # CloudTrail service role & policies
 resource "aws_iam_role" "cloudtrail_role" {
   name = "fxlake-cloudtrail-role"

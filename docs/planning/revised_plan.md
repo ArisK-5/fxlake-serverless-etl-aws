@@ -290,10 +290,21 @@ After completing, update:
 
 #### Session 2C: Fix EventBridge Daily Trigger (evening)
 
-**Approach:** REFACTOR Terraform
-**Files affected:** terraform/lambda.tf
+**Status:** ✅ COMPLETED (2026-03-31)
 
-**Validation:** `cd terraform` + `terraform validate` + `terraform plan` # Should show: aws_cloudwatch_event_target changed
+**Approach:** REFACTOR Terraform
+**Files affected:** `terraform/lambda.tf`, `terraform/iam.tf`
+
+**Validation:** `cd terraform` + `terraform validate` ✓
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| Retarget EventBridge → Step Functions | ✅ Delivered | `aws_cloudwatch_event_target.invoke_step_function` |
+| IAM role for EventBridge | ✅ Delivered | `fxlake-eventbridge-sfn-invoke-role` with `states:StartExecution` only |
+| Remove `allow_eventbridge` Lambda permission | ✅ Delivered | Removed; EventBridge no longer invokes Lambda directly |
+| Rename target resource | ✅ Delivered | `invoke_lambda` → `invoke_step_function` |
 
 **Claude Code prompt (Part 3 — EventBridge Trigger):**
 ```

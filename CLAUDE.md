@@ -46,7 +46,7 @@ uv run assets/dev-workflow.py
 
 ## Architecture
 
-The pipeline is orchestrated by **Step Functions** and runs on a daily **EventBridge** schedule:
+The pipeline is orchestrated by **Step Functions** and triggered daily by **EventBridge**, which invokes the Step Functions state machine directly (not the Lambda):
 
 1. **Lambda (Ingestion)** — reads `last_processed_date` from DynamoDB state table, computes incremental fetch range (`last_processed_date+1` to today capped at `END_DATE`), fetches FX rates JSON from Frankfurter API → saves to S3 raw bucket, then updates DynamoDB. Returns `status: "no_new_data"` if already caught up.
 2. **Choice (Check-New-Data)** — if ingestion returned `no_new_data`, routes to `Pipeline-Already-Up-To-Date` (Succeed); otherwise continues to Glue.
@@ -75,7 +75,7 @@ Every state has Retry and Catch blocks:
 |------|----------------|
 | `step_function.tf` | ASL definition for 5-stage orchestration: Ingestion → Choice → Glue → Athena → Validation, with Retry/Catch + 4 Fail states + Succeed state |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
-| `lambda.tf` | Both Lambda functions + EventBridge daily trigger |
+| `lambda.tf` | Both Lambda functions + EventBridge rule/target (→ Step Functions) |
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow dependencies) |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |

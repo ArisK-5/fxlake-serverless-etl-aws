@@ -153,6 +153,15 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 
 ---
 
+## Day 2 Session 2C Decisions (2026-03-31)
+
+### D30: EventBridge targets Step Functions, not the ingestion Lambda
+
+**Context:** The original `aws_cloudwatch_event_target` pointed at `aws_lambda_function.api_ingest.arn`. This meant the daily schedule only ran ingestion — Glue, Athena, and Validation never fired automatically.
+**Decision:** Retarget EventBridge to `aws_sfn_state_machine.etl.arn` with a dedicated IAM role (`states:StartExecution` only).
+**Rationale:** The whole point of Step Functions is to orchestrate the full pipeline. Having EventBridge bypass it and call the Lambda directly defeats the purpose and means the pipeline never ran end-to-end on schedule. The dedicated role follows least-privilege: EventBridge only gets `StartExecution` on this one state machine.
+**What changed in Terraform:** `invoke_lambda` target removed, `invoke_step_function` added, `allow_eventbridge` Lambda permission removed, new `eventbridge_sfn_invoke_role` + `eventbridge_sfn_invoke_policy`.
+
 ## Day 2 Session 2B Decisions (2026-03-31)
 
 ### D25: Partition projection over MSCK REPAIR TABLE
