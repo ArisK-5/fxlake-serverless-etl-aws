@@ -4,6 +4,9 @@ on:
   pull_request:
     branches: [main, fxlake-v2-production]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   python-lint-test:
     name: Python — Lint & Test
@@ -38,6 +41,13 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+
+      - name: Create stub Lambda zips for validation
+        # filebase64sha256() evaluates at validate time; stubs satisfy the function
+        # without running a real package build in CI.
+        run: |
+          touch lambda/lambda_ingestion_function.zip
+          touch lambda/lambda_validation_function.zip
 
       - name: Terraform Init (no backend)
         run: terraform init -backend=false

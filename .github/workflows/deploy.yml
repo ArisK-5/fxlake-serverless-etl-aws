@@ -10,6 +10,7 @@ on:
 env:
   AWS_REGION: us-east-1
   TF_VERSION: "1.9.0"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # Required for OIDC token exchange with AWS
 permissions:
