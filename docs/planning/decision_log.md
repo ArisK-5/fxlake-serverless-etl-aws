@@ -246,11 +246,11 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Decision:** `DYNAMODB = boto3.client("dynamodb") if STATE_TABLE else None` — client is `None` when STATE_TABLE is absent.
 **Rationale:** Tests that patch `STATE_TABLE` also patch `DYNAMODB` directly via `patch.object`. This avoids polluting the existing test fixtures and keeps the S3-only tests independent.
 
-### D24: Step Functions Choice state checks `$.Payload.status`
+### D24: Step Functions Choice state checks `$.ingestion.Payload.status`
 
-**Context:** Lambda invoked via `arn:aws:states:::lambda:invoke` wraps the function response in a `Payload` envelope. The Lambda returns `{status: "no_new_data"}` or `{status: "ok"}`.
-**Decision:** Choice state checks `$.Payload.status == "no_new_data"` to route to `Pipeline-Already-Up-To-Date` (Succeed); default continues to Glue.
-**Rationale:** Using the Payload envelope is the standard Step Functions pattern for Lambda invocations. The Succeed state (not End) correctly marks the execution as successful — "no new data" is not a failure.
+**Context:** Lambda invoked via `arn:aws:states:::lambda:invoke` wraps the function response in a `Payload` envelope. The Lambda returns `{status: "no_new_data"}` or `{status: "ok"}`. After D26 added `ResultPath = "$.ingestion"` to the ingestion state, the result is stored at `$.ingestion` rather than overwriting `$`.
+**Decision:** Choice state checks `$.ingestion.Payload.status == "no_new_data"` to route to `Pipeline-Already-Up-To-Date` (Succeed); default continues to Glue.
+**Rationale:** Using `ResultPath` on the ingestion state preserves `$.ingestion.Payload.end_date` through Glue and into the `Lambda-Update-State` step. The Succeed state (not End) correctly marks the execution as successful — "no new data" is not a failure.
 
 ### D26: DynamoDB state commit moved to post-Glue Lambda-Update-State step
 
@@ -264,6 +264,12 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** Original code caught all `ClientError` and fell back to `START_DATE`. This masked `AccessDeniedException` and `ResourceNotFoundException` — infrastructure misconfigurations that would cause every run to re-fetch the full date range and duplicate raw S3 data silently.
 **Decision:** Re-raise immediately on `ResourceNotFoundException` and `AccessDeniedException`. Reserve the fallback for transient errors (`ProvisionedThroughputExceededException`, `InternalServerError`, etc.) where a single-run fallback is a reasonable degradation.
 **Rationale:** Infrastructure misconfiguration must be surfaced as a pipeline failure, not hidden as a quiet mode change.
+
+### D28: CI uses stub Lambda zips for terraform validate
+
+**Context:** `lambda.tf` uses `filebase64sha256("../lambda/*.zip")` to detect source changes. The deploy workflow builds real zips via `make package`. The CI validate job (`-backend=false`) does not run a build step, so the files don't exist and `filebase64sha256()` raises an error at plan/validate time.
+**Decision:** Add `touch lambda/lambda_ingestion_function.zip lambda/lambda_validation_function.zip` as a CI step before `terraform init`. Empty files satisfy `filebase64sha256()` (returns a valid hash) without requiring a build.
+**Why not use `try()` in Terraform:** `try(filebase64sha256(...), null)` would suppress the error but would also silently pass deploy with a null hash — defeating the purpose of the hash check. The stub approach keeps production behaviour unchanged.
 
 ### D25: Step Functions Lambda state TimeoutSeconds set to 90s
 

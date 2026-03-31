@@ -402,6 +402,18 @@ Second comprehensive review (code + tests + error handling) surfaced additional 
 
 **Test count after fixes:** 52 (was 46) — all passing, ruff clean, terraform validate clean.
 
+#### CI fixes (2026-03-31)
+
+**Status:** ✅ COMPLETED (2026-03-31)
+
+Two CI failures addressed after the second review push:
+
+| Issue | Fix |
+|-------|-----|
+| `terraform validate` failed: `filebase64sha256()` called on missing `.zip` files (deploy builds them via `make package`; CI doesn't) | Added `touch lambda/*.zip` step in `ci.yml` before `terraform init` — satisfies the function without a real build |
+| `terraform fmt -check` failed: spacing inconsistency in `step_function.tf` introduced by the `ResultPath` alignment edits | Ran `terraform fmt` locally; committed formatted file |
+| Node.js 20 deprecation warning on all action runners | Added `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` to `env:` in both `ci.yml` and `deploy.yml` |
+
 ---
 
 ### Day 3-4: Multi-Source Ingestion
