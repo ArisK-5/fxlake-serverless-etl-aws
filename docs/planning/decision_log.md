@@ -331,6 +331,18 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Decision:** Tests use `monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)` before calling `lambda_handler`. Since `mock_aws()` is active via the `aws_mock` fixture, `boto3.client("dynamodb")` inside `__init__` is automatically intercepted by moto.
 **Rationale:** `monkeypatch.setenv` is the correct seam — it's what the production code actually reads. `patch.object` on module-level vars was a testing workaround for the old module-level design. The new approach is simpler and doesn't require the test to know about internal implementation details.
 
+### D38: Parallel state Retry placement — branch-level only, not on Parallel state itself
+
+**Context:** The `Parallel-Ingestion` state runs two Lambda invocations concurrently. Each branch can fail due to transient Lambda errors.
+**Decision:** Retry blocks are placed on each branch's individual Lambda Task, not on the Parallel state itself.
+**Rationale:** Adding retries at both levels would cause double-retry for transient Lambda errors: the branch retries first, then if it still fails, the Parallel state retries the entire parallel execution (re-running the successful branch unnecessarily). Branch-level retries are sufficient and correctly scoped.
+
+### D39: `end_date` always present in `no_new_data` response
+
+**Context:** The `Parallel-Ingestion` state's two branches can independently return `no_new_data` or `ok`. The `Lambda-Update-FX-State` and `Lambda-Update-ECB-State` steps always read `$.parallel_results.fx.Payload.end_date` and `$.parallel_results.ecb.Payload.end_date` respectively — even when only one source had new data.
+**Decision:** `_incremental_ingest` always includes `end_date` in the response dict, including when `status: "no_new_data"`.
+**Rationale:** If a source returns `no_new_data` without `end_date`, the corresponding Update-State step would fail with a States.Runtime `$.parallel_results.*.Payload.end_date` path error. The `end_date` in a `no_new_data` response is the current `fetch_end` value — the state commit is idempotent (writing the same date that's already stored), so there is no harm in always including it.
+
 ### D20: Test coverage significantly exceeded plan
 
 **Context:** Day 1 planned ~20 tests with 80%+ coverage as nice-to-have.

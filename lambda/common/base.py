@@ -215,7 +215,13 @@ class BaseIngestionHandler(ABC):
                 f"Already caught up (source={self.source_name}, "
                 f"last_processed_date={last_processed}), no new data to fetch"
             )
-            return {"status": "no_new_data", "last_processed_date": last_processed}
+            # end_date is included so Step Functions can always read Payload.end_date
+            # regardless of status (both branches of Parallel-Ingestion must supply it).
+            return {
+                "status": "no_new_data",
+                "last_processed_date": last_processed,
+                "end_date": fetch_end,
+            }
 
         data = self.fetch_data(fetch_start, fetch_end)
         filename = self.make_filename(fetch_start, fetch_end)

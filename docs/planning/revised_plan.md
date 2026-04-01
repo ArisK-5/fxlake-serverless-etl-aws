@@ -561,15 +561,37 @@ After completing, update:
 
 #### Session 3B: Terraform + Step Functions Parallel (Day 3 afternoon)
 
+**Status:** ✅ COMPLETED (2026-04-01)
+
 **Approach:** REFACTOR Terraform
 **Files affected:**
-- `terraform/lambda.tf` — add new Lambda function
-- `terraform/step_function.tf` — add Parallel state
-- `terraform/variables.tf` — add ECB-specific variables
-- `terraform/iam.tf` — add permissions for new Lambda
+- `terraform/lambda.tf` — add `ecb_ingest` Lambda function
+- `terraform/step_function.tf` — replace single ingestion with Parallel state
+- `terraform/variables.tf` — add `lambda_ecb_ingestion_name`, `ecb_base_url`
+- `terraform/iam.tf` — add ECB Lambda ARN to SFN invocation policy
+- `.github/workflows/ci.yml` — stub `lambda_ecb_ingestion.zip` for validate step
 
 **Dependencies:** New Lambda code from Session 3A
-**Validation:** `cd terraform && terraform validate && terraform plan`
+**Validation:** `cd terraform && terraform validate` ✓ (88 tests, all passing)
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| `aws_lambda_function "ecb_ingest"` in `lambda.tf` | ✅ Delivered | Handler `lambda_ecb_ingestion.lambda_handler`; ECB_BASE_URL, RAW_BUCKET, START_DATE, END_DATE, STATE_TABLE env vars |
+| Replace `Lambda-API-Ingestion` with `Parallel-Ingestion` | ✅ Delivered | Two branches: `Lambda-FX-Ingestion` (api_ingest) and `Lambda-ECB-Ingestion` (ecb_ingest), each with own Retry |
+| `ResultSelector` to name parallel outputs | ✅ Delivered | `{"fx.$": "$[0]", "ecb.$": "$[1]"}` → `$.parallel_results.fx/ecb` |
+| `Check-New-Data` And condition | ✅ Delivered | Both `$.parallel_results.fx.Payload.status` AND `$.parallel_results.ecb.Payload.status` must be `no_new_data` to skip |
+| Rename `Lambda-Update-State` → two update steps | ✅ Delivered | `Lambda-Update-FX-State` → `Lambda-Update-ECB-State` → `Athena-Sample-Query` |
+| New `UpdateECBState-Failed` Fail state | ✅ Delivered | Added alongside `UpdateFXState-Failed` (renamed from `UpdateState-Failed`) |
+| SFN IAM policy updated | ✅ Delivered | `ecb_ingest.arn` added to `lambda:InvokeFunction` resource list |
+| CI stub for new zip | ✅ Delivered | `touch lambda/lambda_ecb_ingestion.zip` in `ci.yml` |
+
+#### Key Differences Explained
+
+1. **No Retry on Parallel state itself:** Retries are on each branch's Lambda Task. A branch failure propagates up to the Parallel state's Catch → `Ingestion-Failed`. Adding retries at both levels would cause double-retry for transient Lambda errors.
+
+2. **`end_date` always present in `no_new_data` response (3A decision):** Required so Step Functions can always read `Payload.end_date` from both parallel branches for the `Lambda-Update-*-State` steps. A `no_new_data` response with no `end_date` would crash the update steps when only one source has new data.
 
 **Claude Code prompt:**
 ```

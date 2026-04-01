@@ -48,12 +48,13 @@ uv run assets/dev-workflow.py
 
 The pipeline is orchestrated by **Step Functions** and triggered daily by **EventBridge**, which invokes the Step Functions state machine directly (not the Lambda):
 
-1. **Lambda (Ingestion)** — reads `last_processed_date` from DynamoDB state table, computes incremental fetch range (`last_processed_date+1` to today capped at `END_DATE`), fetches FX rates JSON from Frankfurter API → saves to S3 raw bucket. Returns `status: "no_new_data"` if already caught up. **Does not update DynamoDB** — that is deferred to step 4.
-2. **Choice (Check-New-Data)** — if ingestion returned `no_new_data`, routes to `Pipeline-Already-Up-To-Date` (Succeed); otherwise continues to Glue.
+1. **Parallel (Parallel-Ingestion)** — runs Frankfurter and ECB ingestion concurrently. Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx` and `$.parallel_results.ecb`. **Does not update DynamoDB** — deferred to steps 4–5.
+2. **Choice (Check-New-Data)** — routes to `Pipeline-Already-Up-To-Date` only if **both** sources returned `no_new_data`; otherwise continues to Glue.
 3. **Glue Job (Python Shell)** — reads raw JSON from S3, flattens nested `{date: {currency: rate}}` structure using **Polars**, writes Parquet/CSV to processed S3 bucket
-4. **Lambda (Update-State)** — commits `last_processed_date` to DynamoDB **only after Glue succeeds**, preventing state corruption on Glue failure. Calls the **same ingestion Lambda** with `{"action": "update_state", "end_date": "..."}` — the Lambda's `_handle_update_state` branch handles this path.
-5. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
-6. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
+4. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB **only after Glue succeeds**. Calls the `api_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
+5. **Lambda (Update-ECB-State)** — commits ECB `last_processed_date` to DynamoDB after FX state is committed. Calls the `ecb_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.ecb.Payload.end_date"}`.
+6. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
+7. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
 
 ### Multi-Source Ingestion
 
@@ -93,9 +94,9 @@ Every state has Retry and Catch blocks:
 
 | File | What it defines |
 |------|----------------|
-| `step_function.tf` | ASL definition for 6-stage orchestration: Ingestion → Choice → Glue → Update-State → Athena → Validation, with Retry/Catch + 5 Fail states + Succeed state. Uses `ResultPath` throughout to preserve state across stages. |
+| `step_function.tf` | ASL definition for 7-stage orchestration: Parallel-Ingestion → Choice → Glue → Update-FX-State → Update-ECB-State → Athena → Validation, with Retry/Catch + 6 Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys; `ResultPath` preserves state across all stages. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
-| `lambda.tf` | Both Lambda functions + EventBridge rule/target (→ Step Functions) |
+| `lambda.tf` | Three Lambda functions (api_ingest, ecb_ingest, check_query_results) + EventBridge rule/target (→ Step Functions) |
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow dependencies) |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |

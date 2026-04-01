@@ -174,6 +174,7 @@ class TestLambdaHandlerIncremental:
 
         assert result["status"] == "no_new_data"
         assert result["last_processed_date"] == today
+        assert "end_date" in result  # required by Parallel-Ingestion Step Functions design
 
     @responses.activate
     def test_incremental_fetch_returns_payload_without_updating_state(

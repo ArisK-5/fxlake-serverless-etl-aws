@@ -192,6 +192,8 @@ class TestIncrementalIngest:
 
         assert result["status"] == "no_new_data"
         assert result["last_processed_date"] == today
+        # end_date always present so Step Functions Parallel-Ingestion can read Payload.end_date
+        assert "end_date" in result
 
     def test_incremental_fetch_does_not_update_state(self, aws_mock, monkeypatch):
         """Incremental ingest returns end_date but does NOT write DynamoDB.
