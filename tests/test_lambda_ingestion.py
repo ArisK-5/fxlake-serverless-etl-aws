@@ -421,3 +421,23 @@ class TestLambdaHandlerUpdateState:
                 ingestion.lambda_handler(
                     {"action": "update_state", "end_date": "2024-01-31"}, None
                 )
+
+    def test_update_state_raises_when_dynamodb_not_configured(self):
+        """update_state must fail loudly when STATE_TABLE is not set (not incremental mode)."""
+        with patch.object(ingestion, "STATE_TABLE", None), patch.object(
+            ingestion, "DYNAMODB", None
+        ):
+            with pytest.raises(RuntimeError, match="STATE_TABLE"):
+                ingestion.lambda_handler(
+                    {"action": "update_state", "end_date": "2024-01-31"}, None
+                )
+
+    def test_update_state_raises_on_missing_end_date(self):
+        """update_state must raise ValueError with context when end_date is absent."""
+        mock_ddb = MagicMock()
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", mock_ddb
+        ):
+            with pytest.raises(ValueError, match="end_date"):
+                ingestion.lambda_handler({"action": "update_state"}, None)

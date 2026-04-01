@@ -277,6 +277,24 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Decision:** Set `TimeoutSeconds = 90` (60s Lambda timeout + 30s buffer for Step Functions overhead and cold start).
 **Rationale:** The Step Functions timeout must always exceed the Lambda timeout. A 30s Step Functions timeout on a 60s Lambda is a guaranteed failure for slow API responses. Buffer of 30s accounts for cold starts and SDK retry jitter.
 
+### D29: _handle_update_state guard for DYNAMODB=None
+
+**Context:** The `Lambda-Update-State` Step Functions state calls the ingestion Lambda with `{"action": "update_state"}`. If the Lambda was deployed without `STATE_TABLE` set (e.g., backfill deployment or misconfigured environment), `DYNAMODB` is `None` at module level. Without a guard, `DYNAMODB.put_item()` would raise `AttributeError: 'NoneType' object has no attribute 'put_item'` — an opaque error in execution history.
+**Decision:** Add `if DYNAMODB is None or STATE_TABLE is None: raise RuntimeError("update_state action requires STATE_TABLE env var — Lambda is not configured for incremental mode")` at the top of `_handle_update_state`.
+**Rationale:** Fail-fast with a descriptive error is more debuggable than a mid-call `AttributeError`. The message names the misconfiguration cause directly.
+
+### D30: States.TaskFailed added to Lambda-Update-State retry
+
+**Context:** DynamoDB throttles (`ProvisionedThroughputExceededException`) are surfaced by Step Functions as `States.TaskFailed` when the Lambda raises them, not as `Lambda.ServiceException`. The original retry only covered `Lambda.ServiceException`/`Lambda.AWSLambdaException`/`Lambda.TooManyRequestsException` — DynamoDB throttles at the state commit step were not retried, causing unnecessary pipeline failures during brief capacity spikes.
+**Decision:** Add `"States.TaskFailed"` to the `Lambda-Update-State` Retry `ErrorEquals` list. Increase `MaxAttempts` to 3 (from 2) because a DynamoDB throttle at this final step — after Glue has already succeeded — is worth a third retry attempt before failing the whole execution.
+**Rationale:** Unlike earlier states (ingestion, Glue), state commit failure at the Lambda-Update-State step wastes the work already done. An extra retry attempt has asymmetric value here.
+
+### D31: _write_partition split into serialization and write phases
+
+**Context:** A single try-block in `_write_partition` caught both Polars/PyArrow serialization errors and `boto3.client.put_object` (S3) errors, logging them both as "S3 errors." This made Polars type errors or Arrow conversion failures hard to distinguish from genuine S3 connectivity issues in CloudWatch logs.
+**Decision:** Split into two sequential try-blocks: Phase 1 catches `Exception` (serialization) and logs `format={output_format}`; Phase 2 catches `ClientError` only (S3 write) and logs the AWS error code.
+**Rationale:** Correct error attribution speeds up debugging. A `ArrowInvalid` logged as "S3 error writing partition" wastes time investigating S3 permissions when the issue is actually a schema problem.
+
 ### D20: Test coverage significantly exceeded plan
 
 **Context:** Day 1 planned ~20 tests with 80%+ coverage as nice-to-have.

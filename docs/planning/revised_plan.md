@@ -414,6 +414,27 @@ Two CI failures addressed after the second review push:
 | `terraform fmt -check` failed: spacing inconsistency in `step_function.tf` introduced by the `ResultPath` alignment edits | Ran `terraform fmt` locally; committed formatted file |
 | Node.js 20 deprecation warning on all action runners | Added `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` to `env:` in both `ci.yml` and `deploy.yml` |
 
+#### Post-review fixes — round 3 (2026-03-31)
+
+**Status:** ✅ COMPLETED (2026-03-31)
+
+Third comprehensive review surfaced safety and robustness gaps in the new `_handle_update_state` path and `_write_partition` error attribution:
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| CRITICAL | `_handle_update_state` crashes with `AttributeError` when `DYNAMODB is None` (Lambda not in incremental mode) | Added guard: `if DYNAMODB is None or STATE_TABLE is None: raise RuntimeError(...)` |
+| HIGH | `event["end_date"]` raises bare `KeyError` without log context if Step Functions payload is malformed | Changed to `event.get("end_date")` + explicit `ValueError` with `list(event.keys())` in error log |
+| HIGH | `Lambda-Update-State` Retry omits `States.TaskFailed` — DynamoDB throttle surfaced as a task failure is not retried | Added `"States.TaskFailed"` to `ErrorEquals`; increased `MaxAttempts` to 3 |
+| MEDIUM | `_write_partition` wraps serialization (Polars/PyArrow) and S3 write in one try-block — serialization errors logged as "S3 errors" | Split into two phases: serialization phase (generic `Exception`) and write phase (`ClientError` only) |
+| MEDIUM | `update_last_processed_date` error log omits `processed_date` — hard to correlate failures to specific dates | Added `processed_date={processed_date}` to `ClientError` log message |
+| LOW | Redundant outer `except Exception` in `main()` double-logs the same traceback | Removed outer try/except; inner per-key handler is sufficient |
+| LOW | `test_reraises_on_bad_file` used `pytest.raises(Exception)` — too broad | Tightened to `pytest.raises(json.JSONDecodeError)` |
+| LOW | Choice state comment missing documentation on why it has no Catch block | Added inline comment to `Check-New-Data` state |
+| NEW TEST | `_handle_update_state` with `DYNAMODB=None` crashes before guard | Added `test_update_state_raises_when_dynamodb_not_configured` |
+| NEW TEST | `_handle_update_state` with missing `end_date` key | Added `test_update_state_raises_on_missing_end_date` |
+
+**Test count after fixes:** 54 (was 52) — all passing, 95% coverage, ruff clean, terraform validate + fmt clean.
+
 ---
 
 ### Day 3-4: Multi-Source Ingestion

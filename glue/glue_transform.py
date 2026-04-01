@@ -74,35 +74,37 @@ def list_json_keys(bucket: str) -> List[str]:
 
 def _write_partition(df: "pl.DataFrame", out_key: str) -> None:
     """Write a single-date DataFrame to S3 in the configured output format."""
+    # Phase 1: serialization (Polars/PyArrow errors logged separately from S3 errors)
     try:
         if output_format == "parquet":
             buffer = io.BytesIO()
             pq.write_table(df.to_arrow(), buffer)
             buffer.seek(0)
-            s3.put_object(
-                Bucket=processed_bucket,
-                Key=out_key,
-                Body=buffer.getvalue(),
-                ContentType="application/x-parquet",
-            )
+            body: bytes = buffer.getvalue()
+            content_type = "application/x-parquet"
         else:
-            s3.put_object(
-                Bucket=processed_bucket,
-                Key=out_key,
-                Body=df.write_csv(),
-                ContentType="text/csv",
-            )
+            body = df.write_csv().encode()
+            content_type = "text/csv"
+    except Exception:
+        logger.error(
+            f"Serialization error for partition s3://{processed_bucket}/{out_key} "
+            f"(format={output_format})",
+            exc_info=True,
+        )
+        raise
+
+    # Phase 2: S3 write
+    try:
+        s3.put_object(
+            Bucket=processed_bucket,
+            Key=out_key,
+            Body=body,
+            ContentType=content_type,
+        )
     except ClientError as e:
         logger.error(
             f"S3 error writing partition s3://{processed_bucket}/{out_key}: "
             f"{e.response['Error']['Code']}",
-            exc_info=True,
-        )
-        raise
-    except Exception:
-        logger.error(
-            f"Failed to write partition s3://{processed_bucket}/{out_key} "
-            f"(format={output_format})",
             exc_info=True,
         )
         raise
@@ -164,25 +166,20 @@ def process_key(key: str) -> List[str]:
 # Main
 # -----------------------------
 def main() -> None:
-    try:
-        keys = list_json_keys(raw_bucket)
-        logger.info(f"Found {len(keys)} JSON files")
+    keys = list_json_keys(raw_bucket)
+    logger.info(f"Found {len(keys)} JSON files")
 
-        for i, key in enumerate(keys):
-            try:
-                process_key(key)
-            except Exception:
-                logger.error(
-                    f"ETL failed on key={key} ({i}/{len(keys)} files processed before failure)",
-                    exc_info=True,
-                )
-                raise
+    for i, key in enumerate(keys):
+        try:
+            process_key(key)
+        except Exception:
+            logger.error(
+                f"ETL failed on key={key} ({i}/{len(keys)} files processed before failure)",
+                exc_info=True,
+            )
+            raise
 
-        logger.info("ETL completed successfully")
-
-    except Exception:
-        logger.error("ETL failed", exc_info=True)
-        raise
+    logger.info("ETL completed successfully")
 
 
 if __name__ == "__main__":

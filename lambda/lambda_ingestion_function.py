@@ -71,8 +71,8 @@ def update_last_processed_date(processed_date: str) -> None:
         )
     except ClientError as e:
         logger.error(
-            f"Failed to update state in DynamoDB table {STATE_TABLE}: "
-            f"{e.response['Error']['Code']}",
+            f"Failed to update state in DynamoDB table {STATE_TABLE} "
+            f"(processed_date={processed_date}): {e.response['Error']['Code']}",
             exc_info=True,
         )
         raise
@@ -156,7 +156,17 @@ def lambda_handler(event: dict, _context: Any) -> dict:
 
 def _handle_update_state(event: dict) -> dict:
     """Commit last_processed_date to DynamoDB. Called by Step Functions after Glue succeeds."""
-    end_date: str = event["end_date"]
+    if DYNAMODB is None or STATE_TABLE is None:
+        raise RuntimeError(
+            "update_state action requires STATE_TABLE env var — "
+            "Lambda is not configured for incremental mode"
+        )
+    end_date = event.get("end_date")
+    if not end_date:
+        logger.error(
+            f"update_state called without 'end_date'. Received keys: {list(event.keys())}"
+        )
+        raise ValueError("Missing required field 'end_date' in update_state event")
     update_last_processed_date(end_date)
     return {"status": "state_updated", "last_processed_date": end_date}
 

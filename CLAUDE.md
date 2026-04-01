@@ -111,7 +111,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 52 tests, 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 54 tests, 95% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests
@@ -133,9 +133,9 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 |------|----------|
 | `lambda/lambda_ingestion_function.py` | 100% |
 | `lambda/lambda_validation_function.py` | 100% |
-| `glue/glue_transform.py` | 92% (uncovered: generic `except Exception` fallthrough in `list_json_keys`/`process_key`, `if __name__` guard) |
+| `glue/glue_transform.py` | 87% (uncovered: `except Exception` fallthrough in `list_json_keys`/`process_key`, serialization error path in `_write_partition`, `if __name__` guard) |
 
-**Overall: 97% (217 statements, 7 missed)**
+**Overall: 95% (247 statements, 13 missed)**
 
 ## CI/CD
 

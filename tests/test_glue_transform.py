@@ -195,7 +195,7 @@ class TestMain:
             Bucket="test-raw-bucket", Key="bad.json", Body=b"not json"
         )
 
-        with pytest.raises(Exception):
+        with pytest.raises(json.JSONDecodeError):
             glue_transform.main()
 
 
