@@ -88,10 +88,10 @@ resource "aws_sfn_state_machine" "etl" {
         TimeoutSeconds = 30,
         Retry = [
           {
-            # States.TaskFailed is a broader fallback for task-layer failures not caught
-            # by the specific Lambda codes above. DynamoDB throttles inside the Lambda
-            # surface as Lambda.AWSLambdaException; States.TaskFailed covers orchestration-
-            # level failures (e.g. resource limits hit at the Step Functions layer).
+            # States.TaskFailed is a broader catch for Step Functions orchestration-level
+            # failures not covered by the Lambda-specific codes above (e.g. SDK-layer
+            # throttles at the SFN control plane). DynamoDB throttles raised inside the
+            # Lambda function itself surface as Lambda.AWSLambdaException (already listed).
             ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
             IntervalSeconds = 3,
             MaxAttempts     = 3,

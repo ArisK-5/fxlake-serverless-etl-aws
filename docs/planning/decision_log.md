@@ -292,7 +292,7 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 ### D31: _write_partition split into serialization and write phases
 
 **Context:** A single try-block in `_write_partition` caught both Polars/PyArrow serialization errors and `boto3.client.put_object` (S3) errors, logging them both as "S3 errors." This made Polars type errors or Arrow conversion failures hard to distinguish from genuine S3 connectivity issues in CloudWatch logs.
-**Decision:** Split into two sequential try-blocks: Phase 1 catches `Exception` (serialization) and logs `format={output_format}`; Phase 2 catches `ClientError` only (S3 write) and logs the AWS error code.
+**Decision:** Split into two sequential try-blocks: Phase 1 catches `(PolarsError, ArrowException, ValueError, OSError)` (serialization) and logs `format={output_format}` plus exception type/message; Phase 2 catches `ClientError` only (S3 write) and logs the AWS error code.
 **Rationale:** Correct error attribution speeds up debugging. A `ArrowInvalid` logged as "S3 error writing partition" wastes time investigating S3 permissions when the issue is actually a schema problem.
 
 ### D32: get_last_processed_date uses allowlist for transient DynamoDB errors

@@ -110,9 +110,9 @@ class TestProcessKeyParquet:
         _put_json(s3_mock, "rates.json", SAMPLE_RATES_JSON)
         error_response = {"Error": {"Code": "AccessDenied", "Message": "Denied"}}
         with patch.object(glue_transform, "s3") as mock_s3:
-            mock_s3.get_object.return_value = s3_mock.get_object(
-                Bucket="test-raw-bucket", Key="rates.json"
-            )
+            mock_s3.get_object.return_value = {
+                "Body": io.BytesIO(json.dumps(SAMPLE_RATES_JSON).encode())
+            }
             mock_s3.put_object.side_effect = ClientError(error_response, "PutObject")
 
             with pytest.raises(ClientError):
@@ -124,7 +124,9 @@ class TestProcessKeyParquet:
 
         _put_json(s3_mock, "rates.json", SAMPLE_RATES_JSON)
         monkeypatch.setattr(
-            pq, "write_table", MagicMock(side_effect=pyarrow.lib.ArrowException("bad"))
+            glue_transform.pq,
+            "write_table",
+            MagicMock(side_effect=pyarrow.lib.ArrowException("bad")),
         )
 
         with pytest.raises(pyarrow.lib.ArrowException):

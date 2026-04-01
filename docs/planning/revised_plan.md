@@ -461,6 +461,24 @@ Fourth review pass identified error-handling correctness gaps and documentation 
 
 **Test count after fixes:** 57 (was 54) — all passing, 98% coverage, ruff clean, terraform validate + fmt clean.
 
+#### Post-review fixes — round 5 (2026-04-01)
+
+**Status:** ✅ COMPLETED (2026-04-01)
+
+Fifth review pass addressed documentation clarity, test robustness, and namespace correctness:
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| MEDIUM | `step_function.tf` `States.TaskFailed` comment was internally contradictory — said DynamoDB throttles surface as both `States.TaskFailed` and `Lambda.AWSLambdaException` | Rewritten: DynamoDB throttles inside Lambda → `Lambda.AWSLambdaException`; `States.TaskFailed` is for SFN orchestration-layer failures only |
+| LOW | `get_last_processed_date` docstring referenced "allowlist" without naming the constant | Updated to explicitly reference `_TRANSIENT_DYNAMODB_READ_CODES` |
+| LOW | `_incremental_ingest` docstring omitted `Check-New-Data` Choice state name | Added explicit state name and routing description |
+| LOW | `decision_log.md` D31 description said "`except Exception`" after it was already narrowed to a specific tuple | Corrected to `(PolarsError, ArrowException, ValueError, OSError)` |
+| LOW | `test_falls_back_on_transient_dynamodb_error` only tested one allowlist code (`ProvisionedThroughputExceededException`) | Extended to `@pytest.mark.parametrize` across all 4 allowlist codes |
+| LOW | `test_s3_write_failure_raises_client_error` used eager `s3_mock.get_object()` to produce stream — fragile with moto upgrades | Replaced with `{"Body": io.BytesIO(...)}` inline mock |
+| LOW | `test_serialization_failure_raises` patched `pq.write_table` (test-file import) instead of `glue_transform.pq.write_table` | Fixed to `monkeypatch.setattr(glue_transform.pq, "write_table", ...)` |
+
+**Test count after fixes:** 60 (was 57) — all passing, 98% coverage, ruff clean, terraform validate + fmt clean.
+
 ---
 
 ### Day 3-4: Multi-Source Ingestion

@@ -138,14 +138,18 @@ class TestGetLastProcessedDate:
 
         assert result == "2024-01-15"
 
-    def test_falls_back_on_transient_dynamodb_error(self):
-        """Transient errors (throttling) fall back to START_DATE — pipeline can still run."""
-        error_response = {
-            "Error": {
-                "Code": "ProvisionedThroughputExceededException",
-                "Message": "Throttled",
-            }
-        }
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ThrottlingException",
+            "InternalServerError",
+        ],
+    )
+    def test_falls_back_on_transient_dynamodb_error(self, code):
+        """All four allowlisted transient codes fall back to START_DATE."""
+        error_response = {"Error": {"Code": code, "Message": "Transient"}}
         mock_ddb = MagicMock()
         mock_ddb.get_item.side_effect = ClientError(error_response, "GetItem")
 

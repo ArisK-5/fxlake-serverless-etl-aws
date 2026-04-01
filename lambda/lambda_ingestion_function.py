@@ -40,11 +40,12 @@ _TRANSIENT_DYNAMODB_READ_CODES = frozenset({
 def get_last_processed_date() -> str:
     """Read last_processed_date from DynamoDB; returns START_DATE if no entry exists.
 
-    On transient DynamoDB errors (throttling, internal errors) falls back to START_DATE
-    with a warning so the pipeline can still run. On permanent errors
-    (ResourceNotFoundException, AccessDeniedException, or any unrecognised code)
-    re-raises immediately — these indicate misconfiguration that would cause silent
-    data duplication if ignored.
+    On transient DynamoDB errors falls back to START_DATE with a warning so the
+    pipeline can still run. "Transient" is defined by the ``_TRANSIENT_DYNAMODB_READ_CODES``
+    allowlist (module-level constant) — any error code not in that set re-raises
+    immediately, including ``ResourceNotFoundException``, ``AccessDeniedException``,
+    and any unrecognised code. Unknown codes are treated as permanent to prevent
+    silent data duplication.
     """
     try:
         resp = DYNAMODB.get_item(
@@ -205,8 +206,9 @@ def _handle_update_state(event: dict) -> dict:
 def _incremental_ingest() -> dict:
     """Fetch only dates newer than last_processed_date in DynamoDB.
 
-    Returns ``{"status": "no_new_data", ...}`` when already caught up — Step Functions
-    routes to ``Pipeline-Already-Up-To-Date`` (Succeed state) on this value.
+    Returns ``{"status": "no_new_data", ...}`` when already caught up — the Step
+    Functions ``Check-New-Data`` Choice state routes to ``Pipeline-Already-Up-To-Date``
+    (Succeed state) when it sees this status value.
     Returns ``{"status": "ok", "end_date": ..., ...}`` on a successful fetch — the
     ``end_date`` key is consumed by the ``Lambda-Update-State`` step post-Glue.
     Does NOT commit state to DynamoDB; that is deferred to Lambda-Update-State.
