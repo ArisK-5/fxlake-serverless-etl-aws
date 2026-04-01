@@ -46,12 +46,21 @@ uv run assets/dev-workflow.py
 
 ## Architecture
 
-The pipeline is orchestrated by **Step Functions** and runs on a daily **EventBridge** schedule:
+The pipeline is orchestrated by **Step Functions** and triggered daily by **EventBridge**, which invokes the Step Functions state machine directly (not the Lambda):
 
-1. **Lambda (Ingestion)** — fetches FX rates JSON from Frankfurter API → saves to S3 raw bucket
-2. **Glue Job (Python Shell)** — reads raw JSON from S3, flattens nested `{date: {currency: rate}}` structure using **Polars**, writes Parquet/CSV to processed S3 bucket
-3. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
-4. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
+1. **Lambda (Ingestion)** — reads `last_processed_date` from DynamoDB state table, computes incremental fetch range (`last_processed_date+1` to today capped at `END_DATE`), fetches FX rates JSON from Frankfurter API → saves to S3 raw bucket. Returns `status: "no_new_data"` if already caught up. **Does not update DynamoDB** — that is deferred to step 4.
+2. **Choice (Check-New-Data)** — if ingestion returned `no_new_data`, routes to `Pipeline-Already-Up-To-Date` (Succeed); otherwise continues to Glue.
+3. **Glue Job (Python Shell)** — reads raw JSON from S3, flattens nested `{date: {currency: rate}}` structure using **Polars**, writes Parquet/CSV to processed S3 bucket
+4. **Lambda (Update-State)** — commits `last_processed_date` to DynamoDB **only after Glue succeeds**, preventing state corruption on Glue failure. Calls the **same ingestion Lambda** with `{"action": "update_state", "end_date": "..."}` — the Lambda's `_handle_update_state` branch handles this path.
+5. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
+6. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
+
+### Incremental Processing
+
+The ingestion Lambda supports two modes controlled by the `STATE_TABLE` env var:
+
+- **Incremental mode** (`STATE_TABLE` set): reads `last_processed_date` from DynamoDB (`pipeline_id="fxlake"`, `source="frankfurter"`), defaults to `START_DATE` on first run. Fetches `last_processed_date+1` to `min(today, END_DATE)`. Returns `end_date` in payload for Step Functions to pass to the `Lambda-Update-State` step.
+- **Static fallback** (`STATE_TABLE` not set): fetches the full `START_DATE..END_DATE` range (original behavior, used for backfills/testing).
 
 ### Step Functions Error Handling
 
@@ -65,8 +74,9 @@ Every state has Retry and Catch blocks:
 
 | File | What it defines |
 |------|----------------|
-| `step_function.tf` | ASL definition for the 4-stage orchestration with Retry/Catch + 4 Fail states |
-| `lambda.tf` | Both Lambda functions + EventBridge daily trigger |
+| `step_function.tf` | ASL definition for 6-stage orchestration: Ingestion → Choice → Glue → Update-State → Athena → Validation, with Retry/Catch + 5 Fail states + Succeed state. Uses `ResultPath` throughout to preserve state across stages. |
+| `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
+| `lambda.tf` | Both Lambda functions + EventBridge rule/target (→ Step Functions) |
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow dependencies) |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |
@@ -83,15 +93,17 @@ Every state has Retry and Catch blocks:
 ### S3 Bucket Layout
 
 - **Raw:** `exchange_rates_{BASE}_{START}_to_{END}.json`
-- **Processed:** `exchange_rates/exchange_rates_{BASE}_{START}_to_{END}.parquet`
+- **Processed (partitioned):** `exchange_rates/year=YYYY/month=MM/day=DD/{stem}.parquet`
 - **Athena results:** `results/` (1-day TTL)
 - **CloudTrail logs:** `AWSLogs/{account-id}/...`
+
+Glue writes one Parquet file per date in the source JSON. Athena uses **partition projection** (configured in `athena.tf`) to resolve partitions without `MSCK REPAIR TABLE`. The Glue catalog table defines `year`, `month`, `day` as partition keys with integer type and zero-padded digits.
 
 ## Error Handling Patterns
 
 All source files follow these conventions:
 
-- **Module-level config**: `os.environ[]` (not `os.getenv`) — fails fast at cold start if vars are missing
+- **Module-level config**: `os.environ[]` (not `os.getenv`) for required vars — fails fast at cold start if missing. `os.getenv()` for optional vars (e.g., `STATE_TABLE`)
 - **Exception catches are type-specific**: `ClientError` for AWS SDK errors, `Timeout`/`HTTPError`/`ConnectionError` for HTTP, `json.JSONDecodeError`/`KeyError`/`ValueError` for data parsing
 - **All catches re-raise** after logging — no silent swallowing (except `publish_custom_metric` which catches `Exception` because metric failure must not abort validation)
 - **All error logs include context**: bucket names, filenames, API URLs, query IDs, error codes
@@ -99,7 +111,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 37 tests, 96% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 60 tests, 98% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests
@@ -112,6 +124,8 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 - `awsglue.utils` is mocked in `conftest.py` via `sys.modules` before any import of `glue_transform` — required because `getResolvedOptions` runs at module level
 - Module-level env vars (`RAW_BUCKET`, `START_DATE`, etc.) are set via `os.environ.setdefault` before Lambda modules are imported
 - `s3_mock` fixture activates `mock_aws()` and creates both S3 buckets (`test-raw-bucket`, `test-processed-bucket`)
+- `aws_mock` fixture activates `mock_aws()` with S3 buckets + DynamoDB `test-state-table`; used by incremental ingestion tests
+- Incremental tests patch `ingestion.STATE_TABLE` and `ingestion.DYNAMODB` via `patch.object` (module-level vars are `None` when `STATE_TABLE` env var is absent)
 
 ### Test Coverage
 
@@ -119,7 +133,40 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 |------|----------|
 | `lambda/lambda_ingestion_function.py` | 100% |
 | `lambda/lambda_validation_function.py` | 100% |
-| `glue/glue_transform.py` | 92% (uncovered: generic `except Exception` fallthrough in `list_json_keys`/`process_key`, `if __name__` guard) |
+| `glue/glue_transform.py` | 96% (uncovered: `except Exception` fallthrough in `list_json_keys`, `if __name__` guard) |
+
+**Overall: 98% (249 statements, 4 missed)**
+
+## CI/CD
+
+Two GitHub Actions workflows in `.github/workflows/`:
+
+| Workflow | Trigger | Jobs |
+|----------|---------|------|
+| `ci.yml` | PR → `main` or `fxlake-v2-production` | `python-lint-test` (ruff + pytest), `terraform-validate` (init + validate + fmt check) |
+| `deploy.yml` | Push → `main` or `fxlake-v2-production` | `terraform-plan` (always, uploads `tfplan` artifact with 1-day retention), `terraform-apply` (downloads artifact, manual approval via `production` environment — applies the exact plan from the plan job, not a fresh plan) |
+
+### AWS Authentication (OIDC)
+
+The deploy workflow uses OIDC — no long-lived AWS keys stored in GitHub. Required setup:
+1. Create an IAM role with `sts:AssumeRoleWithWebIdentity` trust for `token.actions.githubusercontent.com`
+2. Store the role ARN as `AWS_ROLE_ARN` in repo secrets (Settings → Secrets → Actions)
+
+### Terraform Variables in CI
+
+Each `variables.tf` input that has no default must be stored as a GitHub secret prefixed with `TF_`. The deploy workflow writes them to `terraform.tfvars` at runtime via environment variables (never interpolated inline in `run:` steps — security best practice).
+
+Required secrets: `TF_RAW_BUCKET_NAME`, `TF_PROCESSED_BUCKET_NAME`, `TF_ATHENA_RESULTS_BUCKET_NAME`, `TF_CLOUDTRAIL_LOGS_BUCKET_NAME`, `TF_SNS_EMAIL_ADDRESS`.
+
+### Linting
+
+Ruff config is in `pyproject.toml` (`[tool.ruff]`). Rules: E, F, W, I (PEP 8 + imports).
+`tests/conftest.py` suppresses E402 (intentional late imports for `sys.modules` patching).
+
+```bash
+uv run ruff check .        # lint
+uv run ruff check . --fix  # auto-fix
+```
 
 ## Planning
 

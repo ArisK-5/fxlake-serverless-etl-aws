@@ -48,6 +48,28 @@ resource "aws_iam_role_policy_attachment" "lambda_s3_attach" {
   policy_arn = aws_iam_policy.lambda_s3_policy.arn
 }
 
+resource "aws_iam_policy" "lambda_dynamodb_policy" {
+  name = "fxlake-lambda-dynamodb"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+        ],
+        Effect   = "Allow",
+        Resource = aws_dynamodb_table.pipeline_state.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_dynamodb_attach" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_dynamodb_policy.arn
+}
+
 resource "aws_iam_role_policy" "check_query_results_policy" {
   role = aws_iam_role.lambda_exec.id
   policy = jsonencode({
@@ -227,6 +249,32 @@ resource "aws_iam_role_policy" "sfn_policy" {
         # Resource = "${aws_cloudwatch_log_group.stepfunctions_logs.arn}:*"
       }
     ]
+  })
+}
+
+# EventBridge role to invoke Step Functions
+resource "aws_iam_role" "eventbridge_sfn_invoke_role" {
+  name = "fxlake-eventbridge-sfn-invoke-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
+      Principal = { Service = "events.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "eventbridge_sfn_invoke_policy" {
+  name = "fxlake-eventbridge-sfn-invoke-policy"
+  role = aws_iam_role.eventbridge_sfn_invoke_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect   = "Allow",
+      Action   = "states:StartExecution",
+      Resource = aws_sfn_state_machine.etl.arn
+    }]
   })
 }
 

@@ -14,6 +14,7 @@ resource "aws_lambda_function" "api_ingest" {
       END_DATE      = var.fx_end_date
       BASE_CURRENCY = var.fx_base_currency
       BASE_API_URL  = var.fx_base_api_url
+      STATE_TABLE   = aws_dynamodb_table.pipeline_state.name
     }
   }
 }
@@ -35,23 +36,16 @@ resource "aws_lambda_function" "check_query_results" {
   }
 }
 
-# EventBridge (CloudWatch Events) scheduled rule — daily by default
+# EventBridge (CloudWatch Events) scheduled rule — triggers the full pipeline daily
 resource "aws_cloudwatch_event_rule" "daily" {
   name                = "fxlake-daily-ingest"
-  description         = "Daily trigger for FXLake Lambda Ingestion"
+  description         = "Daily trigger for FXLake ETL Step Functions pipeline"
   schedule_expression = "rate(1 day)"
 }
 
-resource "aws_cloudwatch_event_target" "invoke_lambda" {
+resource "aws_cloudwatch_event_target" "invoke_step_function" {
   rule      = aws_cloudwatch_event_rule.daily.name
-  target_id = "lambda-API-Ingestion"
-  arn       = aws_lambda_function.api_ingest.arn
-}
-
-resource "aws_lambda_permission" "allow_eventbridge" {
-  statement_id  = "AllowExecutionFromEventBridge"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.api_ingest.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.daily.arn
+  target_id = "stepfunctions-ETL-Pipeline"
+  arn       = aws_sfn_state_machine.etl.arn
+  role_arn  = aws_iam_role.eventbridge_sfn_invoke_role.arn
 }

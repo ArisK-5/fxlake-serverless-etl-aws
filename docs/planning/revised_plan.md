@@ -33,7 +33,7 @@ Each "Day" below is a logical work unit of 5-8 hours, NOT a calendar day. At 2-3
 
 **Status:** ✅ COMPLETED (2026-03-30)
 **Branch:** `day-01-testing-foundation`
-**PRs:** #9 (→ fxlake-v2-production)
+**PRs:** #10 (→ fxlake-v2-production)
 
 **Rationale:** Tests must exist BEFORE any refactoring. Step Function error handling is quick and prevents cascading failures during development.
 
@@ -153,19 +153,35 @@ After completing, update:
 
 #### Session 2A: Incremental ingestion (morning)
 
+**Status:** ✅ COMPLETED (2026-03-31)
+
 **Approach:** REFACTOR existing Lambda + Terraform
 **Files affected:**
 - `lambda/lambda_ingestion_function.py` — dynamic date resolution
 - `terraform/lambda.tf` — update env vars
 - `terraform/variables.tf` — add DynamoDB table variable
-- `terraform/step_function.tf` — pass date params from input
+- `terraform/step_function.tf` — Choice state after ingestion
 
 **New files:**
 - `terraform/dynamodb.tf` — state tracking table
-- `terraform/iam.tf` — add DynamoDB permissions to Lambda role
+- `terraform/iam.tf` — DynamoDB permissions for Lambda role
 
 **Dependencies:** Tests from Day 1 (run before + after refactor)
 **Validation:** `uv run pytest tests/test_lambda_ingestion.py -v` + `cd terraform && terraform validate`
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| DynamoDB state table (partition: pipeline_id, sort: source) | ✅ Delivered | `fxlake-pipeline-state` via `terraform/dynamodb.tf` |
+| Incremental fetch with DynamoDB read/write | ✅ Delivered | `get_last_processed_date` + `update_last_processed_date` |
+| `no_new_data` early return | ✅ Delivered | Returns `{status: "no_new_data"}` when caught up |
+| Static fallback without STATE_TABLE | ✅ Delivered | `_static_ingest()` path, tested explicitly |
+| Choice state in Step Functions | ✅ Delivered | `Check-New-Data` Choice + `Pipeline-Already-Up-To-Date` Succeed state |
+| IAM DynamoDB policy | ✅ Delivered | `fxlake-lambda-dynamodb` policy with `GetItem`/`PutItem` only |
+| Update existing tests | ✅ Delivered | 8 new tests; existing tests updated for new function signatures |
+| Test count: ~20 incremental tests | 18 ingestion tests total (8 new + 10 updated) | Kept focused on real failure modes |
+| Coverage: maintain 96% | 97% total, ingestion Lambda 100% | Improved |
 
 **Claude Code prompt:**
 ```
@@ -197,10 +213,13 @@ After completing, update:
 
 #### Session 2B: S3 partitioning + CI/CD (afternoon)
 
+**Status:** ✅ COMPLETED (2026-03-31)
+
 **Approach:** REFACTOR Glue + NET-NEW CI/CD
 **Files affected:**
 - `glue/glue_transform.py` — add partitioned output paths
 - `terraform/athena.tf` — add partition projection
+- `pyproject.toml` — add ruff + ruff config
 
 **New files:**
 - `.github/workflows/ci.yml` — lint + test on PR
@@ -208,6 +227,19 @@ After completing, update:
 
 **Dependencies:** Tests passing
 **Validation:** `uv run pytest -v` + `cd terraform && terraform validate`
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| Partitioned Glue output | ✅ Delivered | `year=YYYY/month=MM/day=DD/` Hive partitions, one file per date |
+| Partition projection in Athena | ✅ Delivered | Integer type + `digits=2` for zero-padded paths, no MSCK REPAIR needed |
+| `ci.yml` — lint + test on PR | ✅ Delivered | ruff + pytest jobs, both jobs must pass |
+| `ci.yml` — terraform validate on PR | ✅ Delivered | init -backend=false + validate + fmt -check |
+| `deploy.yml` — plan + apply with OIDC | ✅ Delivered | Plan artifact → manual-approval Apply via `production` environment |
+| Ruff added as dev dep | ✅ Delivered | Configured in `pyproject.toml` with E/F/W/I rules |
+| Ruff CI-clean code | Fixed 3 isort violations | Auto-fixed by `ruff --fix`; root cause: import ordering in test files |
+| Secrets in `run:` — safe pattern | ✅ Used env: indirection | Secrets bound to job-level `env:`, referenced as `$VAR` in heredoc — not inline `${{ secrets.* }}` |
 
 **Claude Code prompt (Part 1 — Partitioning):**
 ```
@@ -258,10 +290,21 @@ After completing, update:
 
 #### Session 2C: Fix EventBridge Daily Trigger (evening)
 
-**Approach:** REFACTOR Terraform
-**Files affected:** terraform/lambda.tf
+**Status:** ✅ COMPLETED (2026-03-31)
 
-**Validation:** `cd terraform` + `terraform validate` + `terraform plan` # Should show: aws_cloudwatch_event_target changed
+**Approach:** REFACTOR Terraform
+**Files affected:** `terraform/lambda.tf`, `terraform/iam.tf`
+
+**Validation:** `cd terraform` + `terraform validate` ✓
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| Retarget EventBridge → Step Functions | ✅ Delivered | `aws_cloudwatch_event_target.invoke_step_function` |
+| IAM role for EventBridge | ✅ Delivered | `fxlake-eventbridge-sfn-invoke-role` with `states:StartExecution` only |
+| Remove `allow_eventbridge` Lambda permission | ✅ Delivered | Removed; EventBridge no longer invokes Lambda directly |
+| Rename target resource | ✅ Delivered | `invoke_lambda` → `invoke_step_function` |
 
 **Claude Code prompt (Part 3 — EventBridge Trigger):**
 ```
@@ -323,6 +366,118 @@ After completing, update:
 - docs/planning/revised_plan.md: mark Session 2C complete with planned-vs-delivered
 - docs/planning/decision_log.md: add any new decisions made during implementation
 ```
+
+#### Post-review fixes — round 1 (2026-03-31)
+
+**Status:** ✅ COMPLETED (2026-03-31)
+
+Three issues from first PR review pass were addressed:
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| HIGH | `TimeoutSeconds = 30` < Lambda timeout 60s in `step_function.tf` | Changed to `90` (60s Lambda + buffer) |
+| MEDIUM | Missing test: DynamoDB not updated when API fetch fails | Added `test_state_not_updated_on_fetch_failure` to `TestLambdaHandlerIncremental` |
+| LOW | `min(today, END_DATE)` string comparison needs explanation | Added inline comment: `# ISO format: string comparison == date comparison` |
+
+**Test count after fixes:** 46 (was 45) — all passing.
+
+#### Post-review fixes — round 2 (2026-03-31)
+
+**Status:** ✅ COMPLETED (2026-03-31)
+
+Second comprehensive review (code + tests + error handling) surfaced additional issues addressed before merge:
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| CRITICAL | DynamoDB updated before Glue — Glue failure creates silent data gap | Moved state commit to new `Lambda-Update-State` SFN state post-Glue. Ingestion Lambda now only returns `end_date` in payload. |
+| HIGH | `get_last_processed_date()` falls back to START_DATE on all `ClientError` — masks `AccessDeniedException`/`ResourceNotFoundException` | Re-raise on infrastructure errors; fallback only for transient errors |
+| HIGH | `_write_partition()` has no error handling — partition key/bucket missing from failure logs | Added try/except with `out_key` + bucket context in both `ClientError` and `Exception` handlers |
+| IMPORTANT | CI runs `pytest` without `--cov-fail-under` — coverage regression passes silently | Added `--cov=lambda --cov=glue --cov-report=term-missing --cov-fail-under=80` |
+| IMPORTANT | Missing test: DynamoDB not updated when S3 write fails | Added `test_state_not_updated_on_s3_write_failure` |
+| IMPORTANT | No explicit boundary test for `last_processed_date == END_DATE` | Added `test_no_new_data_when_last_processed_equals_end_date` |
+| MEDIUM | `main()` loop logs "ETL failed" without naming the failing key | Added per-key try/except logging `key` + progress before re-raise |
+| MEDIUM | Successful DynamoDB write logged at DEBUG (invisible under INFO) | Elevated to `INFO` with table name |
+| LOW | `TestMain` only reads one partition — second partition write undetected | Updated to assert all 4 output files (2 dates × 2 source files) |
+| LOW | Unused `context` parameter in `lambda_handler` | Renamed to `_context` |
+
+**Test count after fixes:** 52 (was 46) — all passing, ruff clean, terraform validate clean.
+
+#### CI fixes (2026-03-31)
+
+**Status:** ✅ COMPLETED (2026-03-31)
+
+Two CI failures addressed after the second review push:
+
+| Issue | Fix |
+|-------|-----|
+| `terraform validate` failed: `filebase64sha256()` called on missing `.zip` files (deploy builds them via `make package`; CI doesn't) | Added `touch lambda/*.zip` step in `ci.yml` before `terraform init` — satisfies the function without a real build |
+| `terraform fmt -check` failed: spacing inconsistency in `step_function.tf` introduced by the `ResultPath` alignment edits | Ran `terraform fmt` locally; committed formatted file |
+| Node.js 20 deprecation warning on all action runners | Added `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` to `env:` in both `ci.yml` and `deploy.yml` |
+
+#### Post-review fixes — round 3 (2026-03-31)
+
+**Status:** ✅ COMPLETED (2026-03-31)
+
+Third comprehensive review surfaced safety and robustness gaps in the new `_handle_update_state` path and `_write_partition` error attribution:
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| CRITICAL | `_handle_update_state` crashes with `AttributeError` when `DYNAMODB is None` (Lambda not in incremental mode) | Added guard: `if DYNAMODB is None or STATE_TABLE is None: raise RuntimeError(...)` |
+| HIGH | `event["end_date"]` raises bare `KeyError` without log context if Step Functions payload is malformed | Changed to `event.get("end_date")` + explicit `ValueError` with `list(event.keys())` in error log |
+| HIGH | `Lambda-Update-State` Retry omits `States.TaskFailed` — DynamoDB throttle surfaced as a task failure is not retried | Added `"States.TaskFailed"` to `ErrorEquals`; increased `MaxAttempts` to 3 |
+| MEDIUM | `_write_partition` wraps serialization (Polars/PyArrow) and S3 write in one try-block — serialization errors logged as "S3 errors" | Split into two phases: serialization phase (generic `Exception`) and write phase (`ClientError` only) |
+| MEDIUM | `update_last_processed_date` error log omits `processed_date` — hard to correlate failures to specific dates | Added `processed_date={processed_date}` to `ClientError` log message |
+| LOW | Redundant outer `except Exception` in `main()` double-logs the same traceback | Removed outer try/except; inner per-key handler is sufficient |
+| LOW | `test_reraises_on_bad_file` used `pytest.raises(Exception)` — too broad | Tightened to `pytest.raises(json.JSONDecodeError)` |
+| LOW | Choice state comment missing documentation on why it has no Catch block | Added inline comment to `Check-New-Data` state |
+| NEW TEST | `_handle_update_state` with `DYNAMODB=None` crashes before guard | Added `test_update_state_raises_when_dynamodb_not_configured` |
+| NEW TEST | `_handle_update_state` with missing `end_date` key | Added `test_update_state_raises_on_missing_end_date` |
+
+**Test count after fixes:** 54 (was 52) — all passing, 95% coverage, ruff clean, terraform validate + fmt clean.
+
+#### Post-review fixes — round 4 (2026-04-01)
+
+**Status:** ✅ COMPLETED (2026-04-01)
+
+Fourth review pass identified error-handling correctness gaps and documentation inaccuracies:
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| CRITICAL | `get_last_processed_date` denylist for DynamoDB errors — `ValidationException`, `SerializationException` silently treated as transient, causing re-fetch from `START_DATE` and data duplication | Converted to allowlist (`_TRANSIENT_DYNAMODB_READ_CODES` frozenset); all unrecognised error codes now re-raise |
+| IMPORTANT | `Lambda-Validation-Query` Retry missing `Lambda.AWSLambdaException` — inconsistent with all other Lambda states, causing spurious `Validation-Failed` on transient unhandled exceptions | Added `Lambda.AWSLambdaException` to Retry `ErrorEquals` |
+| IMPORTANT | `_write_partition` S3 ClientError path (lines 104-110) had no test | Added `test_s3_write_failure_raises_client_error` |
+| IMPORTANT | `_write_partition` serialization Exception path (lines 88-94) had no test | Added `test_serialization_failure_raises` |
+| IMPORTANT | `update_state` empty-string `end_date` not guarded by test | Added `test_update_state_raises_on_empty_end_date` |
+| MEDIUM | `_write_partition` serialization phase used broad `except Exception` — code defects logged as "Serialization error" | Tightened to `(pl.exceptions.PolarsError, pyarrow.lib.ArrowException, ValueError, OSError)`; added `{type(e).__name__}: {e}` to log message |
+| MEDIUM | `step_function.tf` Check-New-Data comment "set here" was misleading — Choice states set nothing | Reworded to clarify passive pass-through behaviour |
+| MEDIUM | `step_function.tf` line 91 `States.TaskFailed` comment conflated DynamoDB throttles with orchestration-layer failures | Rewritten to accurately describe both error surfaces |
+| MEDIUM | `CLAUDE.md` step 4 "Invokes the ingestion Lambda" implied a separate function | Clarified to "Calls the **same** ingestion Lambda — `_handle_update_state` branch" |
+| LOW | `deploy.yml` comment said "push to main" — omitted `fxlake-v2-production` | Updated comment to name both branches; added note about plan artifact apply |
+| LOW | `CLAUDE.md` deploy.yml table row omitted plan artifact coupling | Extended row description |
+| LOW | `TestProcessKeyCSV.test_csv_output` only asserted first partition | Added `PARTITION_JAN03` assertion |
+| LOW | `get_last_processed_date` docstring omitted transient-error fallback behaviour | Expanded docstring with fallback and re-raise conditions |
+| LOW | `_handle_update_state` docstring omitted args/return/raises | Added `Args:`, `Returns:`, `Raises:` sections |
+| LOW | `_incremental_ingest` docstring omitted `no_new_data` return contract | Expanded to document both return paths and Step Functions routing |
+
+**Test count after fixes:** 57 (was 54) — all passing, 98% coverage, ruff clean, terraform validate + fmt clean.
+
+#### Post-review fixes — round 5 (2026-04-01)
+
+**Status:** ✅ COMPLETED (2026-04-01)
+
+Fifth review pass addressed documentation clarity, test robustness, and namespace correctness:
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| MEDIUM | `step_function.tf` `States.TaskFailed` comment was internally contradictory — said DynamoDB throttles surface as both `States.TaskFailed` and `Lambda.AWSLambdaException` | Rewritten: DynamoDB throttles inside Lambda → `Lambda.AWSLambdaException`; `States.TaskFailed` is for SFN orchestration-layer failures only |
+| LOW | `get_last_processed_date` docstring referenced "allowlist" without naming the constant | Updated to explicitly reference `_TRANSIENT_DYNAMODB_READ_CODES` |
+| LOW | `_incremental_ingest` docstring omitted `Check-New-Data` Choice state name | Added explicit state name and routing description |
+| LOW | `decision_log.md` D31 description said "`except Exception`" after it was already narrowed to a specific tuple | Corrected to `(PolarsError, ArrowException, ValueError, OSError)` |
+| LOW | `test_falls_back_on_transient_dynamodb_error` only tested one allowlist code (`ProvisionedThroughputExceededException`) | Extended to `@pytest.mark.parametrize` across all 4 allowlist codes |
+| LOW | `test_s3_write_failure_raises_client_error` used eager `s3_mock.get_object()` to produce stream — fragile with moto upgrades | Replaced with `{"Body": io.BytesIO(...)}` inline mock |
+| LOW | `test_serialization_failure_raises` patched `pq.write_table` (test-file import) instead of `glue_transform.pq.write_table` | Fixed to `monkeypatch.setattr(glue_transform.pq, "write_table", ...)` |
+
+**Test count after fixes:** 60 (was 57) — all passing, 98% coverage, ruff clean, terraform validate + fmt clean.
 
 ---
 

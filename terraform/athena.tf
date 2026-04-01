@@ -12,6 +12,33 @@ resource "aws_glue_catalog_table" "exchange_rates" {
   parameters = {
     EXTERNAL              = "TRUE"
     "parquet.compression" = "SNAPPY"
+
+    # Partition projection — eliminates manual MSCK REPAIR TABLE
+    "projection.enabled"        = "true"
+    "projection.year.type"      = "integer"
+    "projection.year.range"     = "2020,2030"
+    "projection.month.type"     = "integer"
+    "projection.month.range"    = "1,12"
+    "projection.month.digits"   = "2"
+    "projection.day.type"       = "integer"
+    "projection.day.range"      = "1,31"
+    "projection.day.digits"     = "2"
+    "storage.location.template" = "s3://${aws_s3_bucket.processed.bucket}/exchange_rates/year=$${year}/month=$${month}/day=$${day}"
+  }
+
+  partition_keys {
+    name = "year"
+    type = "int"
+  }
+
+  partition_keys {
+    name = "month"
+    type = "int"
+  }
+
+  partition_keys {
+    name = "day"
+    type = "int"
   }
 
   storage_descriptor {

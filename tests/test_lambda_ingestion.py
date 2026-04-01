@@ -1,12 +1,15 @@
 import json
-from unittest.mock import patch
+from datetime import date
+from unittest.mock import MagicMock, patch
 
+import lambda_ingestion_function as ingestion
 import pytest
 import requests
 import responses
 from botocore.exceptions import ClientError
 
-import lambda_ingestion_function as ingestion
+# Must match TEST_STATE_TABLE in conftest.py — both reference the same moto table name.
+TEST_STATE_TABLE = "test-state-table"
 
 SAMPLE_API_RESPONSE = {
     "base": "EUR",
@@ -22,14 +25,14 @@ API_URL = "https://api.frankfurter.app/2024-01-01..2024-01-31"
 
 
 # ---------------------------------------------------------------------------
-# fetch_exchange_rates()
+# fetch_exchange_rates(start_date, end_date)
 # ---------------------------------------------------------------------------
 class TestFetchExchangeRates:
     @responses.activate
     def test_successful_fetch(self):
         responses.add(responses.GET, API_URL, json=SAMPLE_API_RESPONSE, status=200)
 
-        result = ingestion.fetch_exchange_rates()
+        result = ingestion.fetch_exchange_rates("2024-01-01", "2024-01-31")
 
         assert result["base"] == "EUR"
         assert "2024-01-02" in result["rates"]
@@ -38,7 +41,7 @@ class TestFetchExchangeRates:
     def test_base_currency_param_sent(self):
         responses.add(responses.GET, API_URL, json=SAMPLE_API_RESPONSE, status=200)
 
-        ingestion.fetch_exchange_rates()
+        ingestion.fetch_exchange_rates("2024-01-01", "2024-01-31")
 
         assert "base=EUR" in responses.calls[0].request.url
 
@@ -51,7 +54,7 @@ class TestFetchExchangeRates:
         )
 
         with pytest.raises(requests.exceptions.Timeout):
-            ingestion.fetch_exchange_rates()
+            ingestion.fetch_exchange_rates("2024-01-01", "2024-01-31")
 
     @responses.activate
     def test_api_connection_error(self):
@@ -62,29 +65,29 @@ class TestFetchExchangeRates:
         )
 
         with pytest.raises(requests.exceptions.ConnectionError):
-            ingestion.fetch_exchange_rates()
+            ingestion.fetch_exchange_rates("2024-01-01", "2024-01-31")
 
     @responses.activate
     def test_api_non_json_response(self):
         responses.add(responses.GET, API_URL, body="<html>error</html>", status=200)
 
         with pytest.raises(requests.exceptions.JSONDecodeError):
-            ingestion.fetch_exchange_rates()
+            ingestion.fetch_exchange_rates("2024-01-01", "2024-01-31")
 
     @responses.activate
     def test_api_http_error(self):
         responses.add(responses.GET, API_URL, json={"error": "not found"}, status=404)
 
         with pytest.raises(requests.exceptions.HTTPError):
-            ingestion.fetch_exchange_rates()
+            ingestion.fetch_exchange_rates("2024-01-01", "2024-01-31")
 
 
 # ---------------------------------------------------------------------------
-# save_to_s3()
+# save_to_s3(data, start_date, end_date)
 # ---------------------------------------------------------------------------
 class TestSaveToS3:
     def test_saves_json_with_correct_key_and_metadata(self, s3_mock):
-        filename = ingestion.save_to_s3(SAMPLE_API_RESPONSE)
+        filename = ingestion.save_to_s3(SAMPLE_API_RESPONSE, "2024-01-01", "2024-01-31")
 
         assert filename == "exchange_rates_EUR_2024-01-01_to_2024-01-31.json"
 
@@ -103,13 +106,114 @@ class TestSaveToS3:
             mock_s3.put_object.side_effect = ClientError(error_response, "PutObject")
 
             with pytest.raises(ClientError):
-                ingestion.save_to_s3(SAMPLE_API_RESPONSE)
+                ingestion.save_to_s3(SAMPLE_API_RESPONSE, "2024-01-01", "2024-01-31")
 
 
 # ---------------------------------------------------------------------------
-# lambda_handler()
+# get_last_processed_date()
 # ---------------------------------------------------------------------------
-class TestLambdaHandler:
+class TestGetLastProcessedDate:
+    def test_returns_start_date_when_no_entry(self, aws_mock):
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ):
+            result = ingestion.get_last_processed_date()
+
+        assert result == "2024-01-01"  # START_DATE from conftest
+
+    def test_returns_stored_date(self, aws_mock):
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-15"},
+            },
+        )
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ):
+            result = ingestion.get_last_processed_date()
+
+        assert result == "2024-01-15"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "ProvisionedThroughputExceededException",
+            "RequestLimitExceeded",
+            "ThrottlingException",
+            "InternalServerError",
+        ],
+    )
+    def test_falls_back_on_transient_dynamodb_error(self, code):
+        """All four allowlisted transient codes fall back to START_DATE."""
+        error_response = {"Error": {"Code": code, "Message": "Transient"}}
+        mock_ddb = MagicMock()
+        mock_ddb.get_item.side_effect = ClientError(error_response, "GetItem")
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", mock_ddb
+        ):
+            result = ingestion.get_last_processed_date()
+
+        assert result == "2024-01-01"  # START_DATE from conftest
+
+    @pytest.mark.parametrize("code", ["ResourceNotFoundException", "AccessDeniedException"])
+    def test_re_raises_on_infrastructure_misconfiguration(self, code):
+        """Infrastructure errors (missing table, no permission) must not be silently hidden."""
+        error_response = {"Error": {"Code": code, "Message": "Misconfigured"}}
+        mock_ddb = MagicMock()
+        mock_ddb.get_item.side_effect = ClientError(error_response, "GetItem")
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", mock_ddb
+        ):
+            with pytest.raises(ClientError):
+                ingestion.get_last_processed_date()
+
+
+# ---------------------------------------------------------------------------
+# update_last_processed_date(date)
+# ---------------------------------------------------------------------------
+class TestUpdateLastProcessedDate:
+    def test_writes_date_to_dynamodb(self, aws_mock):
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ):
+            ingestion.update_last_processed_date("2024-01-31")
+
+        item = aws_mock["dynamodb"].get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+            },
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-31"
+
+    def test_raises_on_dynamodb_client_error(self):
+        error_response = {
+            "Error": {
+                "Code": "ProvisionedThroughputExceededException",
+                "Message": "Throttled",
+            }
+        }
+        mock_ddb = MagicMock()
+        mock_ddb.put_item.side_effect = ClientError(error_response, "PutItem")
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", mock_ddb
+        ):
+            with pytest.raises(ClientError):
+                ingestion.update_last_processed_date("2024-01-31")
+
+
+# ---------------------------------------------------------------------------
+# lambda_handler() — static mode (STATE_TABLE not set)
+# ---------------------------------------------------------------------------
+class TestLambdaHandlerStatic:
     @responses.activate
     def test_end_to_end_success(self, s3_mock):
         responses.add(responses.GET, API_URL, json=SAMPLE_API_RESPONSE, status=200)
@@ -122,7 +226,6 @@ class TestLambdaHandler:
         assert result["end_date"] == "2024-01-31"
         assert result["base"] == "EUR"
 
-        # Verify the file landed in S3
         obj = s3_mock.get_object(Bucket="test-raw-bucket", Key=result["key"])
         body = json.loads(obj["Body"].read())
         assert body["base"] == "EUR"
@@ -134,3 +237,222 @@ class TestLambdaHandler:
 
         with pytest.raises(requests.exceptions.HTTPError):
             ingestion.lambda_handler({}, None)
+
+
+# ---------------------------------------------------------------------------
+# lambda_handler() — incremental mode (STATE_TABLE set)
+# ---------------------------------------------------------------------------
+class TestLambdaHandlerIncremental:
+    @responses.activate
+    def test_no_new_data_when_caught_up(self, aws_mock):
+        today = date.today().isoformat()
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": today},
+            },
+        )
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ):
+            result = ingestion.lambda_handler({}, None)
+
+        assert result["status"] == "no_new_data"
+        assert result["last_processed_date"] == today
+
+    @responses.activate
+    def test_incremental_fetch_returns_payload_without_updating_state(self, aws_mock):
+        """Ingestion Lambda returns end_date in payload but does NOT write DynamoDB.
+        State commit is deferred to Lambda-Update-State in Step Functions (post-Glue)."""
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-14"},
+            },
+        )
+        # fetch range: 2024-01-15..min(today, END_DATE="2024-01-31") = 2024-01-15..2024-01-31
+        fetch_url = "https://api.frankfurter.app/2024-01-15..2024-01-31"
+        responses.add(responses.GET, fetch_url, json=SAMPLE_API_RESPONSE, status=200)
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ):
+            result = ingestion.lambda_handler({}, None)
+
+        assert result["status"] == "ok"
+        assert result["start_date"] == "2024-01-15"
+        assert result["end_date"] == "2024-01-31"
+
+        # DynamoDB must NOT be updated — state commit is Step Functions' responsibility
+        item = aws_mock["dynamodb"].get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-14"
+
+    @responses.activate
+    def test_first_run_uses_start_date(self, aws_mock):
+        # No DynamoDB entry — should default to START_DATE="2024-01-01"
+        fetch_url = "https://api.frankfurter.app/2024-01-02..2024-01-31"
+        responses.add(responses.GET, fetch_url, json=SAMPLE_API_RESPONSE, status=200)
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ):
+            result = ingestion.lambda_handler({}, None)
+
+        # START_DATE is 2024-01-01, so fetch starts from 2024-01-02
+        assert result["status"] == "ok"
+        assert result["start_date"] == "2024-01-02"
+
+    @responses.activate
+    def test_state_not_updated_on_fetch_failure(self, aws_mock):
+        """DynamoDB state must remain unchanged when the API fetch fails."""
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-14"},
+            },
+        )
+        fetch_url = "https://api.frankfurter.app/2024-01-15..2024-01-31"
+        responses.add(responses.GET, fetch_url, json={"error": "server error"}, status=500)
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ):
+            with pytest.raises(requests.exceptions.HTTPError):
+                ingestion.lambda_handler({}, None)
+
+        # State must be unchanged — DynamoDB should still hold the pre-failure date
+        item = aws_mock["dynamodb"].get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-14"
+
+    def test_state_not_updated_on_s3_write_failure(self, aws_mock):
+        """DynamoDB state must remain unchanged when the S3 write fails."""
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-14"},
+            },
+        )
+        error_response = {"Error": {"Code": "AccessDenied", "Message": "Denied"}}
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ), patch.object(ingestion, "S3") as mock_s3:
+            mock_s3.put_object.side_effect = ClientError(error_response, "PutObject")
+
+            # Need a real API response so we reach the S3 write
+            with responses.RequestsMock() as rsps:
+                fetch_url = "https://api.frankfurter.app/2024-01-15..2024-01-31"
+                rsps.add(responses.GET, fetch_url, json=SAMPLE_API_RESPONSE, status=200)
+
+                with pytest.raises(ClientError):
+                    ingestion.lambda_handler({}, None)
+
+        # DynamoDB must be unchanged
+        item = aws_mock["dynamodb"].get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-14"
+
+    @responses.activate
+    def test_no_new_data_when_last_processed_equals_end_date(self, aws_mock):
+        """Explicit boundary: last_processed_date == END_DATE triggers no_new_data."""
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-31"},  # == END_DATE
+            },
+        )
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ):
+            result = ingestion.lambda_handler({}, None)
+
+        assert result["status"] == "no_new_data"
+        assert result["last_processed_date"] == "2024-01-31"
+
+
+# ---------------------------------------------------------------------------
+# lambda_handler() — update_state action (called by Step Functions post-Glue)
+# ---------------------------------------------------------------------------
+class TestLambdaHandlerUpdateState:
+    def test_update_state_writes_dynamodb(self, aws_mock):
+        """update_state action commits end_date to DynamoDB."""
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", aws_mock["dynamodb"]
+        ):
+            result = ingestion.lambda_handler(
+                {"action": "update_state", "end_date": "2024-01-31"}, None
+            )
+
+        assert result["status"] == "state_updated"
+        assert result["last_processed_date"] == "2024-01-31"
+
+        item = aws_mock["dynamodb"].get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-31"
+
+    def test_update_state_raises_on_dynamodb_error(self):
+        """update_state propagates DynamoDB write failures."""
+        error_response = {
+            "Error": {"Code": "ProvisionedThroughputExceededException", "Message": "Throttled"}
+        }
+        mock_ddb = MagicMock()
+        mock_ddb.put_item.side_effect = ClientError(error_response, "PutItem")
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", mock_ddb
+        ):
+            with pytest.raises(ClientError):
+                ingestion.lambda_handler(
+                    {"action": "update_state", "end_date": "2024-01-31"}, None
+                )
+
+    def test_update_state_raises_when_dynamodb_not_configured(self):
+        """update_state must fail loudly when STATE_TABLE is not set (not incremental mode)."""
+        with patch.object(ingestion, "STATE_TABLE", None), patch.object(
+            ingestion, "DYNAMODB", None
+        ):
+            with pytest.raises(RuntimeError, match="STATE_TABLE"):
+                ingestion.lambda_handler(
+                    {"action": "update_state", "end_date": "2024-01-31"}, None
+                )
+
+    def test_update_state_raises_on_missing_end_date(self):
+        """update_state must raise ValueError with context when end_date is absent."""
+        mock_ddb = MagicMock()
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", mock_ddb
+        ):
+            with pytest.raises(ValueError, match="end_date"):
+                ingestion.lambda_handler({"action": "update_state"}, None)
+
+    def test_update_state_raises_on_empty_end_date(self):
+        """update_state must raise ValueError when end_date is present but empty string."""
+        mock_ddb = MagicMock()
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", mock_ddb
+        ):
+            with pytest.raises(ValueError, match="end_date"):
+                ingestion.lambda_handler({"action": "update_state", "end_date": ""}, None)

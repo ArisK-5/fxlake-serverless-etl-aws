@@ -1,0 +1,133 @@
+name: Deploy
+
+# Runs on every push to main or fxlake-v2-production. Plan always executes;
+# Apply requires manual approval via the "production" GitHub environment
+# (configure in repo Settings -> Environments -> production -> Required reviewers).
+# Apply downloads the tfplan artifact from the Plan job and applies it exactly —
+# it does not re-run plan, so the approved plan is what gets deployed.
+on:
+  push:
+    branches: [main, fxlake-v2-production]
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: "1.9.0"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Required for OIDC token exchange with AWS
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Terraform Plan -- runs on every push, no approval required
+  # ---------------------------------------------------------------------------
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+
+    env:
+      TF_RAW_BUCKET_NAME: ${{ secrets.TF_RAW_BUCKET_NAME }}
+      TF_PROCESSED_BUCKET_NAME: ${{ secrets.TF_PROCESSED_BUCKET_NAME }}
+      TF_ATHENA_RESULTS_BUCKET_NAME: ${{ secrets.TF_ATHENA_RESULTS_BUCKET_NAME }}
+      TF_CLOUDTRAIL_LOGS_BUCKET_NAME: ${{ secrets.TF_CLOUDTRAIL_LOGS_BUCKET_NAME }}
+      TF_SNS_EMAIL_ADDRESS: ${{ secrets.TF_SNS_EMAIL_ADDRESS }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Create an OIDC-capable IAM role in your AWS account and store its ARN
+          # as the AWS_ROLE_ARN secret (Settings -> Secrets -> Actions).
+          # Trust policy must allow sts:AssumeRoleWithWebIdentity from
+          # token.actions.githubusercontent.com with the correct repo condition.
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Write terraform.tfvars from secrets
+        # Secrets are bound to env vars above, not interpolated directly into run:
+        run: |
+          cat > terraform/terraform.tfvars <<EOF
+          raw_bucket_name             = "$TF_RAW_BUCKET_NAME"
+          processed_bucket_name       = "$TF_PROCESSED_BUCKET_NAME"
+          athena_results_bucket_name  = "$TF_ATHENA_RESULTS_BUCKET_NAME"
+          cloudtrail_logs_bucket_name = "$TF_CLOUDTRAIL_LOGS_BUCKET_NAME"
+          sns_email_address           = "$TF_SNS_EMAIL_ADDRESS"
+          EOF
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan -input=false
+        working-directory: terraform
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Terraform Apply -- requires manual approval via GitHub environment
+  # ---------------------------------------------------------------------------
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    environment: production
+
+    env:
+      TF_RAW_BUCKET_NAME: ${{ secrets.TF_RAW_BUCKET_NAME }}
+      TF_PROCESSED_BUCKET_NAME: ${{ secrets.TF_PROCESSED_BUCKET_NAME }}
+      TF_ATHENA_RESULTS_BUCKET_NAME: ${{ secrets.TF_ATHENA_RESULTS_BUCKET_NAME }}
+      TF_CLOUDTRAIL_LOGS_BUCKET_NAME: ${{ secrets.TF_CLOUDTRAIL_LOGS_BUCKET_NAME }}
+      TF_SNS_EMAIL_ADDRESS: ${{ secrets.TF_SNS_EMAIL_ADDRESS }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Write terraform.tfvars from secrets
+        run: |
+          cat > terraform/terraform.tfvars <<EOF
+          raw_bucket_name             = "$TF_RAW_BUCKET_NAME"
+          processed_bucket_name       = "$TF_PROCESSED_BUCKET_NAME"
+          athena_results_bucket_name  = "$TF_ATHENA_RESULTS_BUCKET_NAME"
+          cloudtrail_logs_bucket_name = "$TF_CLOUDTRAIL_LOGS_BUCKET_NAME"
+          sns_email_address           = "$TF_SNS_EMAIL_ADDRESS"
+          EOF
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: terraform
+
+      - name: Terraform Apply
+        run: terraform apply -input=false tfplan
+        working-directory: terraform

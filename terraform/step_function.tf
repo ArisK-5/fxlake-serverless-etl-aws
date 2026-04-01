@@ -6,10 +6,13 @@ resource "aws_sfn_state_machine" "etl" {
     StartAt = "Lambda-API-Ingestion",
     States = {
       Lambda-API-Ingestion = {
-        Type           = "Task",
-        Resource       = "arn:aws:states:::lambda:invoke",
-        Parameters     = { FunctionName = aws_lambda_function.api_ingest.arn },
-        TimeoutSeconds = 30,
+        Type       = "Task",
+        Resource   = "arn:aws:states:::lambda:invoke",
+        Parameters = { FunctionName = aws_lambda_function.api_ingest.arn },
+        # ResultPath preserves ingestion output at $.ingestion so downstream states
+        # can read $.ingestion.Payload.end_date without Glue overwriting it.
+        ResultPath     = "$.ingestion",
+        TimeoutSeconds = 90,
         Retry = [
           {
             ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
@@ -25,12 +28,32 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
-        Next = "Glue-JSON-to-Parquet"
+        Next = "Check-New-Data"
+      },
+      # Choice states cannot have Retry or Catch blocks — error handling must be in
+      # the preceding Task state (Lambda-API-Ingestion). Choice states do not write to
+      # the execution state, so $.ingestion.Payload.end_date written by Lambda-API-Ingestion
+      # passes through unchanged and is still available when Lambda-Update-State runs.
+      Check-New-Data = {
+        Type = "Choice",
+        Choices = [
+          {
+            Variable     = "$.ingestion.Payload.status"
+            StringEquals = "no_new_data"
+            Next         = "Pipeline-Already-Up-To-Date"
+          }
+        ],
+        Default = "Glue-JSON-to-Parquet"
+      },
+      Pipeline-Already-Up-To-Date = {
+        Type = "Succeed"
       },
       Glue-JSON-to-Parquet = {
-        Type           = "Task",
-        Resource       = "arn:aws:states:::glue:startJobRun.sync",
-        Parameters     = { JobName = aws_glue_job.transform.name },
+        Type       = "Task",
+        Resource   = "arn:aws:states:::glue:startJobRun.sync",
+        Parameters = { JobName = aws_glue_job.transform.name },
+        # ResultPath preserves $.ingestion so Lambda-Update-State can read end_date.
+        ResultPath     = "$.glue",
         TimeoutSeconds = 180,
         Retry = [
           {
@@ -44,6 +67,41 @@ resource "aws_sfn_state_machine" "etl" {
           {
             ErrorEquals = ["States.ALL"],
             Next        = "Transform-Failed",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
+        Next = "Lambda-Update-State"
+      },
+      # Commit last_processed_date to DynamoDB only after Glue succeeds.
+      # This prevents state corruption when Glue fails after ingestion.
+      Lambda-Update-State = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = aws_lambda_function.api_ingest.arn,
+          Payload = {
+            "action"     = "update_state",
+            "end_date.$" = "$.ingestion.Payload.end_date"
+          }
+        },
+        ResultPath     = "$.state_update",
+        TimeoutSeconds = 30,
+        Retry = [
+          {
+            # States.TaskFailed is a broader catch for Step Functions orchestration-level
+            # failures not covered by the Lambda-specific codes above (e.g. SDK-layer
+            # throttles at the SFN control plane). DynamoDB throttles raised inside the
+            # Lambda function itself surface as Lambda.AWSLambdaException (already listed).
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+            IntervalSeconds = 3,
+            MaxAttempts     = 3,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "UpdateState-Failed",
             ResultPath  = "$.errorInfo"
           }
         ],
@@ -67,6 +125,8 @@ resource "aws_sfn_state_machine" "etl" {
             }
           }
         },
+        # ResultPath preserves prior context; Lambda-Validation-Query reads $.athena.
+        ResultPath     = "$.athena",
         TimeoutSeconds = 90,
         Retry = [
           {
@@ -91,13 +151,13 @@ resource "aws_sfn_state_machine" "etl" {
         Parameters = {
           FunctionName = aws_lambda_function.check_query_results.arn,
           Payload = {
-            "QueryExecutionId.$" = "$.QueryExecution.QueryExecutionId"
+            "QueryExecutionId.$" = "$.athena.QueryExecution.QueryExecutionId"
           }
         },
         TimeoutSeconds = 30,
         Retry = [
           {
-            ErrorEquals     = ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
             IntervalSeconds = 3,
             MaxAttempts     = 2,
             BackoffRate     = 2.0
@@ -118,6 +178,11 @@ resource "aws_sfn_state_machine" "etl" {
         CausePath = "$.errorInfo.Cause"
       },
       Transform-Failed = {
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
+      },
+      UpdateState-Failed = {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"

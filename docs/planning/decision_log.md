@@ -153,6 +153,47 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 
 ---
 
+## Day 2 Session 2C Decisions (2026-03-31)
+
+### D30: EventBridge targets Step Functions, not the ingestion Lambda
+
+**Context:** The original `aws_cloudwatch_event_target` pointed at `aws_lambda_function.api_ingest.arn`. This meant the daily schedule only ran ingestion — Glue, Athena, and Validation never fired automatically.
+**Decision:** Retarget EventBridge to `aws_sfn_state_machine.etl.arn` with a dedicated IAM role (`states:StartExecution` only).
+**Rationale:** The whole point of Step Functions is to orchestrate the full pipeline. Having EventBridge bypass it and call the Lambda directly defeats the purpose and means the pipeline never ran end-to-end on schedule. The dedicated role follows least-privilege: EventBridge only gets `StartExecution` on this one state machine.
+**What changed in Terraform:** `invoke_lambda` target removed, `invoke_step_function` added, `allow_eventbridge` Lambda permission removed, new `eventbridge_sfn_invoke_role` + `eventbridge_sfn_invoke_policy`.
+
+## Day 2 Session 2B Decisions (2026-03-31)
+
+### D25: Partition projection over MSCK REPAIR TABLE
+
+**Context:** Athena requires partition metadata to query Hive-partitioned data. Two options: `MSCK REPAIR TABLE` (manual or scheduled) or partition projection (Athena-native, automatic).
+**Decision:** Partition projection with integer type and `digits=2` for month and day.
+**Rationale:** Partition projection eliminates all partition management — no Lambda to run MSCK, no Glue crawler, no stale partition metadata. The `digits=2` setting ensures Athena generates zero-padded paths (`month=01`) matching the S3 layout. Interview talking point: "I know when to use each Athena partition strategy and why projection is preferred for predictable date ranges."
+
+### D26: One Parquet file per date per source file (not one file per date globally)
+
+**Context:** When partitioning by date, one option is to merge all source records for a date into one file; another is to keep source-file granularity within each partition.
+**Decision:** `exchange_rates/year=YYYY/month=MM/day=DD/{source_stem}.parquet` — the source filename is preserved within each partition directory.
+**Rationale:** Avoids S3 read-modify-write for incremental appends. Each daily Lambda run produces a new source file; the Glue job writes it into the correct partition without touching existing files. Enables per-run traceability and idempotent reprocessing.
+
+### D27: OIDC for AWS authentication in CI, no long-lived keys
+
+**Context:** GitHub Actions needs AWS credentials to run Terraform. Options: IAM user keys stored as secrets, or OIDC token exchange.
+**Decision:** OIDC via `aws-actions/configure-aws-credentials@v4` with `role-to-assume`. The role ARN is the only secret stored in GitHub.
+**Rationale:** OIDC tokens are short-lived (15 min), scoped to a specific repo and branch, and rotate automatically. No rotation policy required, no key leakage risk. This is the AWS-recommended pattern for CI/CD. Interview talking point: "I used OIDC rather than IAM keys because there's no secret to rotate or leak."
+
+### D28: GitHub secrets bound to `env:` vars before use in `run:` steps
+
+**Context:** The deploy workflow must write a `terraform.tfvars` file from GitHub secrets. A naive approach inlines `${{ secrets.* }}` directly in the `run:` shell command, which can enable injection if a secret contains shell metacharacters.
+**Decision:** Bind all secrets to job-level `env:` variables first; reference them as `$VAR` (shell variable, not GitHub expression) inside the heredoc.
+**Rationale:** Shell variables in a heredoc are just string substitutions — no expression evaluation, no injection surface. GitHub expressions `${{ ... }}` are template-expanded before the runner sees the shell, so they can inject if the value contains backticks, semicolons, etc. This is the pattern recommended by GitHub's security guide.
+
+### D29: Glue `process_key` returns `List[str]` instead of `str`
+
+**Context:** With partitioned output, one input file produces N output files (one per date). The original `str` return type was wrong.
+**Decision:** Return `List[str]`, empty list for no-data input.
+**Rationale:** Callers (`main()` currently ignores the return; future callers like a manifest writer would need all output keys). `[]` for empty input is cleaner than writing an empty file to a catch-all path. Existing `main()` loop required no change.
+
 ## Day 1 Implementation Decisions (2026-03-30)
 
 ### D16: Broad `except Exception` justified in `publish_custom_metric`
@@ -182,6 +223,89 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** Original plan specified static `Error`/`Cause` strings on Fail states.
 **Decision:** Use `ErrorPath: "$.errorInfo.Error"` and `CausePath: "$.errorInfo.Cause"` with `ResultPath: "$.errorInfo"` on Catch blocks.
 **Rationale:** Static strings lose the actual error detail. Dynamic paths pass through the real AWS error message, making CloudWatch Events and execution history useful for debugging without checking CloudWatch Logs.
+
+---
+
+## Day 2 Implementation Decisions (2026-03-31)
+
+### D21: `os.getenv` for STATE_TABLE, `os.environ[]` for all other env vars
+
+**Context:** Incremental mode requires a new `STATE_TABLE` env var. The existing convention uses `os.environ["VAR"]` at module level (fails fast at cold start).
+**Decision:** Use `os.getenv("STATE_TABLE")` — returns `None` if absent, enabling static fallback without requiring a DynamoDB table.
+**Rationale:** STATE_TABLE is genuinely optional: backfills, local testing, and the static mode all work without it. Using `os.environ[]` would break all existing deployments and tests without any benefit. The distinction (`os.environ` = required, `os.getenv` = optional) becomes an explicit contract visible at module level.
+
+### D22: Private `_incremental_ingest` and `_static_ingest` helpers over branching in lambda_handler
+
+**Context:** Adding incremental logic to `lambda_handler` would push it toward 40+ lines with 4 nesting levels.
+**Decision:** Extract `_incremental_ingest()` and `_static_ingest()` as private helpers; `lambda_handler` only branches and handles the outer try/except.
+**Rationale:** Each helper is under 20 lines and tests a single concern. The outer handler stays readable. Interview talking point: "separation of orchestration from business logic."
+
+### D23: DYNAMODB client initialized conditionally at module level
+
+**Context:** `boto3.client("dynamodb")` at module level would require moto's DynamoDB to be active for every test, even those that never touch DynamoDB.
+**Decision:** `DYNAMODB = boto3.client("dynamodb") if STATE_TABLE else None` — client is `None` when STATE_TABLE is absent.
+**Rationale:** Tests that patch `STATE_TABLE` also patch `DYNAMODB` directly via `patch.object`. This avoids polluting the existing test fixtures and keeps the S3-only tests independent.
+
+### D24: Step Functions Choice state checks `$.ingestion.Payload.status`
+
+**Context:** Lambda invoked via `arn:aws:states:::lambda:invoke` wraps the function response in a `Payload` envelope. The Lambda returns `{status: "no_new_data"}` or `{status: "ok"}`. After D26 added `ResultPath = "$.ingestion"` to the ingestion state, the result is stored at `$.ingestion` rather than overwriting `$`.
+**Decision:** Choice state checks `$.ingestion.Payload.status == "no_new_data"` to route to `Pipeline-Already-Up-To-Date` (Succeed); default continues to Glue.
+**Rationale:** Using `ResultPath` on the ingestion state preserves `$.ingestion.Payload.end_date` through Glue and into the `Lambda-Update-State` step. The Succeed state (not End) correctly marks the execution as successful — "no new data" is not a failure.
+
+### D26: DynamoDB state commit moved to post-Glue Lambda-Update-State step
+
+**Context:** The original design updated DynamoDB at the end of the ingestion Lambda, before Step Functions proceeded to Glue. If Glue failed after ingestion returned `ok`, DynamoDB would record `fetch_end` as already processed — causing the next daily run to skip the range that was never transformed into Parquet.
+**Decision:** Remove `update_last_processed_date()` from the ingestion Lambda. Add a `Lambda-Update-State` Step Functions state between Glue and Athena that invokes the ingestion Lambda with `{"action": "update_state", "end_date": "..."}`. State is only committed when Glue has confirmed success.
+**Implementation:** `ResultPath = "$.ingestion"` on the ingestion state preserves `end_date` across subsequent states (Glue, Athena each use their own `ResultPath`). The validation Lambda reads `$.athena.QueryExecution.QueryExecutionId`.
+**Rationale:** Saga/checkpoint pattern: state ownership belongs to the step that confirms completion. This eliminates the silent data-gap failure mode where Glue failures produce permanent gaps in Athena-queryable data.
+
+### D27: get_last_processed_date() re-raises on infrastructure errors
+
+**Context:** Original code caught all `ClientError` and fell back to `START_DATE`. This masked `AccessDeniedException` and `ResourceNotFoundException` — infrastructure misconfigurations that would cause every run to re-fetch the full date range and duplicate raw S3 data silently.
+**Decision:** Re-raise immediately on `ResourceNotFoundException` and `AccessDeniedException`. Reserve the fallback for transient errors (`ProvisionedThroughputExceededException`, `InternalServerError`, etc.) where a single-run fallback is a reasonable degradation.
+**Rationale:** Infrastructure misconfiguration must be surfaced as a pipeline failure, not hidden as a quiet mode change.
+
+### D28: CI uses stub Lambda zips for terraform validate
+
+**Context:** `lambda.tf` uses `filebase64sha256("../lambda/*.zip")` to detect source changes. The deploy workflow builds real zips via `make package`. The CI validate job (`-backend=false`) does not run a build step, so the files don't exist and `filebase64sha256()` raises an error at plan/validate time.
+**Decision:** Add `touch lambda/lambda_ingestion_function.zip lambda/lambda_validation_function.zip` as a CI step before `terraform init`. Empty files satisfy `filebase64sha256()` (returns a valid hash) without requiring a build.
+**Why not use `try()` in Terraform:** `try(filebase64sha256(...), null)` would suppress the error but would also silently pass deploy with a null hash — defeating the purpose of the hash check. The stub approach keeps production behaviour unchanged.
+
+### D25: Step Functions Lambda state TimeoutSeconds set to 90s
+
+**Context:** `Lambda-API-Ingestion` state had `TimeoutSeconds = 30`, which is less than the Lambda function's own `timeout = 60s`. If the Lambda ran for 40–60 seconds, Step Functions would abort it with `States.Timeout` before it could complete.
+**Decision:** Set `TimeoutSeconds = 90` (60s Lambda timeout + 30s buffer for Step Functions overhead and cold start).
+**Rationale:** The Step Functions timeout must always exceed the Lambda timeout. A 30s Step Functions timeout on a 60s Lambda is a guaranteed failure for slow API responses. Buffer of 30s accounts for cold starts and SDK retry jitter.
+
+### D29: _handle_update_state guard for DYNAMODB=None
+
+**Context:** The `Lambda-Update-State` Step Functions state calls the ingestion Lambda with `{"action": "update_state"}`. If the Lambda was deployed without `STATE_TABLE` set (e.g., backfill deployment or misconfigured environment), `DYNAMODB` is `None` at module level. Without a guard, `DYNAMODB.put_item()` would raise `AttributeError: 'NoneType' object has no attribute 'put_item'` — an opaque error in execution history.
+**Decision:** Add `if DYNAMODB is None or STATE_TABLE is None: raise RuntimeError("update_state action requires STATE_TABLE env var — Lambda is not configured for incremental mode")` at the top of `_handle_update_state`.
+**Rationale:** Fail-fast with a descriptive error is more debuggable than a mid-call `AttributeError`. The message names the misconfiguration cause directly.
+
+### D30: States.TaskFailed added to Lambda-Update-State retry
+
+**Context:** DynamoDB throttles (`ProvisionedThroughputExceededException`) are surfaced by Step Functions as `States.TaskFailed` when the Lambda raises them, not as `Lambda.ServiceException`. The original retry only covered `Lambda.ServiceException`/`Lambda.AWSLambdaException`/`Lambda.TooManyRequestsException` — DynamoDB throttles at the state commit step were not retried, causing unnecessary pipeline failures during brief capacity spikes.
+**Decision:** Add `"States.TaskFailed"` to the `Lambda-Update-State` Retry `ErrorEquals` list. Increase `MaxAttempts` to 3 (from 2) because a DynamoDB throttle at this final step — after Glue has already succeeded — is worth a third retry attempt before failing the whole execution.
+**Rationale:** Unlike earlier states (ingestion, Glue), state commit failure at the Lambda-Update-State step wastes the work already done. An extra retry attempt has asymmetric value here.
+
+### D31: _write_partition split into serialization and write phases
+
+**Context:** A single try-block in `_write_partition` caught both Polars/PyArrow serialization errors and `boto3.client.put_object` (S3) errors, logging them both as "S3 errors." This made Polars type errors or Arrow conversion failures hard to distinguish from genuine S3 connectivity issues in CloudWatch logs.
+**Decision:** Split into two sequential try-blocks: Phase 1 catches `(PolarsError, ArrowException, ValueError, OSError)` (serialization) and logs `format={output_format}` plus exception type/message; Phase 2 catches `ClientError` only (S3 write) and logs the AWS error code.
+**Rationale:** Correct error attribution speeds up debugging. A `ArrowInvalid` logged as "S3 error writing partition" wastes time investigating S3 permissions when the issue is actually a schema problem.
+
+### D32: get_last_processed_date uses allowlist for transient DynamoDB errors
+
+**Context:** The original implementation used a denylist (re-raise on `ResourceNotFoundException`/`AccessDeniedException`, fall back on everything else). This silently treated `ValidationException`, `SerializationException`, `ItemCollectionSizeLimitExceededException`, and any future unknown AWS error codes as "transient" — causing the pipeline to quietly re-fetch from `START_DATE` and duplicate raw S3 data on every run without any alert.
+**Decision:** Invert to an allowlist (`_TRANSIENT_DYNAMODB_READ_CODES` frozenset). Only `ProvisionedThroughputExceededException`, `RequestLimitExceeded`, `ThrottlingException`, and `InternalServerError` trigger the fallback. All other error codes re-raise with a `logger.error`.
+**Rationale:** The failure mode of silent fallback (data duplication) is worse than the failure mode of pipeline failure (observable, alertable). An unknown error code is far more likely to be a misconfiguration than a new transient error AWS added without notice. Allowlists are safer than denylists for safety-critical fallbacks.
+
+### D33: Lambda-Validation-Query was missing Lambda.AWSLambdaException in Retry
+
+**Context:** All other Lambda Task states in the ASL (`Lambda-API-Ingestion`, `Lambda-Update-State`) include `Lambda.AWSLambdaException` in their Retry `ErrorEquals`. `Lambda-Validation-Query` was missing it, creating an inconsistency with the documented retry policy in CLAUDE.md.
+**Decision:** Add `Lambda.AWSLambdaException` to `Lambda-Validation-Query` Retry.
+**Rationale:** A transient unhandled exception in the validation Lambda (the last step, after all data work is complete) would go directly to `Validation-Failed` with no retry, creating alert noise without the pipeline data being affected. Consistent retry policy also makes the ASL easier to audit.
 
 ### D20: Test coverage significantly exceeded plan
 

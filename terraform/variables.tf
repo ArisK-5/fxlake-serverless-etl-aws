@@ -84,6 +84,12 @@ variable "fx_base_currency" {
   default     = "EUR"
 }
 
+variable "dynamodb_state_table_name" {
+  description = "DynamoDB table name for pipeline state tracking"
+  type        = string
+  default     = "fxlake-pipeline-state"
+}
+
 variable "fx_output_format" {
   description = "Output format for processed exchange rate data (csv or parquet)"
   type        = string
