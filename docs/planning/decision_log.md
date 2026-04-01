@@ -307,6 +307,30 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Decision:** Add `Lambda.AWSLambdaException` to `Lambda-Validation-Query` Retry.
 **Rationale:** A transient unhandled exception in the validation Lambda (the last step, after all data work is complete) would go directly to `Validation-Failed` with no retry, creating alert noise without the pipeline data being affected. Consistent retry policy also makes the ASL easier to audit.
 
+### D34: BaseIngestionHandler uses make_filename as second abstract method
+
+**Context:** `save_to_s3(data, filename)` takes a pre-computed filename. The prompt listed only `fetch_data` as abstract, but each source needs a different naming convention: Frankfurter uses `exchange_rates_{CURRENCY}_{START}_to_{END}.json`, ECB uses `ecb_rates_{START}_to_{END}.json`. Without abstracting filename generation, the base class orchestration would need source-specific conditionals or callers would need to compute filenames themselves outside the class.
+**Decision:** Add `make_filename(start_date, end_date) -> str` as a second abstract method alongside `fetch_data`. The base `_incremental_ingest` and `_static_ingest` call `self.fetch_data(...)` then `self.make_filename(...)` then `self.save_to_s3(data, filename)`.
+**Rationale:** The template method pattern — subclasses fill in the steps, base class owns the sequence — is the right abstraction here. Adding a second abstract method is minimal overhead and removes all conditional branching from the base class.
+
+### D35: ECB SDMX-JSON parsed into normalised FXLake format
+
+**Context:** The ECB Statistics Data Warehouse returns SDMX-JSON — a generic statistical data format where series are keyed by dimension indices (`"0:2:0:0:0"`) and observations by time-period index. Storing raw SDMX-JSON would require the Glue transform to understand two completely different formats.
+**Decision:** `ECBHandler._parse_ecb_response` normalises the SDMX-JSON into `{"base": "EUR", "source": "ecb", "rates": {date: {ccy: rate}}}` before writing to S3. The Glue transform only needs one format to process.
+**Rationale:** The ingestion layer is the right place to normalise — raw S3 data should be source-specific but format-consistent. Pushing SDMX parsing into Glue would require Glue to know about ECB's data model, coupling the transform to the source.
+
+### D36: Base class save_to_s3 drops source-specific S3 metadata
+
+**Context:** The original Frankfurter-specific `save_to_s3` stored `start_date`, `end_date`, and `base_currency` in S3 object metadata. The base class `save_to_s3(data, filename)` only has access to `source_name` — it doesn't know the currency or date params without receiving them as arguments.
+**Decision:** Base class metadata includes only `{"source": self.source_name}`. Dates are already encoded in the filename. `base_currency` is Frankfurter-specific and not part of the base interface.
+**Rationale:** S3 object metadata is informational, not load-bearing — the pipeline uses the filename and object content, not metadata. Simplifying to `source` keeps the base class free of source-specific fields. If per-source metadata is needed later, `save_to_s3` can be overridden.
+
+### D37: Incremental test strategy: monkeypatch.setenv replaces patch.object
+
+**Context:** The old incremental tests used `patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE)` and `patch.object(ingestion, "DYNAMODB", aws_mock["dynamodb"])` to inject state into module-level variables. After refactoring, there are no module-level variables — `state_table` and `_dynamodb` are set in `__init__` by reading `os.getenv("STATE_TABLE")` and calling `boto3.client("dynamodb")`.
+**Decision:** Tests use `monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)` before calling `lambda_handler`. Since `mock_aws()` is active via the `aws_mock` fixture, `boto3.client("dynamodb")` inside `__init__` is automatically intercepted by moto.
+**Rationale:** `monkeypatch.setenv` is the correct seam — it's what the production code actually reads. `patch.object` on module-level vars was a testing workaround for the old module-level design. The new approach is simpler and doesn't require the test to know about internal implementation details.
+
 ### D20: Test coverage significantly exceeded plan
 
 **Context:** Day 1 planned ~20 tests with 80%+ coverage as nice-to-have.

@@ -487,17 +487,42 @@ Fifth review pass addressed documentation clarity, test robustness, and namespac
 
 #### Session 3A: Ingestion abstraction + second source (Day 3 morning)
 
+**Status:** ✅ COMPLETED (2026-04-01)
+
 **Approach:** REFACTOR + NET-NEW
 **Files affected:**
-- `lambda/lambda_ingestion_function.py` — extract common pattern
+- `lambda/lambda_ingestion_function.py` — refactored to `FrankfurterHandler(BaseIngestionHandler)`
 
 **New files:**
-- `lambda/common/` — shared utilities (S3 writer, state tracker, base handler)
-- `lambda/lambda_ecb_ingestion.py` — ECB Statistical Data Warehouse (free, no API key)
-- `lambda/requirements.txt` — update
+- `lambda/common/__init__.py` — package marker
+- `lambda/common/base.py` — `BaseIngestionHandler` abstract class
+- `lambda/lambda_ecb_ingestion.py` — `ECBHandler` + `lambda_handler`
+- `tests/test_base_handler.py` — 24 base class tests (orchestration, DynamoDB, saga pattern)
+- `tests/test_lambda_ecb_ingestion.py` — 16 ECB handler tests (SDMX parsing, API, integration)
 
 **Dependencies:** Incremental processing (Day 2)
 **Validation:** `uv run pytest tests/ -v`
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| `lambda/common/base.py` with `BaseIngestionHandler` | ✅ Delivered | `source_name`, `raw_bucket`, `state_table`, `start_date`, `end_date` params; `save_to_s3`, `get_last_processed`, `update_last_processed`, `run`, orchestration methods |
+| `FrankfurterHandler(BaseIngestionHandler)` | ✅ Delivered | `fetch_data` + `make_filename`; existing `lambda_handler` signature unchanged |
+| `ECBHandler(BaseIngestionHandler)` | ✅ Delivered | SDMX-JSON parser; normalises to `{"base": "EUR", "source": "ecb", "rates": {date: {ccy: rate}}}` |
+| Update `package_lambdas.sh` | ✅ Delivered | Added ECB Lambda build step; both bundles include `common/` directory |
+| Test both handlers + base class | ✅ Delivered | `test_base_handler.py` (24), `test_lambda_ingestion.py` (19, reduced from 25), `test_lambda_ecb_ingestion.py` (16) |
+| Coverage maintained | 99% (up from 98%) — 88 tests, 325 statements | Exceeded target |
+
+#### Key Differences Explained
+
+1. **`make_filename` added as abstract method:** The prompt didn't specify this explicitly, but S3 key format differs per source. Abstract `make_filename(start, end) -> str` cleanly separates filename logic from orchestration. See D34.
+
+2. **Base class `save_to_s3` metadata simplified:** Original had `start_date`, `end_date`, `base_currency` in S3 metadata. Base class uses only `source` — other fields are already encoded in the filename. This avoids exposing source-specific fields at the base level.
+
+3. **ECB SDMX parser as instance method:** `_parse_ecb_response` lives on `ECBHandler`, not as a module-level function. This makes it easy to test directly without a full HTTP mock.
+
+4. **`monkeypatch.setenv` replaces `patch.object`:** Old tests patched `ingestion.STATE_TABLE` (module-level var). After refactoring, `STATE_TABLE` is read from env in `__init__`. Tests now use `monkeypatch.setenv("STATE_TABLE", ...)` — cleaner and doesn't require module-level side effects.
 
 **Claude Code prompt:**
 ```

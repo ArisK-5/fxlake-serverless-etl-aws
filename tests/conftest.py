@@ -13,6 +13,7 @@ os.environ.setdefault("BASE_CURRENCY", "EUR")
 os.environ.setdefault("BASE_API_URL", "https://api.frankfurter.app")
 os.environ.setdefault("METRIC_NAMESPACE", "TestFXLake/Athena")
 os.environ.setdefault("PIPELINE", "fxlake-etl-test")
+os.environ.setdefault("ECB_BASE_URL", "https://data-api.ecb.europa.eu/service/data")
 
 # Fake AWS credentials for moto
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
