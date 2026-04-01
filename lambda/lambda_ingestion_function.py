@@ -24,9 +24,28 @@ DYNAMODB = boto3.client("dynamodb") if STATE_TABLE else None
 PIPELINE_ID = "fxlake"
 SOURCE = "frankfurter"
 
+# Known-transient DynamoDB error codes that warrant a graceful fallback to START_DATE.
+# All other ClientError codes are re-raised — an unknown code is more likely a
+# misconfiguration (wrong table name, bad key schema, missing permission) than a
+# transient issue, and silent fallback would cause the pipeline to re-process from
+# START_DATE silently duplicating data.
+_TRANSIENT_DYNAMODB_READ_CODES = frozenset({
+    "ProvisionedThroughputExceededException",
+    "RequestLimitExceeded",
+    "ThrottlingException",
+    "InternalServerError",
+})
+
 
 def get_last_processed_date() -> str:
-    """Read last_processed_date from DynamoDB; defaults to START_DATE if no entry."""
+    """Read last_processed_date from DynamoDB; returns START_DATE if no entry exists.
+
+    On transient DynamoDB errors (throttling, internal errors) falls back to START_DATE
+    with a warning so the pipeline can still run. On permanent errors
+    (ResourceNotFoundException, AccessDeniedException, or any unrecognised code)
+    re-raises immediately — these indicate misconfiguration that would cause silent
+    data duplication if ignored.
+    """
     try:
         resp = DYNAMODB.get_item(
             TableName=STATE_TABLE,
@@ -40,14 +59,15 @@ def get_last_processed_date() -> str:
             return item["last_processed_date"]["S"]
     except ClientError as e:
         code = e.response["Error"]["Code"]
-        if code in ("ResourceNotFoundException", "AccessDeniedException"):
+        if code not in _TRANSIENT_DYNAMODB_READ_CODES:
             logger.error(
-                f"DynamoDB table {STATE_TABLE} is inaccessible (code={code}). "
+                f"Permanent DynamoDB error reading from table {STATE_TABLE} "
+                f"(code={code}). Cannot safely determine incremental start date. "
                 "Check that the table exists and the Lambda execution role has GetItem permission.",
                 exc_info=True,
             )
             raise
-        # Transient errors (throttling, internal errors) — fall back with warning
+        # Known-transient error — fall back with warning so daily run still proceeds
         logger.warning(
             f"Transient DynamoDB read error for table {STATE_TABLE} "
             f"(code={code}), defaulting to START_DATE={START_DATE}"
@@ -155,7 +175,18 @@ def lambda_handler(event: dict, _context: Any) -> dict:
 
 
 def _handle_update_state(event: dict) -> dict:
-    """Commit last_processed_date to DynamoDB. Called by Step Functions after Glue succeeds."""
+    """Commit last_processed_date to DynamoDB. Called by Step Functions after Glue succeeds.
+
+    Args:
+        event: must contain key ``end_date`` (ISO date string, e.g. "2024-01-31").
+
+    Returns:
+        ``{"status": "state_updated", "last_processed_date": <end_date>}``
+
+    Raises:
+        RuntimeError: if STATE_TABLE is not configured (Lambda not in incremental mode).
+        ValueError: if ``end_date`` is absent or empty in the event payload.
+    """
     if DYNAMODB is None or STATE_TABLE is None:
         raise RuntimeError(
             "update_state action requires STATE_TABLE env var — "
@@ -172,7 +203,14 @@ def _handle_update_state(event: dict) -> dict:
 
 
 def _incremental_ingest() -> dict:
-    """Fetch only dates newer than last_processed_date in DynamoDB."""
+    """Fetch only dates newer than last_processed_date in DynamoDB.
+
+    Returns ``{"status": "no_new_data", ...}`` when already caught up — Step Functions
+    routes to ``Pipeline-Already-Up-To-Date`` (Succeed state) on this value.
+    Returns ``{"status": "ok", "end_date": ..., ...}`` on a successful fetch — the
+    ``end_date`` key is consumed by the ``Lambda-Update-State`` step post-Glue.
+    Does NOT commit state to DynamoDB; that is deferred to Lambda-Update-State.
+    """
     last_processed = get_last_processed_date()
     fetch_start = (date.fromisoformat(last_processed) + timedelta(days=1)).isoformat()
     today = date.today().isoformat()

@@ -435,6 +435,32 @@ Third comprehensive review surfaced safety and robustness gaps in the new `_hand
 
 **Test count after fixes:** 54 (was 52) — all passing, 95% coverage, ruff clean, terraform validate + fmt clean.
 
+#### Post-review fixes — round 4 (2026-04-01)
+
+**Status:** ✅ COMPLETED (2026-04-01)
+
+Fourth review pass identified error-handling correctness gaps and documentation inaccuracies:
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| CRITICAL | `get_last_processed_date` denylist for DynamoDB errors — `ValidationException`, `SerializationException` silently treated as transient, causing re-fetch from `START_DATE` and data duplication | Converted to allowlist (`_TRANSIENT_DYNAMODB_READ_CODES` frozenset); all unrecognised error codes now re-raise |
+| IMPORTANT | `Lambda-Validation-Query` Retry missing `Lambda.AWSLambdaException` — inconsistent with all other Lambda states, causing spurious `Validation-Failed` on transient unhandled exceptions | Added `Lambda.AWSLambdaException` to Retry `ErrorEquals` |
+| IMPORTANT | `_write_partition` S3 ClientError path (lines 104-110) had no test | Added `test_s3_write_failure_raises_client_error` |
+| IMPORTANT | `_write_partition` serialization Exception path (lines 88-94) had no test | Added `test_serialization_failure_raises` |
+| IMPORTANT | `update_state` empty-string `end_date` not guarded by test | Added `test_update_state_raises_on_empty_end_date` |
+| MEDIUM | `_write_partition` serialization phase used broad `except Exception` — code defects logged as "Serialization error" | Tightened to `(pl.exceptions.PolarsError, pyarrow.lib.ArrowException, ValueError, OSError)`; added `{type(e).__name__}: {e}` to log message |
+| MEDIUM | `step_function.tf` Check-New-Data comment "set here" was misleading — Choice states set nothing | Reworded to clarify passive pass-through behaviour |
+| MEDIUM | `step_function.tf` line 91 `States.TaskFailed` comment conflated DynamoDB throttles with orchestration-layer failures | Rewritten to accurately describe both error surfaces |
+| MEDIUM | `CLAUDE.md` step 4 "Invokes the ingestion Lambda" implied a separate function | Clarified to "Calls the **same** ingestion Lambda — `_handle_update_state` branch" |
+| LOW | `deploy.yml` comment said "push to main" — omitted `fxlake-v2-production` | Updated comment to name both branches; added note about plan artifact apply |
+| LOW | `CLAUDE.md` deploy.yml table row omitted plan artifact coupling | Extended row description |
+| LOW | `TestProcessKeyCSV.test_csv_output` only asserted first partition | Added `PARTITION_JAN03` assertion |
+| LOW | `get_last_processed_date` docstring omitted transient-error fallback behaviour | Expanded docstring with fallback and re-raise conditions |
+| LOW | `_handle_update_state` docstring omitted args/return/raises | Added `Args:`, `Returns:`, `Raises:` sections |
+| LOW | `_incremental_ingest` docstring omitted `no_new_data` return contract | Expanded to document both return paths and Step Functions routing |
+
+**Test count after fixes:** 57 (was 54) — all passing, 98% coverage, ruff clean, terraform validate + fmt clean.
+
 ---
 
 ### Day 3-4: Multi-Source Ingestion

@@ -8,6 +8,7 @@ import requests
 import responses
 from botocore.exceptions import ClientError
 
+# Must match TEST_STATE_TABLE in conftest.py — both reference the same moto table name.
 TEST_STATE_TABLE = "test-state-table"
 
 SAMPLE_API_RESPONSE = {
@@ -441,3 +442,13 @@ class TestLambdaHandlerUpdateState:
         ):
             with pytest.raises(ValueError, match="end_date"):
                 ingestion.lambda_handler({"action": "update_state"}, None)
+
+    def test_update_state_raises_on_empty_end_date(self):
+        """update_state must raise ValueError when end_date is present but empty string."""
+        mock_ddb = MagicMock()
+
+        with patch.object(ingestion, "STATE_TABLE", TEST_STATE_TABLE), patch.object(
+            ingestion, "DYNAMODB", mock_ddb
+        ):
+            with pytest.raises(ValueError, match="end_date"):
+                ingestion.lambda_handler({"action": "update_state", "end_date": ""}, None)

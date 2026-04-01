@@ -31,8 +31,9 @@ resource "aws_sfn_state_machine" "etl" {
         Next = "Check-New-Data"
       },
       # Choice states cannot have Retry or Catch blocks — error handling must be in
-      # the preceding Task state (Lambda-API-Ingestion). The $.ingestion.Payload.end_date
-      # value set here is threaded through ResultPath to Lambda-Update-State post-Glue.
+      # the preceding Task state (Lambda-API-Ingestion). Choice states do not write to
+      # the execution state, so $.ingestion.Payload.end_date written by Lambda-API-Ingestion
+      # passes through unchanged and is still available when Lambda-Update-State runs.
       Check-New-Data = {
         Type = "Choice",
         Choices = [
@@ -87,7 +88,10 @@ resource "aws_sfn_state_machine" "etl" {
         TimeoutSeconds = 30,
         Retry = [
           {
-            # States.TaskFailed covers DynamoDB throttles surfaced as Lambda task failures
+            # States.TaskFailed is a broader fallback for task-layer failures not caught
+            # by the specific Lambda codes above. DynamoDB throttles inside the Lambda
+            # surface as Lambda.AWSLambdaException; States.TaskFailed covers orchestration-
+            # level failures (e.g. resource limits hit at the Step Functions layer).
             ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
             IntervalSeconds = 3,
             MaxAttempts     = 3,
@@ -153,7 +157,7 @@ resource "aws_sfn_state_machine" "etl" {
         TimeoutSeconds = 30,
         Retry = [
           {
-            ErrorEquals     = ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
             IntervalSeconds = 3,
             MaxAttempts     = 2,
             BackoffRate     = 2.0

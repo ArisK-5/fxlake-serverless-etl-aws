@@ -51,7 +51,7 @@ The pipeline is orchestrated by **Step Functions** and triggered daily by **Even
 1. **Lambda (Ingestion)** — reads `last_processed_date` from DynamoDB state table, computes incremental fetch range (`last_processed_date+1` to today capped at `END_DATE`), fetches FX rates JSON from Frankfurter API → saves to S3 raw bucket. Returns `status: "no_new_data"` if already caught up. **Does not update DynamoDB** — that is deferred to step 4.
 2. **Choice (Check-New-Data)** — if ingestion returned `no_new_data`, routes to `Pipeline-Already-Up-To-Date` (Succeed); otherwise continues to Glue.
 3. **Glue Job (Python Shell)** — reads raw JSON from S3, flattens nested `{date: {currency: rate}}` structure using **Polars**, writes Parquet/CSV to processed S3 bucket
-4. **Lambda (Update-State)** — commits `last_processed_date` to DynamoDB **only after Glue succeeds**, preventing state corruption on Glue failure. Invokes the ingestion Lambda with `{"action": "update_state", "end_date": "..."}`.
+4. **Lambda (Update-State)** — commits `last_processed_date` to DynamoDB **only after Glue succeeds**, preventing state corruption on Glue failure. Calls the **same ingestion Lambda** with `{"action": "update_state", "end_date": "..."}` — the Lambda's `_handle_update_state` branch handles this path.
 5. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
 6. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
 
@@ -111,7 +111,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 54 tests, 95% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 57 tests, 98% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests
@@ -133,9 +133,9 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 |------|----------|
 | `lambda/lambda_ingestion_function.py` | 100% |
 | `lambda/lambda_validation_function.py` | 100% |
-| `glue/glue_transform.py` | 87% (uncovered: `except Exception` fallthrough in `list_json_keys`/`process_key`, serialization error path in `_write_partition`, `if __name__` guard) |
+| `glue/glue_transform.py` | 96% (uncovered: `except Exception` fallthrough in `list_json_keys`/`process_key`, `if __name__` guard) |
 
-**Overall: 95% (247 statements, 13 missed)**
+**Overall: 98% (249 statements, 4 missed)**
 
 ## CI/CD
 
@@ -144,7 +144,7 @@ Two GitHub Actions workflows in `.github/workflows/`:
 | Workflow | Trigger | Jobs |
 |----------|---------|------|
 | `ci.yml` | PR → `main` or `fxlake-v2-production` | `python-lint-test` (ruff + pytest), `terraform-validate` (init + validate + fmt check) |
-| `deploy.yml` | Push → `main` or `fxlake-v2-production` | `terraform-plan` (always), `terraform-apply` (manual approval via `production` environment) |
+| `deploy.yml` | Push → `main` or `fxlake-v2-production` | `terraform-plan` (always, uploads `tfplan` artifact with 1-day retention), `terraform-apply` (downloads artifact, manual approval via `production` environment — applies the exact plan from the plan job, not a fresh plan) |
 
 ### AWS Authentication (OIDC)
 

@@ -6,6 +6,7 @@ from typing import List
 
 import boto3
 import polars as pl
+import pyarrow
 import pyarrow.parquet as pq
 from awsglue.utils import getResolvedOptions
 from botocore.exceptions import ClientError
@@ -85,10 +86,10 @@ def _write_partition(df: "pl.DataFrame", out_key: str) -> None:
         else:
             body = df.write_csv().encode()
             content_type = "text/csv"
-    except Exception:
+    except (pl.exceptions.PolarsError, pyarrow.lib.ArrowException, ValueError, OSError) as e:
         logger.error(
             f"Serialization error for partition s3://{processed_bucket}/{out_key} "
-            f"(format={output_format})",
+            f"(format={output_format}): {type(e).__name__}: {e}",
             exc_info=True,
         )
         raise

@@ -4,7 +4,7 @@ import json
 import logging
 import sys
 from typing import List
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import glue_transform
 import polars as pl
@@ -105,6 +105,31 @@ class TestProcessKeyParquet:
         with pytest.raises(KeyError):
             glue_transform.process_key("no_base.json")
 
+    def test_s3_write_failure_raises_client_error(self, s3_mock):
+        """_write_partition S3 put_object ClientError propagates through process_key."""
+        _put_json(s3_mock, "rates.json", SAMPLE_RATES_JSON)
+        error_response = {"Error": {"Code": "AccessDenied", "Message": "Denied"}}
+        with patch.object(glue_transform, "s3") as mock_s3:
+            mock_s3.get_object.return_value = s3_mock.get_object(
+                Bucket="test-raw-bucket", Key="rates.json"
+            )
+            mock_s3.put_object.side_effect = ClientError(error_response, "PutObject")
+
+            with pytest.raises(ClientError):
+                glue_transform.process_key("rates.json")
+
+    def test_serialization_failure_raises(self, s3_mock, monkeypatch):
+        """_write_partition serialization error propagates through process_key."""
+        import pyarrow
+
+        _put_json(s3_mock, "rates.json", SAMPLE_RATES_JSON)
+        monkeypatch.setattr(
+            pq, "write_table", MagicMock(side_effect=pyarrow.lib.ArrowException("bad"))
+        )
+
+        with pytest.raises(pyarrow.lib.ArrowException):
+            glue_transform.process_key("rates.json")
+
 
 # ---------------------------------------------------------------------------
 # process_key() — CSV output
@@ -117,6 +142,7 @@ class TestProcessKeyCSV:
         out_keys = glue_transform.process_key("rates.json")
 
         assert f"{PARTITION_JAN02}/rates.csv" in out_keys
+        assert f"{PARTITION_JAN03}/rates.csv" in out_keys
         df = _read_csv_from_s3(s3_mock, f"{PARTITION_JAN02}/rates.csv")
         assert df.shape == (2, 4)
         assert set(df.columns) == {"base_currency", "target_currency", "rate", "date"}

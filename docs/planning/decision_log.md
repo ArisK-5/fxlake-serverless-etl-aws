@@ -295,6 +295,18 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Decision:** Split into two sequential try-blocks: Phase 1 catches `Exception` (serialization) and logs `format={output_format}`; Phase 2 catches `ClientError` only (S3 write) and logs the AWS error code.
 **Rationale:** Correct error attribution speeds up debugging. A `ArrowInvalid` logged as "S3 error writing partition" wastes time investigating S3 permissions when the issue is actually a schema problem.
 
+### D32: get_last_processed_date uses allowlist for transient DynamoDB errors
+
+**Context:** The original implementation used a denylist (re-raise on `ResourceNotFoundException`/`AccessDeniedException`, fall back on everything else). This silently treated `ValidationException`, `SerializationException`, `ItemCollectionSizeLimitExceededException`, and any future unknown AWS error codes as "transient" — causing the pipeline to quietly re-fetch from `START_DATE` and duplicate raw S3 data on every run without any alert.
+**Decision:** Invert to an allowlist (`_TRANSIENT_DYNAMODB_READ_CODES` frozenset). Only `ProvisionedThroughputExceededException`, `RequestLimitExceeded`, `ThrottlingException`, and `InternalServerError` trigger the fallback. All other error codes re-raise with a `logger.error`.
+**Rationale:** The failure mode of silent fallback (data duplication) is worse than the failure mode of pipeline failure (observable, alertable). An unknown error code is far more likely to be a misconfiguration than a new transient error AWS added without notice. Allowlists are safer than denylists for safety-critical fallbacks.
+
+### D33: Lambda-Validation-Query was missing Lambda.AWSLambdaException in Retry
+
+**Context:** All other Lambda Task states in the ASL (`Lambda-API-Ingestion`, `Lambda-Update-State`) include `Lambda.AWSLambdaException` in their Retry `ErrorEquals`. `Lambda-Validation-Query` was missing it, creating an inconsistency with the documented retry policy in CLAUDE.md.
+**Decision:** Add `Lambda.AWSLambdaException` to `Lambda-Validation-Query` Retry.
+**Rationale:** A transient unhandled exception in the validation Lambda (the last step, after all data work is complete) would go directly to `Validation-Failed` with no retry, creating alert noise without the pipeline data being affected. Consistent retry policy also makes the ASL easier to audit.
+
 ### D20: Test coverage significantly exceeded plan
 
 **Context:** Day 1 planned ~20 tests with 80%+ coverage as nice-to-have.
