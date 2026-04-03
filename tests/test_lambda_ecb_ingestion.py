@@ -123,13 +123,11 @@ class TestParseEcbResponse:
     def test_raises_on_malformed_structure(self):
         handler = ECBHandler()
 
-        with pytest.raises((KeyError, IndexError, ValueError)):
+        with pytest.raises((KeyError, IndexError, TypeError, ValueError)):
             handler._parse_ecb_response({"dataSets": [], "structure": {}})
 
-    def test_empty_series_returns_empty_rates_with_warning(self, caplog):
-        """An empty dataSets[0].series dict must return rates={} and emit a warning."""
-        import logging
-
+    def test_empty_series_raises_value_error(self):
+        """Empty dataSets[0].series must raise ValueError — prevents DynamoDB state advancing."""
         raw = {
             "dataSets": [{"series": {}}],
             "structure": {
@@ -149,11 +147,48 @@ class TestParseEcbResponse:
         }
         handler = ECBHandler()
 
-        with caplog.at_level(logging.WARNING):
-            result = handler._parse_ecb_response(raw)
+        with pytest.raises(ValueError, match="no rate observations"):
+            handler._parse_ecb_response(raw)
 
-        assert result["rates"] == {}
-        assert "no rate observations" in caplog.text
+    def test_raises_when_currency_dimension_missing(self):
+        """Missing CURRENCY dimension must raise ValueError with available dim names."""
+        raw = {
+            "dataSets": [{"series": {}}],
+            "structure": {
+                "dimensions": {
+                    "series": [{"id": "FREQ", "values": [{"id": "D"}]}],
+                    "observation": [
+                        {"id": "TIME_PERIOD", "values": [{"id": "2024-01-02"}]}
+                    ],
+                }
+            },
+        }
+        handler = ECBHandler()
+
+        with pytest.raises(ValueError, match="CURRENCY"):
+            handler._parse_ecb_response(raw)
+
+    def test_raises_when_time_period_dimension_missing(self):
+        """Missing TIME_PERIOD dimension must raise ValueError with available dim names."""
+        raw = {
+            "dataSets": [{"series": {}}],
+            "structure": {
+                "dimensions": {
+                    "series": [
+                        {"id": "FREQ", "values": [{"id": "D"}]},
+                        {"id": "CURRENCY", "values": [{"id": "USD"}]},
+                        {"id": "CURRENCY_DENOM", "values": [{"id": "EUR"}]},
+                        {"id": "EXR_TYPE", "values": [{"id": "SP00"}]},
+                        {"id": "EXR_SUFFIX", "values": [{"id": "A"}]},
+                    ],
+                    "observation": [{"id": "SOME_OTHER_DIM", "values": []}],
+                }
+            },
+        }
+        handler = ECBHandler()
+
+        with pytest.raises(ValueError, match="TIME_PERIOD"):
+            handler._parse_ecb_response(raw)
 
 
 # ---------------------------------------------------------------------------

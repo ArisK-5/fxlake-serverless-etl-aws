@@ -72,7 +72,7 @@ class ECBHandler(BaseIngestionHandler):
         # SDMX structural parse
         try:
             return self._parse_ecb_response(raw)
-        except (KeyError, IndexError, ValueError) as e:
+        except (KeyError, IndexError, TypeError, ValueError) as e:
             logger.error(
                 f"Failed to parse ECB SDMX response from {url} "
                 f"(start={start_date}, end={end_date}, status={resp.status_code}): "
@@ -132,10 +132,10 @@ class ECBHandler(BaseIngestionHandler):
         rates = {d: r for d, r in rates.items() if r}
 
         if not rates:
-            logger.warning(
+            raise ValueError(
                 "ECB SDMX response contained no rate observations for the requested period. "
                 f"dataSets[0].series had {len(raw['dataSets'][0]['series'])} series entries. "
-                "Returning empty rates dict — verify ECB API response for this date range."
+                "Verify ECB API response for this date range."
             )
 
         return {"base": "EUR", "source": "ecb", "rates": rates}
