@@ -44,6 +44,17 @@ variable "lambda_ingestion_name" {
   default = "fxlake-api-ingest-lambda"
 }
 
+variable "lambda_ecb_ingestion_name" {
+  type    = string
+  default = "fxlake-ecb-ingest-lambda"
+}
+
+variable "ecb_base_url" {
+  description = "Base URL for the ECB Statistics Data Warehouse SDMX-JSON API"
+  type        = string
+  default     = "https://data-api.ecb.europa.eu/service/data"
+}
+
 variable "lambda_validation_name" {
   type    = string
   default = "fxlake-results-check-lambda"

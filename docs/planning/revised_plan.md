@@ -487,17 +487,42 @@ Fifth review pass addressed documentation clarity, test robustness, and namespac
 
 #### Session 3A: Ingestion abstraction + second source (Day 3 morning)
 
+**Status:** ✅ COMPLETED (2026-04-01)
+
 **Approach:** REFACTOR + NET-NEW
 **Files affected:**
-- `lambda/lambda_ingestion_function.py` — extract common pattern
+- `lambda/lambda_ingestion_function.py` — refactored to `FrankfurterHandler(BaseIngestionHandler)`
 
 **New files:**
-- `lambda/common/` — shared utilities (S3 writer, state tracker, base handler)
-- `lambda/lambda_ecb_ingestion.py` — ECB Statistical Data Warehouse (free, no API key)
-- `lambda/requirements.txt` — update
+- `lambda/common/__init__.py` — package marker
+- `lambda/common/base.py` — `BaseIngestionHandler` abstract class
+- `lambda/lambda_ecb_ingestion.py` — `ECBHandler` + `lambda_handler`
+- `tests/test_base_handler.py` — 24 base class tests (orchestration, DynamoDB, saga pattern)
+- `tests/test_lambda_ecb_ingestion.py` — 16 ECB handler tests (SDMX parsing, API, integration)
 
 **Dependencies:** Incremental processing (Day 2)
 **Validation:** `uv run pytest tests/ -v`
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| `lambda/common/base.py` with `BaseIngestionHandler` | ✅ Delivered | `source_name`, `raw_bucket`, `state_table`, `start_date`, `end_date` params; `save_to_s3`, `get_last_processed`, `update_last_processed`, `run`, orchestration methods |
+| `FrankfurterHandler(BaseIngestionHandler)` | ✅ Delivered | `fetch_data` + `make_filename`; existing `lambda_handler` signature unchanged |
+| `ECBHandler(BaseIngestionHandler)` | ✅ Delivered | SDMX-JSON parser; normalises to `{"base": "EUR", "source": "ecb", "rates": {date: {ccy: rate}}}` |
+| Update `package_lambdas.sh` | ✅ Delivered | Added ECB Lambda build step; both bundles include `common/` directory |
+| Test both handlers + base class | ✅ Delivered | `test_base_handler.py` (24), `test_lambda_ingestion.py` (19, reduced from 25), `test_lambda_ecb_ingestion.py` (16) |
+| Coverage maintained | 99% (up from 98%) — 88 tests, 325 statements | Exceeded target |
+
+#### Key Differences Explained
+
+1. **`make_filename` added as abstract method:** The prompt didn't specify this explicitly, but S3 key format differs per source. Abstract `make_filename(start, end) -> str` cleanly separates filename logic from orchestration. See D34.
+
+2. **Base class `save_to_s3` metadata simplified:** Original had `start_date`, `end_date`, `base_currency` in S3 metadata. Base class uses only `source` — other fields are already encoded in the filename. This avoids exposing source-specific fields at the base level.
+
+3. **ECB SDMX parser as instance method:** `_parse_ecb_response` lives on `ECBHandler`, not as a module-level function. This makes it easy to test directly without a full HTTP mock.
+
+4. **`monkeypatch.setenv` replaces `patch.object`:** Old tests patched `ingestion.STATE_TABLE` (module-level var). After refactoring, `STATE_TABLE` is read from env in `__init__`. Tests now use `monkeypatch.setenv("STATE_TABLE", ...)` — cleaner and doesn't require module-level side effects.
 
 **Claude Code prompt:**
 ```
@@ -536,15 +561,37 @@ After completing, update:
 
 #### Session 3B: Terraform + Step Functions Parallel (Day 3 afternoon)
 
+**Status:** ✅ COMPLETED (2026-04-01)
+
 **Approach:** REFACTOR Terraform
 **Files affected:**
-- `terraform/lambda.tf` — add new Lambda function
-- `terraform/step_function.tf` — add Parallel state
-- `terraform/variables.tf` — add ECB-specific variables
-- `terraform/iam.tf` — add permissions for new Lambda
+- `terraform/lambda.tf` — add `ecb_ingest` Lambda function
+- `terraform/step_function.tf` — replace single ingestion with Parallel state
+- `terraform/variables.tf` — add `lambda_ecb_ingestion_name`, `ecb_base_url`
+- `terraform/iam.tf` — add ECB Lambda ARN to SFN invocation policy
+- `.github/workflows/ci.yml` — stub `lambda_ecb_ingestion.zip` for validate step
 
 **Dependencies:** New Lambda code from Session 3A
-**Validation:** `cd terraform && terraform validate && terraform plan`
+**Validation:** `cd terraform && terraform validate` ✓ (88 tests, all passing)
+
+#### Planned vs. Delivered
+
+| Planned | Delivered | Notes |
+|---------|-----------|-------|
+| `aws_lambda_function "ecb_ingest"` in `lambda.tf` | ✅ Delivered | Handler `lambda_ecb_ingestion.lambda_handler`; ECB_BASE_URL, RAW_BUCKET, START_DATE, END_DATE, STATE_TABLE env vars |
+| Replace `Lambda-API-Ingestion` with `Parallel-Ingestion` | ✅ Delivered | Two branches: `Lambda-FX-Ingestion` (api_ingest) and `Lambda-ECB-Ingestion` (ecb_ingest), each with own Retry |
+| `ResultSelector` to name parallel outputs | ✅ Delivered | `{"fx.$": "$[0]", "ecb.$": "$[1]"}` → `$.parallel_results.fx/ecb` |
+| `Check-New-Data` And condition | ✅ Delivered | Both `$.parallel_results.fx.Payload.status` AND `$.parallel_results.ecb.Payload.status` must be `no_new_data` to skip |
+| Rename `Lambda-Update-State` → two update steps | ✅ Delivered | `Lambda-Update-FX-State` → `Lambda-Update-ECB-State` → `Athena-Sample-Query` |
+| New `UpdateECBState-Failed` Fail state | ✅ Delivered | Added alongside `UpdateFXState-Failed` (renamed from `UpdateState-Failed`) |
+| SFN IAM policy updated | ✅ Delivered | `ecb_ingest.arn` added to `lambda:InvokeFunction` resource list |
+| CI stub for new zip | ✅ Delivered | `touch lambda/lambda_ecb_ingestion.zip` in `ci.yml` |
+
+#### Key Differences Explained
+
+1. **No Retry on Parallel state itself:** Retries are on each branch's Lambda Task. A branch failure propagates up to the Parallel state's Catch → `Ingestion-Failed`. Adding retries at both levels would cause double-retry for transient Lambda errors.
+
+2. **`end_date` always present in `no_new_data` response (3A decision):** Required so Step Functions can always read `Payload.end_date` from both parallel branches for the `Lambda-Update-*-State` steps. A `no_new_data` response with no `end_date` would crash the update steps when only one source has new data.
 
 **Claude Code prompt:**
 ```

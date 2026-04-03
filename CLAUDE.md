@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-FXLake is a serverless ETL pipeline on AWS that fetches daily foreign exchange rates from the [Frankfurter API](https://api.frankfurter.app), transforms them with Polars, and makes them queryable via Athena. Infrastructure is managed entirely with Terraform.
+FXLake is a serverless ETL pipeline on AWS that fetches daily foreign exchange rates from multiple sources (Frankfurter API, ECB Statistics Data Warehouse), transforms them with Polars, and makes them queryable via Athena. Infrastructure is managed entirely with Terraform.
 
 ## Commands
 
@@ -21,7 +21,7 @@ Lambda functions have their own `lambda/requirements.txt` (managed separately fr
 ### Lambda Packaging
 
 ```bash
-make package     # Runs lambda/package_lambdas.sh — produces .zip files for both Lambda functions
+make package     # Runs lambda/package_lambdas.sh — produces .zip files for all Lambda functions
 ```
 
 ### Infrastructure (Terraform)
@@ -48,19 +48,39 @@ uv run assets/dev-workflow.py
 
 The pipeline is orchestrated by **Step Functions** and triggered daily by **EventBridge**, which invokes the Step Functions state machine directly (not the Lambda):
 
-1. **Lambda (Ingestion)** — reads `last_processed_date` from DynamoDB state table, computes incremental fetch range (`last_processed_date+1` to today capped at `END_DATE`), fetches FX rates JSON from Frankfurter API → saves to S3 raw bucket. Returns `status: "no_new_data"` if already caught up. **Does not update DynamoDB** — that is deferred to step 4.
-2. **Choice (Check-New-Data)** — if ingestion returned `no_new_data`, routes to `Pipeline-Already-Up-To-Date` (Succeed); otherwise continues to Glue.
+1. **Parallel (Parallel-Ingestion)** — runs Frankfurter and ECB ingestion concurrently. Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx` and `$.parallel_results.ecb`. **Does not update DynamoDB** — deferred to steps 4–5.
+2. **Choice (Check-New-Data)** — routes to `Pipeline-Already-Up-To-Date` only if **both** sources returned `no_new_data`; otherwise continues to Glue.
 3. **Glue Job (Python Shell)** — reads raw JSON from S3, flattens nested `{date: {currency: rate}}` structure using **Polars**, writes Parquet/CSV to processed S3 bucket
-4. **Lambda (Update-State)** — commits `last_processed_date` to DynamoDB **only after Glue succeeds**, preventing state corruption on Glue failure. Calls the **same ingestion Lambda** with `{"action": "update_state", "end_date": "..."}` — the Lambda's `_handle_update_state` branch handles this path.
-5. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
-6. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
+4. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB **only after Glue succeeds**. Calls the `api_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
+5. **Lambda (Update-ECB-State)** — commits ECB `last_processed_date` to DynamoDB after FX state is committed. Calls the `ecb_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.ecb.Payload.end_date"}`.
+6. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
+7. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
+
+### Multi-Source Ingestion
+
+All ingestion Lambdas share a common base class (`lambda/common/base.py`):
+
+| Lambda | Source | Handler class | File naming |
+|--------|--------|---------------|-------------|
+| `lambda_ingestion_function.py` | Frankfurter API | `FrankfurterHandler` | `exchange_rates_{BASE}_{START}_to_{END}.json` |
+| `lambda_ecb_ingestion.py` | ECB SDW SDMX-JSON API | `ECBHandler` | `ecb_rates_{START}_to_{END}.json` |
+
+`BaseIngestionHandler` (abstract) provides:
+- `save_to_s3(data, filename)` — S3 write with `source` metadata
+- `get_last_processed()` / `update_last_processed(date)` — DynamoDB state (allowlist-guarded fallback)
+- `run(event, context)` — routes `update_state` action, incremental mode, or static mode
+- `_incremental_ingest()` / `_static_ingest()` / `_handle_update_state()` — shared orchestration
+
+Subclasses implement `fetch_data(start, end)` and `make_filename(start, end)`.
+
+ECB response parsing: SDMX-JSON format (`dataSets[0].series["FREQ:CCY:..."]`) is normalised into `{"base": "EUR", "source": "ecb", "rates": {date: {ccy: rate}}}`.
 
 ### Incremental Processing
 
-The ingestion Lambda supports two modes controlled by the `STATE_TABLE` env var:
+Each handler supports two modes controlled by the `STATE_TABLE` env var. DynamoDB state is keyed by `(pipeline_id="fxlake", source=<source_name>)` — each source has independent state.
 
-- **Incremental mode** (`STATE_TABLE` set): reads `last_processed_date` from DynamoDB (`pipeline_id="fxlake"`, `source="frankfurter"`), defaults to `START_DATE` on first run. Fetches `last_processed_date+1` to `min(today, END_DATE)`. Returns `end_date` in payload for Step Functions to pass to the `Lambda-Update-State` step.
-- **Static fallback** (`STATE_TABLE` not set): fetches the full `START_DATE..END_DATE` range (original behavior, used for backfills/testing).
+- **Incremental mode** (`STATE_TABLE` set): reads `last_processed_date` from DynamoDB, defaults to `START_DATE` on first run. Fetches `last_processed_date+1` to `min(today, END_DATE)`. Returns `end_date` in payload for Step Functions to pass to the `Lambda-Update-State` step.
+- **Static fallback** (`STATE_TABLE` not set): fetches the full `START_DATE..END_DATE` range (used for backfills/testing).
 
 ### Step Functions Error Handling
 
@@ -74,9 +94,9 @@ Every state has Retry and Catch blocks:
 
 | File | What it defines |
 |------|----------------|
-| `step_function.tf` | ASL definition for 6-stage orchestration: Ingestion → Choice → Glue → Update-State → Athena → Validation, with Retry/Catch + 5 Fail states + Succeed state. Uses `ResultPath` throughout to preserve state across stages. |
+| `step_function.tf` | ASL definition for 7-stage orchestration: Parallel-Ingestion → Choice → Glue → Update-FX-State → Update-ECB-State → Athena → Validation, with Retry/Catch + 6 Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys; `ResultPath` preserves state across all stages. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
-| `lambda.tf` | Both Lambda functions + EventBridge rule/target (→ Step Functions) |
+| `lambda.tf` | Three Lambda functions (api_ingest, ecb_ingest, check_query_results) + EventBridge rule/target (→ Step Functions) |
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow dependencies) |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |
@@ -111,7 +131,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 60 tests, 98% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 88 tests, 99% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests
@@ -125,17 +145,29 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 - Module-level env vars (`RAW_BUCKET`, `START_DATE`, etc.) are set via `os.environ.setdefault` before Lambda modules are imported
 - `s3_mock` fixture activates `mock_aws()` and creates both S3 buckets (`test-raw-bucket`, `test-processed-bucket`)
 - `aws_mock` fixture activates `mock_aws()` with S3 buckets + DynamoDB `test-state-table`; used by incremental ingestion tests
-- Incremental tests patch `ingestion.STATE_TABLE` and `ingestion.DYNAMODB` via `patch.object` (module-level vars are `None` when `STATE_TABLE` env var is absent)
+- Incremental tests use `monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)` — handlers read `STATE_TABLE` from env in `__init__`, so moto intercepts the `boto3.client("dynamodb")` call automatically
 
 ### Test Coverage
 
 | File | Coverage |
 |------|----------|
+| `lambda/common/base.py` | 100% |
 | `lambda/lambda_ingestion_function.py` | 100% |
+| `lambda/lambda_ecb_ingestion.py` | 100% |
 | `lambda/lambda_validation_function.py` | 100% |
 | `glue/glue_transform.py` | 96% (uncovered: `except Exception` fallthrough in `list_json_keys`, `if __name__` guard) |
 
-**Overall: 98% (249 statements, 4 missed)**
+**Overall: 99% (325 statements, 4 missed)**
+
+### Test File Organisation
+
+| File | What it covers |
+|------|---------------|
+| `test_base_handler.py` | `BaseIngestionHandler` — save_to_s3, DynamoDB state, orchestration, saga pattern (24 tests) |
+| `test_lambda_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
+| `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (16 tests) |
+| `test_glue_transform.py` | Glue Polars transform (17 tests) |
+| `test_lambda_validation.py` | Validation Lambda, CloudWatch metric (12 tests) |
 
 ## CI/CD
 
