@@ -15,9 +15,9 @@ resource "aws_sfn_state_machine" "etl" {
             StartAt = "Lambda-FX-Ingestion",
             States = {
               Lambda-FX-Ingestion = {
-                Type       = "Task",
-                Resource   = "arn:aws:states:::lambda:invoke",
-                Parameters = { FunctionName = aws_lambda_function.api_ingest.arn },
+                Type           = "Task",
+                Resource       = "arn:aws:states:::lambda:invoke",
+                Parameters     = { FunctionName = aws_lambda_function.api_ingest.arn },
                 TimeoutSeconds = 90,
                 Retry = [
                   {
@@ -35,9 +35,9 @@ resource "aws_sfn_state_machine" "etl" {
             StartAt = "Lambda-ECB-Ingestion",
             States = {
               Lambda-ECB-Ingestion = {
-                Type       = "Task",
-                Resource   = "arn:aws:states:::lambda:invoke",
-                Parameters = { FunctionName = aws_lambda_function.ecb_ingest.arn },
+                Type           = "Task",
+                Resource       = "arn:aws:states:::lambda:invoke",
+                Parameters     = { FunctionName = aws_lambda_function.ecb_ingest.arn },
                 TimeoutSeconds = 90,
                 Retry = [
                   {
@@ -56,7 +56,7 @@ resource "aws_sfn_state_machine" "etl" {
           "fx.$"  = "$[0]",
           "ecb.$" = "$[1]"
         },
-        ResultPath     = "$.parallel_results",
+        ResultPath = "$.parallel_results",
         Catch = [
           {
             ErrorEquals = ["States.ALL"],

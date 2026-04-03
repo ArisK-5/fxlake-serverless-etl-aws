@@ -65,16 +65,29 @@ class BaseIngestionHandler(ABC):
     # Concrete shared methods
     # ------------------------------------------------------------------
 
-    def save_to_s3(self, data: dict, filename: str) -> str:
-        """Serialise *data* as JSON and write it to S3. Returns the filename."""
+    def save_to_s3(
+        self, data: dict, filename: str, start_date: str = "", end_date: str = ""
+    ) -> str:
+        """Serialise *data* as JSON and write it to S3 with ContentType 'application/json'
+        and a 'source' metadata tag. Returns the filename.
+
+        *start_date* and *end_date* are optional; when provided they are written as
+        S3 object metadata so operators can use ``s3api head-object`` to determine the
+        date range without downloading the file.
+        """
         body = json.dumps(data)
+        metadata: dict[str, str] = {"source": self.source_name}
+        if start_date:
+            metadata["start_date"] = start_date
+        if end_date:
+            metadata["end_date"] = end_date
         try:
             self._s3.put_object(
                 Bucket=self.raw_bucket,
                 Key=filename,
                 Body=body,
                 ContentType="application/json",
-                Metadata={"source": self.source_name},
+                Metadata=metadata,
             )
             logger.debug(f"Saved data to s3://{self.raw_bucket}/{filename}")
             return filename
@@ -119,8 +132,9 @@ class BaseIngestionHandler(ABC):
                 )
                 raise
             logger.warning(
-                f"Transient DynamoDB read error for table {self.state_table} "
-                f"(code={code}), defaulting to start_date={self.start_date}"
+                f"Transient DynamoDB read error for source={self.source_name}, "
+                f"table={self.state_table} (code={code}), "
+                f"defaulting to start_date={self.start_date}"
             )
         return self.start_date
 
@@ -154,22 +168,18 @@ class BaseIngestionHandler(ABC):
 
     def run(self, event: dict, _context: Any) -> dict:
         """Route the Lambda event to update_state, incremental, or static ingest."""
-        try:
-            if event.get("action") == "update_state":
-                return self._handle_update_state(event)
-            if self.state_table:
-                return self._incremental_ingest()
-            return self._static_ingest()
-        except Exception:
-            logger.error(
-                "Unhandled exception in lambda handler",
-                exc_info=True,
-                extra={"source": self.source_name},
-            )
-            raise
+        if event.get("action") == "update_state":
+            return self._handle_update_state(event)
+        if self.state_table:
+            return self._incremental_ingest()
+        return self._static_ingest()
 
     def _handle_update_state(self, event: dict) -> dict:
-        """Commit last_processed_date to DynamoDB. Called by Step Functions after Glue succeeds.
+        """Commit last_processed_date to DynamoDB.
+
+        Invoked by Step Functions after Glue succeeds (FX source) or after the FX state
+        update succeeds (ECB source). Each source handler instance only updates its own
+        DynamoDB record — keyed by ``(pipeline_id="fxlake", source=<source_name>)``.
 
         Args:
             event: must contain key ``end_date`` (ISO date string, e.g. "2024-01-31").
@@ -202,8 +212,10 @@ class BaseIngestionHandler(ABC):
         Functions ``Check-New-Data`` Choice state routes to ``Pipeline-Already-Up-To-Date``
         (Succeed state) when it sees this status value.
         Returns ``{"status": "ok", "end_date": ..., ...}`` on a successful fetch — the
-        ``end_date`` key is consumed by the ``Lambda-Update-State`` step post-Glue.
-        Does NOT commit state to DynamoDB; that is deferred to Lambda-Update-State.
+        ``end_date`` key is consumed by the ``Lambda-Update-FX-State`` or
+        ``Lambda-Update-ECB-State`` step post-Glue.
+        Does NOT commit state to DynamoDB; that is deferred to Lambda-Update-FX-State /
+        Lambda-Update-ECB-State.
         """
         last_processed = self.get_last_processed()
         fetch_start = (date.fromisoformat(last_processed) + timedelta(days=1)).isoformat()
@@ -225,7 +237,7 @@ class BaseIngestionHandler(ABC):
 
         data = self.fetch_data(fetch_start, fetch_end)
         filename = self.make_filename(fetch_start, fetch_end)
-        self.save_to_s3(data, filename)
+        self.save_to_s3(data, filename, start_date=fetch_start, end_date=fetch_end)
 
         logger.info(
             f"Incremental ingestion succeeded: source={self.source_name}, "
@@ -243,7 +255,7 @@ class BaseIngestionHandler(ABC):
         """Fetch the full configured date range (start_date..end_date)."""
         data = self.fetch_data(self.start_date, self.end_date)
         filename = self.make_filename(self.start_date, self.end_date)
-        self.save_to_s3(data, filename)
+        self.save_to_s3(data, filename, start_date=self.start_date, end_date=self.end_date)
 
         logger.info(
             f"Static ingestion succeeded: source={self.source_name}, file: {filename}"

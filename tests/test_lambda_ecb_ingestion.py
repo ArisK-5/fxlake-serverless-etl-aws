@@ -123,8 +123,37 @@ class TestParseEcbResponse:
     def test_raises_on_malformed_structure(self):
         handler = ECBHandler()
 
-        with pytest.raises((KeyError, IndexError)):
+        with pytest.raises((KeyError, IndexError, ValueError)):
             handler._parse_ecb_response({"dataSets": [], "structure": {}})
+
+    def test_empty_series_returns_empty_rates_with_warning(self, caplog):
+        """An empty dataSets[0].series dict must return rates={} and emit a warning."""
+        import logging
+
+        raw = {
+            "dataSets": [{"series": {}}],
+            "structure": {
+                "dimensions": {
+                    "series": [
+                        {"id": "FREQ", "values": [{"id": "D"}]},
+                        {"id": "CURRENCY", "values": [{"id": "USD"}]},
+                        {"id": "CURRENCY_DENOM", "values": [{"id": "EUR"}]},
+                        {"id": "EXR_TYPE", "values": [{"id": "SP00"}]},
+                        {"id": "EXR_SUFFIX", "values": [{"id": "A"}]},
+                    ],
+                    "observation": [
+                        {"id": "TIME_PERIOD", "values": [{"id": "2024-01-02"}]}
+                    ],
+                }
+            },
+        }
+        handler = ECBHandler()
+
+        with caplog.at_level(logging.WARNING):
+            result = handler._parse_ecb_response(raw)
+
+        assert result["rates"] == {}
+        assert "no rate observations" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -271,3 +300,31 @@ class TestLambdaHandlerIncremental:
             Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "ecb"}},
         )["Item"]
         assert item["last_processed_date"]["S"] == "2024-01-31"
+
+    @responses.activate
+    def test_ecb_reads_only_its_own_dynamodb_row(self, aws_mock, monkeypatch):
+        """ECB handler must only read source='ecb' row, not source='frankfurter'."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        # Seed both source rows with different dates in the same table
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-05"},
+            },
+        )
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "ecb"},
+                "last_processed_date": {"S": "2024-01-14"},
+            },
+        )
+        responses.add(responses.GET, ECB_API_URL, json=SAMPLE_ECB_RESPONSE, status=200)
+
+        result = ecb_module.lambda_handler({}, None)
+
+        # ECB must have read source="ecb" (last_processed=2024-01-14), not "frankfurter"
+        assert result["start_date"] == "2024-01-15"

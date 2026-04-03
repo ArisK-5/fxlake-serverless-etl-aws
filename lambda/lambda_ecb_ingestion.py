@@ -27,6 +27,8 @@ class ECBHandler(BaseIngestionHandler):
             start_date=os.environ["START_DATE"],
             end_date=os.environ["END_DATE"],
         )
+        # ECB_BASE_URL is always set in production by Terraform; the fallback supports
+        # local testing without env setup.
         self.base_url = os.getenv("ECB_BASE_URL", _DEFAULT_ECB_BASE_URL)
 
     def fetch_data(self, start_date: str, end_date: str) -> dict:
@@ -37,19 +39,12 @@ class ECBHandler(BaseIngestionHandler):
             "endPeriod": end_date,
             "format": "jsondata",
         }
+
+        # HTTP fetch — network and HTTP protocol errors
         try:
             resp = requests.get(url, params=params, timeout=30)
             resp.raise_for_status()
             logger.debug("Successfully fetched exchange rates from ECB API")
-            raw = resp.json()
-            return self._parse_ecb_response(raw)
-        except json.JSONDecodeError:
-            logger.error(
-                f"ECB API returned non-JSON response from {url}: "
-                f"status={resp.status_code}, body={resp.text[:200]}",
-                exc_info=True,
-            )
-            raise
         except requests.exceptions.Timeout as e:
             logger.error(f"Timeout fetching {url}: {e}")
             raise
@@ -62,9 +57,26 @@ class ECBHandler(BaseIngestionHandler):
         except requests.exceptions.RequestException as e:
             logger.error(f"Network error fetching {url}: {e}", exc_info=True)
             raise
+
+        # JSON decode
+        try:
+            raw = resp.json()
+        except json.JSONDecodeError:
+            logger.error(
+                f"ECB API returned non-JSON response from {url}: "
+                f"status={resp.status_code}, body={resp.text[:200]}",
+                exc_info=True,
+            )
+            raise
+
+        # SDMX structural parse
+        try:
+            return self._parse_ecb_response(raw)
         except (KeyError, IndexError, ValueError) as e:
             logger.error(
-                f"Failed to parse ECB SDMX response: {type(e).__name__}: {e}",
+                f"Failed to parse ECB SDMX response from {url} "
+                f"(start={start_date}, end={end_date}, status={resp.status_code}): "
+                f"{type(e).__name__}: {e}. Body (first 500 chars): {resp.text[:500]}",
                 exc_info=True,
             )
             raise
@@ -76,14 +88,35 @@ class ECBHandler(BaseIngestionHandler):
         """Parse ECB SDMX-JSON into normalised ``{date: {currency: rate}}`` form.
 
         The ECB returns SDMX-JSON where series are keyed by colon-delimited dimension
-        indices (e.g. ``"0:2:0:0:0"``). The second element is the CURRENCY dimension
-        index. Observations are keyed by time-period index.
+        indices (e.g. ``"0:2:0:0:0"``). The second colon-separated token (index [1])
+        is the zero-based index into the CURRENCY dimension values array.
+        Observations are keyed by TIME_PERIOD index.
 
         Dates with no observations (weekends, holidays) are dropped from the output.
         """
         structure = raw["structure"]["dimensions"]
-        currencies = [v["id"] for v in structure["series"][1]["values"]]
-        dates = [v["id"] for v in structure["observation"][0]["values"]]
+
+        currency_dim = next(
+            (d for d in structure["series"] if d["id"] == "CURRENCY"),
+            None,
+        )
+        if currency_dim is None:
+            raise ValueError(
+                f"CURRENCY dimension not found in ECB SDMX structure. "
+                f"Available series dimensions: {[d['id'] for d in structure['series']]}"
+            )
+        currencies = [v["id"] for v in currency_dim["values"]]
+
+        time_dim = next(
+            (d for d in structure["observation"] if d["id"] == "TIME_PERIOD"),
+            None,
+        )
+        if time_dim is None:
+            raise ValueError(
+                f"TIME_PERIOD dimension not found in ECB SDMX observation dimensions. "
+                f"Available: {[d['id'] for d in structure['observation']]}"
+            )
+        dates = [v["id"] for v in time_dim["values"]]
 
         rates: dict[str, dict[str, float]] = {d: {} for d in dates}
 
@@ -97,6 +130,13 @@ class ECBHandler(BaseIngestionHandler):
 
         # Remove date slots with no observations (e.g. weekends, public holidays)
         rates = {d: r for d, r in rates.items() if r}
+
+        if not rates:
+            logger.warning(
+                "ECB SDMX response contained no rate observations for the requested period. "
+                f"dataSets[0].series had {len(raw['dataSets'][0]['series'])} series entries. "
+                "Returning empty rates dict — verify ECB API response for this date range."
+            )
 
         return {"base": "EUR", "source": "ecb", "rates": rates}
 

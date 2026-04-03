@@ -341,3 +341,75 @@ class TestHandleUpdateState:
 
         with pytest.raises(ClientError):
             handler._handle_update_state({"action": "update_state", "end_date": "2024-01-31"})
+
+
+# ---------------------------------------------------------------------------
+# run() — top-level routing
+# ---------------------------------------------------------------------------
+class TestRun:
+    def test_routes_update_state_action(self, aws_mock, monkeypatch):
+        """event with action='update_state' must reach _handle_update_state."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        handler = ConcreteHandler()
+
+        result = handler.run({"action": "update_state", "end_date": "2024-01-15"}, None)
+
+        assert result["status"] == "state_updated"
+        assert result["last_processed_date"] == "2024-01-15"
+
+    def test_routes_to_incremental_when_state_table_set(self, aws_mock, monkeypatch):
+        """Empty event with STATE_TABLE set must reach _incremental_ingest."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "test"},
+                "last_processed_date": {"S": "2024-01-14"},
+            },
+        )
+        handler = ConcreteHandler()
+
+        result = handler.run({}, None)
+
+        assert result["status"] == "ok"
+        assert result["start_date"] == "2024-01-15"
+
+    def test_routes_to_static_when_no_state_table(self, s3_mock):
+        """Empty event without STATE_TABLE must reach _static_ingest."""
+        handler = ConcreteHandler()  # STATE_TABLE not set → state_table=None
+
+        result = handler.run({}, None)
+
+        assert result["status"] == "ok"
+        assert result["start_date"] == "2024-01-01"
+        assert result["end_date"] == "2024-01-31"
+
+
+# ---------------------------------------------------------------------------
+# _incremental_ingest — fetch-end date capping
+# ---------------------------------------------------------------------------
+class TestIncrementalIngestDateCapping:
+    def test_fetch_end_is_capped_at_today_when_end_date_is_future(
+        self, aws_mock, monkeypatch
+    ):
+        """fetch_end = min(today, END_DATE) — must not request future dates from APIs."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        monkeypatch.setenv("END_DATE", "2099-12-31")
+        handler = ConcreteHandler()
+
+        result = handler._incremental_ingest()
+
+        today = date.today().isoformat()
+        assert result["end_date"] == today
+        assert result["status"] == "ok"
+
+    def test_fetch_end_uses_end_date_when_end_date_is_past(self, aws_mock, monkeypatch):
+        """When END_DATE is in the past fetch_end should equal END_DATE, not today."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        # END_DATE defaults to 2024-01-31 from conftest; today is well past that
+        handler = ConcreteHandler()
+
+        result = handler._incremental_ingest()
+
+        assert result["end_date"] == "2024-01-31"
