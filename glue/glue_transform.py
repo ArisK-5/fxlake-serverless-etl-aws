@@ -111,11 +111,29 @@ def _write_partition(df: "pl.DataFrame", out_key: str) -> None:
         raise
 
 
-def process_key(key: str) -> List[str]:
-    """Transform one raw JSON file into date-partitioned output files.
+def _detect_fx_source(key: str, payload: dict) -> str:
+    """Derive the data source name for FX rate files.
 
-    Returns a list of S3 keys written (one per date in the source data).
-    Returns an empty list if the source contains no rate rows.
+    Prefers the explicit ``source`` field in the payload (set by ECB handler).
+    Falls back to filename-prefix detection for Frankfurter files, which store
+    the raw API response without a source annotation.
+    """
+    if "source" in payload:
+        return payload["source"]
+    stem = key.split("/")[-1]
+    if stem.startswith("ecb_"):
+        return "ecb"
+    return "frankfurter"
+
+
+def _process_fx_key(key: str) -> List[str]:
+    """Transform one FX rates JSON file (Frankfurter or ECB) into date-partitioned output.
+
+    Input format: ``{"base": <currency>, "rates": {date: {currency: rate}}}``.
+    Output schema: ``{date, source, base_currency, target_currency, rate}``.
+    Output path: ``fx_rates/year=YYYY/month=MM/day=DD/<stem>.<format>``.
+
+    Returns a list of S3 keys written (one per date). Returns ``[]`` if no rows.
     """
     try:
         obj = s3.get_object(Bucket=raw_bucket, Key=key)
@@ -123,9 +141,16 @@ def process_key(key: str) -> List[str]:
 
         base = payload["base"]
         rates = payload.get("rates", {})
+        source = _detect_fx_source(key, payload)
 
         rows = [
-            {"base_currency": base, "target_currency": tgt, "rate": rate, "date": dt}
+            {
+                "date": dt,
+                "source": source,
+                "base_currency": base,
+                "target_currency": tgt,
+                "rate": rate,
+            }
             for dt, daily_rates in rates.items()
             for tgt, rate in daily_rates.items()
         ]
@@ -141,7 +166,7 @@ def process_key(key: str) -> List[str]:
         for dt in sorted(df["date"].unique().to_list()):
             year, month, day = dt.split("-")
             partition = f"year={year}/month={month}/day={day}"
-            out_key = f"exchange_rates/{partition}/{stem}.{output_format}"
+            out_key = f"fx_rates/{partition}/{stem}.{output_format}"
 
             _write_partition(df.filter(pl.col("date") == dt), out_key)
             out_keys.append(out_key)
@@ -161,6 +186,76 @@ def process_key(key: str) -> List[str]:
     except Exception:
         logger.error(f"Unexpected error processing key={key}", exc_info=True)
         raise
+
+
+def _process_economic_key(key: str) -> List[str]:
+    """Transform one FRED economic indicators JSON file into date-partitioned output.
+
+    Input format: ``{"source": "fred", "series_id": <id>, "observations": {date: value}}``.
+    Output schema: ``{date, source, series_id, value}``.
+    Output path: ``economic_indicators/year=YYYY/month=MM/day=DD/<stem>.<format>``.
+
+    Returns a list of S3 keys written (one per date). Returns ``[]`` if no rows.
+    """
+    try:
+        obj = s3.get_object(Bucket=raw_bucket, Key=key)
+        payload = json.load(obj["Body"])
+
+        source = payload["source"]
+        series_id = payload["series_id"]
+        observations = payload.get("observations", {})
+
+        rows = [
+            {"date": dt, "source": source, "series_id": series_id, "value": value}
+            for dt, value in observations.items()
+        ]
+
+        if not rows:
+            logger.warning(f"No observations found in {key}, skipping output")
+            return []
+
+        df = pl.DataFrame(rows)
+        stem = key.split("/")[-1].replace(".json", "")
+        out_keys: List[str] = []
+
+        for dt in sorted(df["date"].unique().to_list()):
+            year, month, day = dt.split("-")
+            partition = f"year={year}/month={month}/day={day}"
+            out_key = f"economic_indicators/{partition}/{stem}.{output_format}"
+
+            _write_partition(df.filter(pl.col("date") == dt), out_key)
+            out_keys.append(out_key)
+            logger.info(f"Processed {key} → {out_key}")
+
+        return out_keys
+
+    except ClientError as e:
+        logger.error(
+            f"S3 error processing key={key}: {e.response['Error']['Code']}",
+            exc_info=True,
+        )
+        raise
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        logger.error(f"Malformed payload in key={key}: {e}", exc_info=True)
+        raise
+    except Exception:
+        logger.error(f"Unexpected error processing key={key}", exc_info=True)
+        raise
+
+
+def process_key(key: str) -> List[str]:
+    """Dispatch one raw JSON file to the appropriate domain transform.
+
+    Routing rule (based on filename stem, not directory prefix):
+    - ``fred_*``  → economic indicators domain → ``economic_indicators/``
+    - everything else → FX rates domain → ``fx_rates/``
+
+    Returns a list of S3 output keys written.
+    """
+    stem = key.split("/")[-1]
+    if stem.startswith("fred_"):
+        return _process_economic_key(key)
+    return _process_fx_key(key)
 
 
 # -----------------------------

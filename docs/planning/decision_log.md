@@ -348,3 +348,32 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** Day 1 planned ~20 tests with 80%+ coverage as nice-to-have.
 **Delivered:** 37 tests, 96% coverage.
 **Reason:** Three rounds of iterative PR review (`/pr-review-toolkit:review-pr`) surfaced edge cases that were genuine gaps, not test padding. Each test covers a real failure mode (non-JSON API response, connection errors vs timeouts, `ClientError` vs `KeyError` distinction, parametrized Athena states). The coverage increase was organic, not targeted.
+
+
+---
+
+## Session 4A Decisions (2026-04-03)
+
+### D40: Hybrid Glue schema — two output domains instead of one unified schema
+
+**Context:** FRED economic indicators (GDP in billions, unemployment rate %) share no meaningful schema with FX rate pairs. Forcing them into `{base_currency, target_currency, rate}` would require nullable columns and break any downstream query that assumes FX semantics.
+**Decision:** Route by filename prefix: `fred_*` → `economic_indicators/` with `{date, source, series_id, value}`; all others → `fx_rates/` with `{date, source, base_currency, target_currency, rate}`.
+**Rationale:** Adding a new FX source (e.g. OpenExchangeRates) requires zero transform code changes. Adding a new data domain is a deliberate, explicit decision — by design, not by accident.
+
+### D41: FX output path renamed exchange_rates/ → fx_rates/
+
+**Context:** Original Glue output used `exchange_rates/` as the S3 prefix. With two domains, clarity requires the FX prefix to match the Athena table name `fx_rates`.
+**Decision:** Rename output prefix to `fx_rates/` in both Glue transform and athena.tf. No migration needed — this is a development branch with no production data.
+**Rationale:** Consistent naming between S3 path, Athena table, and Glue code reduces cognitive load and prevents misrouted partition projection.
+
+### D42: FRED source detection via payload field, not filename prefix
+
+**Context:** ECB payload includes `"source": "ecb"` (set by ECBHandler). Frankfurter raw API response has no source field. Both share the FX schema.
+**Decision:** In `_detect_fx_source`: check `payload["source"]` first; fall back to filename prefix inspection (`ecb_` → "ecb", else → "frankfurter").
+**Rationale:** Payload-first detection is forward-compatible — any future source that sets the field works automatically. Filename fallback is the explicit escape hatch for sources that can't annotate their own payload.
+
+### D43: FRED "." sentinel dropped silently, empty-after-filter raises ValueError
+
+**Context:** FRED API uses `"."` for missing/unreleased data (e.g. not-yet-published unemployment figures). These are common at the tail of a date range.
+**Decision:** Drop `"."` values silently in `_parse_fred_response`. Raise `ValueError` only when the entire response consists of missing values — this prevents state from advancing on a completely empty ingest.
+**Rationale:** Partial missing data is normal and expected; total absence indicates a configuration error (wrong series ID, wrong date range) that should fail loudly.

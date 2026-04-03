@@ -46,6 +46,28 @@ cd ..
 rm -rf package
 
 #############################################
+# Build: lambda_fred_ingestion.py
+#############################################
+
+echo "📦 Building Lambda: FRED Ingestion Function..."
+
+rm -rf package lambda_fred_ingestion.zip
+mkdir -p package
+
+if [ -f "requirements.txt" ]; then
+  pip3 install --target ./package -r requirements.txt
+fi
+
+cp lambda_fred_ingestion.py package/
+cp -r common package/
+
+cd package
+zip -r ../lambda_fred_ingestion.zip .
+cd ..
+
+rm -rf package
+
+#############################################
 # Build: lambda_validation_function.py
 #############################################
 
@@ -67,4 +89,4 @@ cd ..
 rm -rf package
 
 echo "✅ Lambda packaging complete."
-echo "Created: lambda_ingestion_function.zip, lambda_ecb_ingestion.zip, lambda_validation_function.zip"
+echo "Created: lambda_ingestion_function.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip"

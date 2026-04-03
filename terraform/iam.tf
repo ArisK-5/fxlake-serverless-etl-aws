@@ -170,6 +170,7 @@ resource "aws_iam_role_policy" "sfn_policy" {
         Resource = [
           aws_lambda_function.api_ingest.arn,
           aws_lambda_function.ecb_ingest.arn,
+          aws_lambda_function.fred_ingest.arn,
           aws_lambda_function.check_query_results.arn
         ]
       },

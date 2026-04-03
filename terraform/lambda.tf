@@ -39,6 +39,28 @@ resource "aws_lambda_function" "ecb_ingest" {
   }
 }
 
+resource "aws_lambda_function" "fred_ingest" {
+  function_name    = var.lambda_fred_ingestion_name
+  description      = "Fetches economic indicator observations from the FRED API and stores them in S3 for ETL processing"
+  handler          = "lambda_fred_ingestion.lambda_handler"
+  runtime          = "python3.12"
+  role             = aws_iam_role.lambda_exec.arn
+  filename         = "../lambda/lambda_fred_ingestion.zip"
+  timeout          = 60
+  source_code_hash = filebase64sha256("../lambda/lambda_fred_ingestion.zip")
+  environment {
+    variables = {
+      RAW_BUCKET    = var.raw_bucket_name
+      START_DATE    = var.fx_start_date
+      END_DATE      = var.fx_end_date
+      FRED_BASE_URL = var.fred_base_url
+      FRED_SERIES   = var.fred_series
+      FRED_API_KEY  = var.fred_api_key
+      STATE_TABLE   = aws_dynamodb_table.pipeline_state.name
+    }
+  }
+}
+
 resource "aws_lambda_function" "check_query_results" {
   function_name    = var.lambda_validation_name
   description      = "Checks Athena query results and publishes custom CloudWatch metric"

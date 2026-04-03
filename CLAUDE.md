@@ -48,13 +48,14 @@ uv run assets/dev-workflow.py
 
 The pipeline is orchestrated by **Step Functions** and triggered daily by **EventBridge**, which invokes the Step Functions state machine directly (not the Lambda):
 
-1. **Parallel (Parallel-Ingestion)** — runs Frankfurter and ECB ingestion concurrently. Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx` and `$.parallel_results.ecb`. **Does not update DynamoDB** — deferred to steps 4–5.
-2. **Choice (Check-New-Data)** — routes to `Pipeline-Already-Up-To-Date` only if **both** sources returned `no_new_data`; otherwise continues to Glue.
-3. **Glue Job (Python Shell)** — reads raw JSON from S3, flattens nested `{date: {currency: rate}}` structure using **Polars**, writes Parquet/CSV to processed S3 bucket
+1. **Parallel (Parallel-Ingestion)** — runs Frankfurter, ECB, and FRED ingestion concurrently (3 branches). Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx`, `$.parallel_results.ecb`, and `$.parallel_results.fred`. **Does not update DynamoDB** — deferred to steps 4–6.
+2. **Choice (Check-New-Data)** — routes to `Pipeline-Already-Up-To-Date` only if **all three** sources returned `no_new_data`; otherwise continues to Glue.
+3. **Glue Job (Python Shell)** — reads raw JSON from S3, routes by filename prefix: `fred_*` → `economic_indicators/` domain, all others → `fx_rates/` domain. Writes Parquet/CSV partitioned by date.
 4. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB **only after Glue succeeds**. Calls the `api_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
 5. **Lambda (Update-ECB-State)** — commits ECB `last_processed_date` to DynamoDB after FX state is committed. Calls the `ecb_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.ecb.Payload.end_date"}`.
-6. **Athena** — runs a sample query on the processed data via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
-7. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
+6. **Lambda (Update-FRED-State)** — commits FRED `last_processed_date` to DynamoDB after ECB state is committed. Calls the `fred_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fred.Payload.end_date"}`.
+7. **Athena** — runs a sample query on the `fx_rates` table via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
+8. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
 
 ### Multi-Source Ingestion
 
@@ -64,6 +65,9 @@ All ingestion Lambdas share a common base class (`lambda/common/base.py`):
 |--------|--------|---------------|-------------|
 | `lambda_ingestion_function.py` | Frankfurter API | `FrankfurterHandler` | `exchange_rates_{BASE}_{START}_to_{END}.json` |
 | `lambda_ecb_ingestion.py` | ECB SDW SDMX-JSON API | `ECBHandler` | `ecb_rates_{START}_to_{END}.json` |
+| `lambda_fred_ingestion.py` | FRED (Federal Reserve Economic Data) | `FREDHandler` | `fred_{series}_{START}_to_{END}.json` |
+
+FRED-specific: fetches `series/observations` for a single configurable series (default `UNRATE`). Drops `"."` sentinel values (missing/unreleased data) silently; raises `ValueError` if the entire response is missing values.
 
 `BaseIngestionHandler` (abstract) provides:
 - `save_to_s3(data, filename)` — S3 write with `source` metadata
@@ -94,7 +98,7 @@ Every state has Retry and Catch blocks:
 
 | File | What it defines |
 |------|----------------|
-| `step_function.tf` | ASL definition for 7-stage orchestration: Parallel-Ingestion → Choice → Glue → Update-FX-State → Update-ECB-State → Athena → Validation, with Retry/Catch + 6 Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys; `ResultPath` preserves state across all stages. |
+| `step_function.tf` | ASL definition for 8-stage orchestration: Parallel-Ingestion (3 branches) → Choice → Glue → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation, with Retry/Catch + 7 Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
 | `lambda.tf` | Three Lambda functions (api_ingest, ecb_ingest, check_query_results) + EventBridge rule/target (→ Step Functions) |
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow dependencies) |
@@ -112,12 +116,13 @@ Every state has Retry and Catch blocks:
 
 ### S3 Bucket Layout
 
-- **Raw:** `exchange_rates_{BASE}_{START}_to_{END}.json`
-- **Processed (partitioned):** `exchange_rates/year=YYYY/month=MM/day=DD/{stem}.parquet`
+- **Raw:** `exchange_rates_{BASE}_{START}_to_{END}.json`, `ecb_rates_{START}_to_{END}.json`, `fred_{series}_{START}_to_{END}.json`
+- **Processed — FX rates:** `fx_rates/year=YYYY/month=MM/day=DD/{stem}.parquet` — schema: `{date, source, base_currency, target_currency, rate}`
+- **Processed — Economic indicators:** `economic_indicators/year=YYYY/month=MM/day=DD/{stem}.parquet` — schema: `{date, source, series_id, value}`
 - **Athena results:** `results/` (1-day TTL)
 - **CloudTrail logs:** `AWSLogs/{account-id}/...`
 
-Glue writes one Parquet file per date in the source JSON. Athena uses **partition projection** (configured in `athena.tf`) to resolve partitions without `MSCK REPAIR TABLE`. The Glue catalog table defines `year`, `month`, `day` as partition keys with integer type and zero-padded digits.
+Glue routes files by filename prefix (`fred_*` → economic domain, all others → FX domain) and writes one Parquet file per date. Athena uses **partition projection** on both catalog tables (`fx_rates` and `economic_indicators`) to resolve partitions without `MSCK REPAIR TABLE`.
 
 ## Error Handling Patterns
 
@@ -131,7 +136,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 88 tests, 99% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 129 tests, 98% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests
@@ -154,10 +159,11 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `lambda/common/base.py` | 100% |
 | `lambda/lambda_ingestion_function.py` | 100% |
 | `lambda/lambda_ecb_ingestion.py` | 100% |
+| `lambda/lambda_fred_ingestion.py` | 100% |
 | `lambda/lambda_validation_function.py` | 100% |
-| `glue/glue_transform.py` | 96% (uncovered: `except Exception` fallthrough in `list_json_keys`, `if __name__` guard) |
+| `glue/glue_transform.py` | 93% (uncovered: `except Exception` fallthrough in `list_json_keys`, `if __name__` guard) |
 
-**Overall: 99% (325 statements, 4 missed)**
+**Overall: 98% (439 statements, 10 missed)**
 
 ### Test File Organisation
 
@@ -166,7 +172,8 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `test_base_handler.py` | `BaseIngestionHandler` — save_to_s3, DynamoDB state, orchestration, saga pattern (24 tests) |
 | `test_lambda_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
 | `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (16 tests) |
-| `test_glue_transform.py` | Glue Polars transform (17 tests) |
+| `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |
+| `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain (26 tests) |
 | `test_lambda_validation.py` | Validation Lambda, CloudWatch metric (12 tests) |
 
 ## CI/CD
