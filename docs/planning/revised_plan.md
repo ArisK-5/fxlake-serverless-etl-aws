@@ -634,7 +634,7 @@ After completing, update:
 - `terraform/iam.tf` — added `fred_ingest.arn` to sfn_policy invoke list
 - `terraform/athena.tf` — renamed `exchange_rates` → `fx_rates` (+ source col), added `economic_indicators` table
 - `lambda/package_lambdas.sh` / `.github/workflows/ci.yml` — FRED zip stub added
-- **Test count:** 129 tests, 98% coverage
+- **Test count:** 132 tests, 97% coverage (added 3 cross-domain isolation tests in Session 4A review)
 
 **Claude Code prompt:**
 ```

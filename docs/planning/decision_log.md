@@ -377,3 +377,21 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** FRED API uses `"."` for missing/unreleased data (e.g. not-yet-published unemployment figures). These are common at the tail of a date range.
 **Decision:** Drop `"."` values silently in `_parse_fred_response`. Raise `ValueError` only when the entire response consists of missing values — this prevents state from advancing on a completely empty ingest.
 **Rationale:** Partial missing data is normal and expected; total absence indicates a configuration error (wrong series ID, wrong date range) that should fail loudly.
+
+### D44: FRED API key excluded from error tracebacks via exc_info omission
+
+**Context:** FRED API requests pass the API key as a query parameter (`?api_key=...`). Python's `requests` library stores the full URL (including query params) on the exception object as `e.request.url`. If `exc_info=True` is set on the HTTPError or RequestException logger call, CloudWatch Logs captures the full exception traceback, which includes the URL with the API key embedded.
+**Decision:** Omit `exc_info=True` from `HTTPError` and `RequestException` error handlers in `FREDHandler.fetch_data`. Keep `exc_info=True` only on `Timeout` (which doesn't attach a response URL). Add `safe_url = url` (base URL, no params) before the request block and use it in all log messages.
+**Rationale:** `safe_url = url` documents the intent explicitly — the base URL is safe to log; the params dict (which contains the key) is not. Removing `exc_info` from HTTP/network handlers prevents the requests library from leaking the full URL via `PreparedRequest` in the traceback. Interview talking point: "I audited every log statement in code that handles API keys to ensure nothing reaches CloudWatch."
+
+### D45: Split `except (JSONDecodeError, KeyError, ValueError)` into separate blocks in Glue transform
+
+**Context:** `_process_fx_key` and `_process_economic_key` both had a single `except (json.JSONDecodeError, KeyError, ValueError)` catch with a generic message. This made it impossible to distinguish in CloudWatch Logs whether a failure was a parse error, a missing field, or a type conversion error — all three have different root causes and different fixes.
+**Decision:** Split into three separate `except` blocks, each with a distinct log message: "Invalid JSON", "Missing required field", "Invalid value".
+**Rationale:** Correct error attribution is the first step to a correct fix. A `KeyError` logged as "JSON decode error" sends an operator to investigate the S3 object format when the problem is actually a missing field in a well-formed JSON. The extra 6 lines of code pay for themselves the first time the logs are searched during an incident.
+
+### D46: Cross-domain isolation verified by dedicated tests
+
+**Context:** The Glue `process_key` router uses a filename prefix heuristic (`fred_*` → economic domain, all others → FX domain). A typo in the prefix string or a change to the file naming convention in one of the Lambda handlers could silently route files to the wrong domain — writing FRED data into `fx_rates/` or FX data into `economic_indicators/`.
+**Decision:** Added `TestCrossDomainIsolation` class in `test_glue_transform.py` with 3 tests: mixed-domain `main()` call asserts 2 keys per domain; FRED-only run asserts `fx_rates/` keys == []; FX-only run asserts `economic_indicators/` keys == [].
+**Rationale:** Schema misrouting is a silent failure — Parquet writes succeed, Athena queries return wrong results, and no error is raised. The tests catch this at the routing layer before any downstream query is affected.

@@ -124,12 +124,21 @@ class FREDHandler(BaseIngestionHandler):
             )
 
         observations: dict[str, float] = {}
+        sentinel_count = 0
         for obs in observations_list:
             value_str = obs["value"]
             if value_str == ".":
-                # FRED sentinel for missing/unreleased data — skip silently
+                # FRED sentinel for missing/unreleased data — skip
+                sentinel_count += 1
                 continue
             observations[obs["date"]] = float(value_str)
+
+        if sentinel_count > 0:
+            drop_pct = 100 * sentinel_count // len(observations_list)
+            logger.warning(
+                f"Dropped {sentinel_count}/{len(observations_list)} ({drop_pct}%) "
+                f"missing/unreleased observations for series={self.series_id}"
+            )
 
         if not observations:
             raise ValueError(

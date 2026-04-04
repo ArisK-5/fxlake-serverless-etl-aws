@@ -100,7 +100,7 @@ Every state has Retry and Catch blocks:
 |------|----------------|
 | `step_function.tf` | ASL definition for 8-stage orchestration: Parallel-Ingestion (3 branches) → Choice → Glue → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation, with Retry/Catch + 7 Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
-| `lambda.tf` | Three Lambda functions (api_ingest, ecb_ingest, check_query_results) + EventBridge rule/target (→ Step Functions) |
+| `lambda.tf` | Four Lambda functions (api_ingest, ecb_ingest, fred_ingest, check_query_results) + EventBridge rule/target (→ Step Functions) |
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow dependencies) |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |
@@ -136,7 +136,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 129 tests, 98% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 132 tests, 97% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests
@@ -161,9 +161,9 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `lambda/lambda_ecb_ingestion.py` | 100% |
 | `lambda/lambda_fred_ingestion.py` | 100% |
 | `lambda/lambda_validation_function.py` | 100% |
-| `glue/glue_transform.py` | 93% (uncovered: `except Exception` fallthrough in `list_json_keys`, `if __name__` guard) |
+| `glue/glue_transform.py` | 91% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard) |
 
-**Overall: 98% (439 statements, 10 missed)**
+**Overall: 97% (449 statements, 14 missed)**
 
 ### Test File Organisation
 
