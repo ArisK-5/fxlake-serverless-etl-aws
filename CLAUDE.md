@@ -123,7 +123,7 @@ Every state has Retry and Catch blocks:
 |------|----------------|
 | `step_function.tf` | ASL definition for 8-stage orchestration: Parallel-Ingestion (3 branches) → Choice → Glue → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation, with Retry/Catch + 7 Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
-| `lambda.tf` | Four Lambda functions (api_ingest, ecb_ingest, fred_ingest, check_query_results) + EventBridge rule/target (→ Step Functions) |
+| `lambda.tf` | Frankfurter + validation Lambdas (inline), ECB + FRED Lambdas (via `modules/lambda_function`), EventBridge rule/target (→ Step Functions) |
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow deps) + quality.py S3 upload via `--extra-py-files` |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |
@@ -131,6 +131,10 @@ Every state has Retry and Catch blocks:
 | `s3.tf` | 5 S3 buckets (raw, processed, athena_results, cloudtrail_logs, quarantine) + quarantine public access block + Athena results 1-day lifecycle |
 | `security.tf` | S3 AES-256 encryption + CloudTrail multi-region trail |
 | `variables.tf` | All configurable inputs (region, bucket names, date range, currency, output format) |
+| `versions.tf` | Pinned Terraform version (`>= 1.5, < 2.0`) and AWS provider version (`~> 5.0`) |
+| `backend.tf` | Remote state backend config (S3 + DynamoDB locking) — commented out until bootstrap is run |
+| `bootstrap/main.tf` | Standalone config to create state bucket (versioned, KMS-encrypted) + lock table — run once before migrating |
+| `modules/lambda_function/` | Reusable module: Lambda function + dedicated IAM role + CloudWatch log group. Used by ECB and FRED Lambdas |
 
 ### Runtime Environments
 

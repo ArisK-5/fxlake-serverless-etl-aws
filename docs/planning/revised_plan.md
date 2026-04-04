@@ -786,6 +786,18 @@ After completing, update:
 - docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
+**Session 7A — Delivered (2026-04-05):**
+
+All 5 planned items implemented:
+1. `terraform/bootstrap/main.tf` — S3 bucket (versioned, KMS-encrypted, public access blocked) + DynamoDB lock table (PAY_PER_REQUEST, `LockID` partition key) + `prevent_destroy` lifecycle
+2. `terraform/backend.tf` — S3 backend with DynamoDB locking, commented out with step-by-step migration instructions
+3. `terraform/modules/lambda_function/` — 3 files (main.tf, variables.tf, outputs.tf): creates Lambda + dedicated IAM role + CloudWatch log group (14-day retention) + optional S3/additional policies
+4. ECB and FRED Lambdas refactored to use module in `lambda.tf`. All references updated across `iam.tf` and `step_function.tf`. Frankfurter + validation kept as-is on shared role.
+5. `terraform/versions.tf` — `required_version = ">= 1.5, < 2.0"`, `required_providers` moved from `providers.tf`
+
+**Decisions:** D60–D64 (module scope, per-function IAM, versions.tf separation, commented backend, log group retention)
+**Validation:** `terraform fmt -check -recursive` clean, `terraform validate` passes, 171 tests still green
+
 #### Session 7B: Structured logging + observability (Day 7 afternoon)
 
 **Claude Code prompt:**
