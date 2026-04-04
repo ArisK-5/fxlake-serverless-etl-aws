@@ -35,6 +35,8 @@ _glue_utils_mock.getResolvedOptions.return_value = {
     "PROCESSED_BUCKET": "test-processed-bucket",
     "OUTPUT_FORMAT": "parquet",
     "LOG_LEVEL": "INFO",
+    "QUARANTINE_BUCKET": "test-quarantine-bucket",
+    "METRIC_NAMESPACE": "TestFXLake/Quality",
 }
 sys.modules["awsglue"] = MagicMock()
 sys.modules["awsglue.utils"] = _glue_utils_mock
@@ -56,6 +58,7 @@ def s3_mock():
         client = boto3.client("s3", region_name="us-east-1")
         client.create_bucket(Bucket="test-raw-bucket")
         client.create_bucket(Bucket="test-processed-bucket")
+        client.create_bucket(Bucket="test-quarantine-bucket")
         yield client
 
 

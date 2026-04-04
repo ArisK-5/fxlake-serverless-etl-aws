@@ -2,7 +2,7 @@ import io
 import json
 import logging
 import sys
-from typing import List
+from typing import Any, Dict, List
 
 import boto3
 import polars as pl
@@ -10,24 +10,40 @@ import pyarrow
 import pyarrow.parquet as pq
 from awsglue.utils import getResolvedOptions
 from botocore.exceptions import ClientError
+from quality import (
+    build_quality_report,
+    has_critical_failures,
+    run_economic_checks,
+    run_fx_checks,
+)
 
 # -----------------------------
 # Parameters
 # -----------------------------
 args = getResolvedOptions(
     sys.argv,
-    ["RAW_BUCKET", "PROCESSED_BUCKET", "OUTPUT_FORMAT", "LOG_LEVEL"],
+    [
+        "RAW_BUCKET",
+        "PROCESSED_BUCKET",
+        "OUTPUT_FORMAT",
+        "LOG_LEVEL",
+        "QUARANTINE_BUCKET",
+        "METRIC_NAMESPACE",
+    ],
 )
 
 raw_bucket: str = args["RAW_BUCKET"]
 processed_bucket: str = args["PROCESSED_BUCKET"]
 output_format: str = args["OUTPUT_FORMAT"].lower()
 log_level: str = args["LOG_LEVEL"].upper()
+quarantine_bucket: str = args["QUARANTINE_BUCKET"]
+metric_namespace: str = args["METRIC_NAMESPACE"]
 
 if output_format not in ("csv", "parquet"):
     raise ValueError("OUTPUT_FORMAT must be either 'csv' or 'parquet'")
 
 s3 = boto3.client("s3")
+cloudwatch = boto3.client("cloudwatch")
 
 # -----------------------------
 # Logging
@@ -106,6 +122,76 @@ def _write_partition(df: "pl.DataFrame", out_key: str) -> None:
         raise
 
 
+def _publish_quality_metric(metric_name: str, value: float, domain: str) -> None:
+    """Publish a quality metric to CloudWatch. Non-critical — logs and continues on failure."""
+    try:
+        cloudwatch.put_metric_data(
+            Namespace=metric_namespace,
+            MetricData=[
+                {
+                    "MetricName": metric_name,
+                    "Value": value,
+                    "Unit": "Count",
+                    "Dimensions": [{"Name": "Domain", "Value": domain}],
+                }
+            ],
+        )
+    except Exception as e:
+        logger.warning(f"Failed to publish metric {metric_name}: {e}")
+
+
+def _quarantine_records(df: pl.DataFrame, key: str, domain: str) -> str:
+    """Write failing records to the quarantine bucket. Returns the quarantine S3 key."""
+    stem = key.split("/")[-1].replace(".json", "")
+    q_key = f"{domain}/quarantine/{stem}.json"
+    body = df.write_json().encode()
+    s3.put_object(Bucket=quarantine_bucket, Key=q_key, Body=body, ContentType="application/json")
+    logger.warning(f"Quarantined {len(df)} record(s) to s3://{quarantine_bucket}/{q_key}")
+    return q_key
+
+
+def _write_quality_report(report: Dict[str, Any], key: str, domain: str) -> str:
+    """Write quality report JSON to the processed bucket. Returns the report S3 key."""
+    stem = key.split("/")[-1].replace(".json", "")
+    report_key = f"{domain}/quality_reports/{stem}_quality.json"
+    body = json.dumps(report, indent=2).encode()
+    s3.put_object(
+        Bucket=processed_bucket, Key=report_key, Body=body, ContentType="application/json"
+    )
+    logger.info(f"Quality report written to s3://{processed_bucket}/{report_key}")
+    return report_key
+
+
+def _enforce_quality(
+    df: pl.DataFrame,
+    key: str,
+    domain: str,
+    run_checks_fn: object,
+) -> None:
+    """Run quality checks on *df*. Quarantine + raise on CRITICAL; warn + metric on WARNING."""
+    results = run_checks_fn(df)
+    report = build_quality_report(results, key, domain)
+    _write_quality_report(report, key, domain)
+
+    failed = [r for r in results if not r.passed]
+    if not failed:
+        logger.info(f"All quality checks passed for {key}")
+        return
+
+    for r in failed:
+        logger.warning(f"Quality check failed: {r.check_name} ({r.level.value}) — {r.message}")
+
+    _publish_quality_metric("DataQualityChecksFailed", float(len(failed)), domain)
+
+    if has_critical_failures(results):
+        _quarantine_records(df, key, domain)
+        _publish_quality_metric("RecordsQuarantined", float(len(df)), domain)
+        raise ValueError(
+            f"CRITICAL quality check(s) failed for {key}: "
+            + "; ".join(r.message for r in failed if r.level.value == "CRITICAL")
+        )
+
+
 def _detect_fx_source(key: str, payload: dict) -> str:
     """Derive the data source name for FX rate files.
 
@@ -160,6 +246,8 @@ def _process_fx_key(key: str) -> List[str]:
             return []
 
         df = pl.DataFrame(rows)
+        _enforce_quality(df, key, "fx_rates", run_fx_checks)
+
         stem = key.split("/")[-1].replace(".json", "")
         out_keys: List[str] = []
 
@@ -224,6 +312,8 @@ def _process_economic_key(key: str) -> List[str]:
             return []
 
         df = pl.DataFrame(rows)
+        _enforce_quality(df, key, "economic_indicators", run_economic_checks)
+
         stem = key.split("/")[-1].replace(".json", "")
         out_keys: List[str] = []
 

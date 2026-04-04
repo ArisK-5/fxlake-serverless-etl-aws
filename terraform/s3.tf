@@ -18,6 +18,11 @@ resource "aws_s3_bucket" "cloudtrail_logs" {
   force_destroy = true
 }
 
+resource "aws_s3_bucket" "quarantine" {
+  bucket        = var.quarantine_bucket_name
+  force_destroy = true
+}
+
 resource "aws_s3_bucket_lifecycle_configuration" "athena_results_lifecycle" {
   bucket = aws_s3_bucket.athena_results.id
 

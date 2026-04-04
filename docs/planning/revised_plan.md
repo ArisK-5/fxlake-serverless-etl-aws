@@ -691,51 +691,32 @@ After completing, update:
 
 **Rationale:** This is the strongest "production engineering" signal. Demonstrates understanding of data reliability.
 
-#### Session 5A: Quality checks + quarantine pattern (Day 5)
+#### Session 5A: Quality checks + quarantine pattern (Day 5) ✅
 
+**Status:** COMPLETE
 **Approach:** NET-NEW
 **New files:**
-- `lambda/common/quality.py` — data quality check framework
-- `terraform/s3.tf` — add quarantine bucket
-- `tests/test_data_quality.py`
+- `glue/quality.py` — pure data quality check framework (no AWS deps)
+- `tests/test_data_quality.py` — 27 tests for quality checks
 
-**Claude Code prompt:**
-```
-Build a data quality framework integrated into the Glue transform:
+**Modified files:**
+- `glue/glue_transform.py` — integrated quality checks via `_enforce_quality()`
+- `tests/test_glue_transform.py` — 6 integration tests for quarantine/metrics/reports
+- `tests/conftest.py` — added QUARANTINE_BUCKET, METRIC_NAMESPACE to mock
+- `terraform/s3.tf` — quarantine bucket
+- `terraform/security.tf` — quarantine bucket AES-256 encryption
+- `terraform/variables.tf` — quarantine_bucket_name variable
+- `terraform/glue.tf` — new params (QUARANTINE_BUCKET, METRIC_NAMESPACE), --extra-py-files, quality.py S3 upload
+- `terraform/iam.tf` — Glue role: quarantine S3 access + cloudwatch:PutMetricData
 
-1. Create lambda/common/quality.py (or glue/quality.py if better for Glue packaging):
-   - DataQualityChecker class with methods:
-     - check_not_null(df, columns) → returns QualityResult
-     - check_positive(df, column) → returns QualityResult (for rates > 0)
-     - check_date_format(df, column, fmt) → returns QualityResult
-     - check_no_duplicates(df, columns) → returns QualityResult
-     - check_row_count(df, min_rows, max_rows) → returns QualityResult
-     - check_value_range(df, column, min_val, max_val) → returns QualityResult
-   - QualityResult dataclass: passed (bool), check_name, failed_count, total_count, sample_failures
-   - run_all_checks(df, config) → list[QualityResult]
+**Planned vs Delivered:**
+- Planned: DataQualityChecker class → Delivered: pure functions + frozen dataclass (simpler, more testable)
+- Planned: 6 check methods → Delivered: 6 check functions + 2 domain runners + report builder
+- Planned: `lambda/common/quality.py` → Delivered: `glue/quality.py` (Glue packaging via --extra-py-files)
+- Added: `check_value_in_set` and `check_rate_range` (not originally planned)
+- Added: quality report JSON written for every file (not just failures)
 
-2. Modify glue/glue_transform.py:
-   - After creating DataFrame, run quality checks
-   - If any CRITICAL check fails: write failed records to quarantine bucket, raise exception
-   - If WARNING checks fail: log but continue, publish CloudWatch metric
-   - Always write quality report JSON alongside the data
-
-3. Add terraform/s3.tf: aws_s3_bucket "quarantine" with encryption.
-
-4. Add quality check configuration per source:
-   - FX rates: rate > 0, date not null, no duplicate (date, target_currency) pairs
-   - ECB: similar checks adapted to ECB schema
-   - FRED: value not null, date not null
-
-5. Add custom CloudWatch metrics: DataQualityChecksFailed, RecordsQuarantined.
-
-6. Write tests with known-bad data (nulls, negatives, duplicates).
-
-After completing, update:
-- CLAUDE.md: update with data quality framework section
-- docs/planning/revised_plan.md: mark Session 5A complete with planned-vs-delivered
-- docs/planning/decision_log.md: add any new decisions made during implementation
-```
+**Stats:** 165 tests, 97% coverage (quality.py 100%)
 
 #### Session 6A: Quality dashboard + alerting (Day 6 morning)
 

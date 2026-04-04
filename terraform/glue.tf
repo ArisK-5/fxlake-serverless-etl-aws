@@ -17,10 +17,13 @@ resource "aws_glue_job" "transform" {
   default_arguments = {
     "--RAW_BUCKET"                       = aws_s3_bucket.raw.bucket
     "--PROCESSED_BUCKET"                 = aws_s3_bucket.processed.bucket
+    "--QUARANTINE_BUCKET"                = aws_s3_bucket.quarantine.bucket
+    "--METRIC_NAMESPACE"                 = "${var.metric_namespace_prefix}/Quality"
     "--OUTPUT_FORMAT"                    = var.fx_output_format
     "--LOG_LEVEL"                        = "INFO"
     "--enable-continuous-cloudwatch-log" = "true"
     "--enable-metrics"                   = "true"
+    "--extra-py-files"                   = "s3://${aws_s3_bucket.processed.bucket}/glue/quality.py"
 
     "--additional-python-modules" = "polars==0.18.8,boto3,pyarrow"
   }
@@ -31,4 +34,11 @@ resource "aws_s3_object" "glue_script" {
   key         = var.glue_script_s3_key
   source      = "../glue/glue_transform.py"
   source_hash = filebase64sha256("../glue/glue_transform.py")
+}
+
+resource "aws_s3_object" "glue_quality_module" {
+  bucket      = aws_s3_bucket.processed.bucket
+  key         = "glue/quality.py"
+  source      = "../glue/quality.py"
+  source_hash = filebase64sha256("../glue/quality.py")
 }

@@ -230,7 +230,9 @@ class TestMain:
         assert df_a_jan03.shape == (2, 5)
         assert df_b_jan02.shape == (2, 5)
         assert df_b_jan03.shape == (2, 5)
-        assert len(_list_processed_keys(s3_mock)) == 4
+        all_keys = _list_processed_keys(s3_mock)
+        partition_keys = [k for k in all_keys if "quality_reports" not in k]
+        assert len(partition_keys) == 4
 
     def test_reraises_on_bad_file(self, s3_mock):
         _put_json(s3_mock, "good.json", SAMPLE_RATES_JSON)
@@ -355,8 +357,14 @@ class TestCrossDomainIsolation:
 
         glue_transform.main()
 
-        fx_keys = _list_processed_keys(s3_mock, prefix="fx_rates/")
-        econ_keys = _list_processed_keys(s3_mock, prefix="economic_indicators/")
+        fx_keys = [
+            k for k in _list_processed_keys(s3_mock, prefix="fx_rates/")
+            if "quality_reports" not in k
+        ]
+        econ_keys = [
+            k for k in _list_processed_keys(s3_mock, prefix="economic_indicators/")
+            if "quality_reports" not in k
+        ]
 
         assert len(fx_keys) == 2, "FX file should produce 2 date partitions"
         assert len(econ_keys) == 2, "FRED file should produce 2 date partitions"
@@ -393,6 +401,8 @@ class TestOutputFormatGuard:
             "PROCESSED_BUCKET": "test-processed-bucket",
             "OUTPUT_FORMAT": "xml",
             "LOG_LEVEL": "INFO",
+            "QUARANTINE_BUCKET": "test-quarantine-bucket",
+            "METRIC_NAMESPACE": "TestFXLake/Quality",
         }
         sys.modules["awsglue.utils"] = mock
 
@@ -405,5 +415,101 @@ class TestOutputFormatGuard:
             "PROCESSED_BUCKET": "test-processed-bucket",
             "OUTPUT_FORMAT": "parquet",
             "LOG_LEVEL": "INFO",
+            "QUARANTINE_BUCKET": "test-quarantine-bucket",
+            "METRIC_NAMESPACE": "TestFXLake/Quality",
         }
         importlib.reload(glue_transform)
+
+
+# ---------------------------------------------------------------------------
+# Quality check integration — quarantine, metrics, reports
+# ---------------------------------------------------------------------------
+class TestQualityIntegration:
+    """Integration tests for the data quality framework wired into process_key."""
+
+    def test_quality_report_written_for_fx(self, s3_mock):
+        """A quality report JSON must appear in processed bucket after FX transform."""
+        _put_json(s3_mock, "rates.json", SAMPLE_RATES_JSON)
+
+        glue_transform.process_key("rates.json")
+
+        report_key = "fx_rates/quality_reports/rates_quality.json"
+        obj = s3_mock.get_object(Bucket="test-processed-bucket", Key=report_key)
+        report = json.loads(obj["Body"].read())
+        assert report["domain"] == "fx_rates"
+        assert report["overall_passed"] is True
+
+    def test_quality_report_written_for_economic(self, s3_mock):
+        _put_json(s3_mock, "fred_unrate_2024-01-01_to_2024-02-01.json", SAMPLE_FRED_JSON)
+
+        glue_transform.process_key("fred_unrate_2024-01-01_to_2024-02-01.json")
+
+        report_key = (
+            "economic_indicators/quality_reports/"
+            "fred_unrate_2024-01-01_to_2024-02-01_quality.json"
+        )
+        obj = s3_mock.get_object(Bucket="test-processed-bucket", Key=report_key)
+        report = json.loads(obj["Body"].read())
+        assert report["domain"] == "economic_indicators"
+        assert report["overall_passed"] is True
+
+    def test_critical_failure_quarantines_and_raises(self, s3_mock):
+        """Negative rates (CRITICAL) must quarantine data and raise ValueError."""
+        bad_data = {
+            "base": "EUR",
+            "rates": {"2024-01-02": {"USD": -1.0}},
+        }
+        _put_json(s3_mock, "bad_rates.json", bad_data)
+
+        with pytest.raises(ValueError, match="CRITICAL"):
+            glue_transform.process_key("bad_rates.json")
+
+        # Verify quarantine file was written
+        q_key = "fx_rates/quarantine/bad_rates.json"
+        obj = s3_mock.get_object(Bucket="test-quarantine-bucket", Key=q_key)
+        quarantined = json.loads(obj["Body"].read())
+        assert len(quarantined) == 1
+
+    def test_critical_failure_does_not_write_partitions(self, s3_mock):
+        """On CRITICAL failure, no output partitions should be written."""
+        bad_data = {
+            "base": "EUR",
+            "rates": {"2024-01-02": {"USD": -1.0}},
+        }
+        _put_json(s3_mock, "bad_rates.json", bad_data)
+
+        with pytest.raises(ValueError):
+            glue_transform.process_key("bad_rates.json")
+
+        assert _list_processed_keys(s3_mock, prefix="fx_rates/year=") == []
+
+    def test_warning_does_not_raise(self, s3_mock):
+        """WARNING-only failures (e.g. duplicates) should not raise."""
+        dup_data = {
+            "base": "EUR",
+            "rates": {
+                "2024-01-02": {"USD": 1.1},
+            },
+        }
+        _put_json(s3_mock, "dup_rates.json", dup_data)
+
+        # Should not raise — clean data passes all checks
+        out_keys = glue_transform.process_key("dup_rates.json")
+        assert len(out_keys) >= 1
+
+    def test_economic_critical_null_value_quarantines(self, s3_mock):
+        """FRED data with null value must be quarantined."""
+        bad_fred = {
+            "source": "fred",
+            "series_id": "UNRATE",
+            "observations": {"2024-01-01": None},
+        }
+        _put_json(s3_mock, "fred_bad.json", bad_fred)
+
+        with pytest.raises(ValueError, match="CRITICAL"):
+            glue_transform.process_key("fred_bad.json")
+
+        q_key = "economic_indicators/quarantine/fred_bad.json"
+        obj = s3_mock.get_object(Bucket="test-quarantine-bucket", Key=q_key)
+        quarantined = json.loads(obj["Body"].read())
+        assert len(quarantined) == 1

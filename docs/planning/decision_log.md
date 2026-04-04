@@ -395,3 +395,29 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** The Glue `process_key` router uses a filename prefix heuristic (`fred_*` → economic domain, all others → FX domain). A typo in the prefix string or a change to the file naming convention in one of the Lambda handlers could silently route files to the wrong domain — writing FRED data into `fx_rates/` or FX data into `economic_indicators/`.
 **Decision:** Added `TestCrossDomainIsolation` class in `test_glue_transform.py` with 3 tests: mixed-domain `main()` call asserts 2 keys per domain; FRED-only run asserts `fx_rates/` keys == []; FX-only run asserts `economic_indicators/` keys == [].
 **Rationale:** Schema misrouting is a silent failure — Parquet writes succeed, Athena queries return wrong results, and no error is raised. The tests catch this at the routing layer before any downstream query is affected.
+
+## Session 5A Decisions
+
+### D47: Pure functions over class-based quality checks
+
+**Context:** The planned design called for a `DataQualityChecker` class with methods. Quality checks have no shared mutable state — each check takes a DataFrame and returns a result.
+**Decision:** Implemented as pure functions (`check_no_nulls`, `check_positive_values`, etc.) with a frozen `QualityResult` dataclass and `CheckLevel` enum, rather than a stateful class.
+**Rationale:** Pure functions are simpler to test (no setup/teardown), compose better in domain runners (`run_fx_checks`, `run_economic_checks`), and enforce immutability. The module has zero AWS dependencies, making it testable without moto.
+
+### D48: Quality module in glue/ with --extra-py-files, not lambda/common/
+
+**Context:** Plan suggested `lambda/common/quality.py`. Quality checks run inside the Glue Python Shell job, not Lambda. Glue Python Shell doesn't have the Lambda layer's `sys.path` setup.
+**Decision:** Placed `quality.py` in `glue/` and uploaded to S3 via `aws_s3_object`. Referenced via `--extra-py-files` in the Glue job's `default_arguments`.
+**Rationale:** `--extra-py-files` is the standard Glue mechanism for additional modules. Keeping quality.py in `glue/` next to `glue_transform.py` matches the existing `pythonpath` config in `pyproject.toml` and ensures local tests import it the same way.
+
+### D49: CRITICAL vs WARNING severity routing
+
+**Context:** Not all quality failures should block the pipeline. Duplicate date+currency pairs are data quality issues but not data corruption — the downstream Athena query still returns valid results.
+**Decision:** `CheckLevel.CRITICAL` (null dates, null values, non-positive rates) → quarantine full DataFrame + raise `ValueError`. `CheckLevel.WARNING` (duplicates, out-of-range rates) → publish CloudWatch metric + continue processing.
+**Rationale:** CRITICAL failures indicate data that would produce incorrect query results (nulls in partition keys, negative exchange rates). WARNING failures are anomalies worth alerting on but safe to process. This prevents pipeline halts on benign issues while catching genuine data corruption.
+
+### D50: Quality report JSON written for every file, not just failures
+
+**Context:** Could write quality reports only on failure to reduce S3 writes.
+**Decision:** Always write `{domain}/quality_reports/{stem}_quality.json` to the processed bucket, even when all checks pass.
+**Rationale:** Passing reports provide audit trail for compliance and enable trend analysis (e.g. "which files had zero warnings vs many"). The S3 cost of a small JSON per file is negligible.

@@ -50,7 +50,7 @@ The pipeline is orchestrated by **Step Functions** and triggered daily by **Even
 
 1. **Parallel (Parallel-Ingestion)** — runs Frankfurter, ECB, and FRED ingestion concurrently (3 branches). Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx`, `$.parallel_results.ecb`, and `$.parallel_results.fred`. **Does not update DynamoDB** — deferred to steps 4–6.
 2. **Choice (Check-New-Data)** — routes to `Pipeline-Already-Up-To-Date` only if **all three** sources returned `no_new_data`; otherwise continues to Glue.
-3. **Glue Job (Python Shell)** — reads raw JSON from S3, routes by filename prefix: `fred_*` → `economic_indicators/` domain, all others → `fx_rates/` domain. Writes Parquet/CSV partitioned by date.
+3. **Glue Job (Python Shell)** — reads raw JSON from S3, routes by filename prefix: `fred_*` → `economic_indicators/` domain, all others → `fx_rates/` domain. Runs data quality checks (via `glue/quality.py`): CRITICAL failures → quarantine to dedicated S3 bucket + raise; WARNING failures → log + CloudWatch metric. Writes quality report JSON for every file. Writes Parquet/CSV partitioned by date.
 4. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB **only after Glue succeeds**. Calls the `api_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
 5. **Lambda (Update-ECB-State)** — commits ECB `last_processed_date` to DynamoDB after FX state is committed. Calls the `ecb_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.ecb.Payload.end_date"}`.
 6. **Lambda (Update-FRED-State)** — commits FRED `last_processed_date` to DynamoDB after ECB state is committed. Calls the `fred_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fred.Payload.end_date"}`.
@@ -94,6 +94,29 @@ Every state has Retry and Catch blocks:
 - **Athena state**: retry on `Athena.InternalServerException`, `Athena.TooManyRequestsException`
 - **All Catch blocks**: `ResultPath = "$.errorInfo"` preserves the actual error; Fail states use `ErrorPath`/`CausePath` to surface the real cause in execution history
 
+### Data Quality Framework
+
+`glue/quality.py` — pure check functions (no AWS deps), imported by `glue_transform.py` via `--extra-py-files`.
+
+**Architecture:**
+- `CheckLevel` enum: `CRITICAL` (quarantine + raise) vs `WARNING` (log + metric)
+- `QualityResult` frozen dataclass: immutable check result
+- 6 check functions: `check_required_columns`, `check_no_nulls`, `check_positive_values`, `check_duplicates`, `check_rate_range`, `check_value_in_set`
+- 2 domain runners: `run_fx_checks(df)`, `run_economic_checks(df)`
+- Helpers: `has_critical_failures(results)`, `build_quality_report(results, key, domain)`
+
+**Per-domain checks:**
+- FX rates: required columns, no null date/rate, positive rate, rate range [0.0001, 1000], valid source set, no duplicate date+target_currency (WARNING)
+- Economic indicators: required columns, no null date/value, no duplicate date+series_id (WARNING)
+
+**Integration in `glue_transform.py`:**
+- `_enforce_quality(df, key, domain, run_checks_fn)` — called after DataFrame creation, before partitioning
+- Always writes quality report JSON to `{domain}/quality_reports/{stem}_quality.json`
+- CRITICAL failure: quarantines full DataFrame to quarantine bucket (`{domain}/quarantine/{stem}.json`), publishes `RecordsQuarantined` + `DataQualityChecksFailed` metrics, raises `ValueError`
+- WARNING failure: publishes `DataQualityChecksFailed` metric, continues processing
+
+**CloudWatch metrics:** `{metric_namespace_prefix}/Quality` namespace, `Domain` dimension.
+
 ### Key Terraform Files
 
 | File | What it defines |
@@ -101,7 +124,7 @@ Every state has Retry and Catch blocks:
 | `step_function.tf` | ASL definition for 8-stage orchestration: Parallel-Ingestion (3 branches) → Choice → Glue → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation, with Retry/Catch + 7 Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
 | `lambda.tf` | Four Lambda functions (api_ingest, ecb_ingest, fred_ingest, check_query_results) + EventBridge rule/target (→ Step Functions) |
-| `glue.tf` | Glue Python Shell job (Polars, pyarrow dependencies) |
+| `glue.tf` | Glue Python Shell job (Polars, pyarrow deps) + quality.py S3 upload via `--extra-py-files` |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |
 | `monitoring.tf` | 7 CloudWatch alarms + dashboard |
@@ -120,6 +143,8 @@ Every state has Retry and Catch blocks:
 - **Processed — FX rates:** `fx_rates/year=YYYY/month=MM/day=DD/{stem}.parquet` — schema: `{date, source, base_currency, target_currency, rate}`
 - **Processed — Economic indicators:** `economic_indicators/year=YYYY/month=MM/day=DD/{stem}.parquet` — schema: `{date, source, series_id, value}`
 - **Athena results:** `results/` (1-day TTL)
+- **Quarantine:** `{domain}/quarantine/{stem}.json` — records that failed CRITICAL quality checks
+- **Quality reports:** `{domain}/quality_reports/{stem}_quality.json` (in processed bucket)
 - **CloudTrail logs:** `AWSLogs/{account-id}/...`
 
 Glue routes files by filename prefix (`fred_*` → economic domain, all others → FX domain) and writes one Parquet file per date. Athena uses **partition projection** on both catalog tables (`fx_rates` and `economic_indicators`) to resolve partitions without `MSCK REPAIR TABLE`.
@@ -136,7 +161,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 132 tests, 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 165 tests, 97% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests
@@ -161,9 +186,10 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `lambda/lambda_ecb_ingestion.py` | 100% |
 | `lambda/lambda_fred_ingestion.py` | 100% |
 | `lambda/lambda_validation_function.py` | 100% |
-| `glue/glue_transform.py` | 91% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard) |
+| `glue/glue_transform.py` | 93% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard, metric publish warning) |
+| `glue/quality.py` | 100% |
 
-**Overall: 97% (449 statements, 14 missed)**
+**Overall: 97% (556 statements, 14 missed)**
 
 ### Test File Organisation
 
@@ -173,7 +199,8 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `test_lambda_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
 | `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (16 tests) |
 | `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |
-| `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain (26 tests) |
+| `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain, quality integration (35 tests) |
+| `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder (27 tests) |
 | `test_lambda_validation.py` | Validation Lambda, CloudWatch metric (12 tests) |
 
 ## CI/CD

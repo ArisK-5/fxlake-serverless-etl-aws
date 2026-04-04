@@ -23,4 +23,5 @@ uv.lock
 .Ds_store
 __pycache__/
 *.py[cod]
-.coverage
+*.coverage
+*.py,cover
