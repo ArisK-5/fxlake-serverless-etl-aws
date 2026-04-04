@@ -231,6 +231,10 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Athena-Sample-Query"
       },
+      # Queries fx_rates only (not economic_indicators): FX rates are the core product
+      # and validate that the Glue transform wrote correct Parquet to the processed bucket.
+      # economic_indicators (FRED) is secondary enrichment — validated implicitly by Glue
+      # success. Sampling both tables would double Athena cost with no additional signal.
       Athena-Sample-Query = {
         Type     = "Task",
         Resource = "arn:aws:states:::athena:startQueryExecution.sync",

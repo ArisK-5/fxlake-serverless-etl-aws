@@ -343,6 +343,44 @@ class TestProcessEconomicKey:
 
 
 # ---------------------------------------------------------------------------
+# Cross-domain isolation — mixed FX + FRED run
+# ---------------------------------------------------------------------------
+class TestCrossDomainIsolation:
+    def test_mixed_domain_files_route_to_separate_domains(self, s3_mock):
+        """FRED and FX files processed in one main() call must land in separate domains."""
+        _put_json(s3_mock, "fred_unrate_2024-01-01_to_2024-01-31.json", SAMPLE_FRED_JSON)
+        _put_json(s3_mock, "rates.json", SAMPLE_RATES_JSON)
+
+        glue_transform.main()
+
+        fx_keys = _list_processed_keys(s3_mock, prefix="fx_rates/")
+        econ_keys = _list_processed_keys(s3_mock, prefix="economic_indicators/")
+
+        assert len(fx_keys) == 2, "FX file should produce 2 date partitions"
+        assert len(econ_keys) == 2, "FRED file should produce 2 date partitions"
+        assert all(k.startswith("fx_rates/") for k in fx_keys)
+        assert all(k.startswith("economic_indicators/") for k in econ_keys)
+
+    def test_fred_data_not_written_to_fx_domain(self, s3_mock):
+        """FRED observations must never appear under fx_rates/."""
+        _put_json(s3_mock, "fred_unrate_2024-01-01_to_2024-01-31.json", SAMPLE_FRED_JSON)
+
+        glue_transform.main()
+
+        fx_keys = _list_processed_keys(s3_mock, prefix="fx_rates/")
+        assert fx_keys == [], "FRED file must not write anything to fx_rates/"
+
+    def test_fx_data_not_written_to_economic_domain(self, s3_mock):
+        """FX rates must never appear under economic_indicators/."""
+        _put_json(s3_mock, "rates.json", SAMPLE_RATES_JSON)
+
+        glue_transform.main()
+
+        econ_keys = _list_processed_keys(s3_mock, prefix="economic_indicators/")
+        assert econ_keys == [], "FX file must not write anything to economic_indicators/"
+
+
+# ---------------------------------------------------------------------------
 # Module-level OUTPUT_FORMAT guard
 # ---------------------------------------------------------------------------
 class TestOutputFormatGuard:

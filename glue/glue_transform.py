@@ -66,11 +66,6 @@ def list_json_keys(bucket: str) -> List[str]:
             exc_info=True,
         )
         raise
-    except Exception:
-        logger.error(
-            f"Unexpected error listing keys in bucket={bucket}", exc_info=True
-        )
-        raise
 
 
 def _write_partition(df: "pl.DataFrame", out_key: str) -> None:
@@ -117,6 +112,11 @@ def _detect_fx_source(key: str, payload: dict) -> str:
     Prefers the explicit ``source`` field in the payload (set by ECB handler).
     Falls back to filename-prefix detection for Frankfurter files, which store
     the raw API response without a source annotation.
+
+    Assumption: any FX file without an explicit ``source`` field and without an
+    ``ecb_`` prefix is assumed to originate from Frankfurter. If a third FX source
+    is added without explicit source metadata, update this fallback to check for
+    additional prefixes to avoid silent misattribution.
     """
     if "source" in payload:
         return payload["source"]
@@ -180,11 +180,20 @@ def _process_fx_key(key: str) -> List[str]:
             exc_info=True,
         )
         raise
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        logger.error(f"Malformed payload in key={key}: {e}", exc_info=True)
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in key={key}: {e}", exc_info=True)
         raise
-    except Exception:
-        logger.error(f"Unexpected error processing key={key}", exc_info=True)
+    except KeyError as e:
+        logger.error(f"Missing required field in key={key}: {e}", exc_info=True)
+        raise
+    except ValueError as e:
+        logger.error(f"Invalid value in key={key}: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(
+            f"Unexpected error processing key={key}: {type(e).__name__}: {e}",
+            exc_info=True,
+        )
         raise
 
 
@@ -235,11 +244,20 @@ def _process_economic_key(key: str) -> List[str]:
             exc_info=True,
         )
         raise
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        logger.error(f"Malformed payload in key={key}: {e}", exc_info=True)
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in key={key}: {e}", exc_info=True)
         raise
-    except Exception:
-        logger.error(f"Unexpected error processing key={key}", exc_info=True)
+    except KeyError as e:
+        logger.error(f"Missing required field in key={key}: {e}", exc_info=True)
+        raise
+    except ValueError as e:
+        logger.error(f"Invalid value in key={key}: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(
+            f"Unexpected error processing key={key}: {type(e).__name__}: {e}",
+            exc_info=True,
+        )
         raise
 
 
@@ -247,8 +265,11 @@ def process_key(key: str) -> List[str]:
     """Dispatch one raw JSON file to the appropriate domain transform.
 
     Routing rule (based on filename stem, not directory prefix):
-    - ``fred_*``  → economic indicators domain → ``economic_indicators/``
-    - everything else → FX rates domain → ``fx_rates/``
+    - ``fred_*`` → economic indicators domain → ``economic_indicators/``
+    - ``exchange_rates_*`` (Frankfurter) and ``ecb_*`` (ECB) → FX rates domain → ``fx_rates/``
+
+    If a new FX source is added, its files will route to ``fx_rates/`` automatically
+    unless they start with ``fred_``. Add an explicit prefix check here if needed.
 
     Returns a list of S3 output keys written.
     """
@@ -268,9 +289,10 @@ def main() -> None:
     for i, key in enumerate(keys):
         try:
             process_key(key)
-        except Exception:
+        except Exception as e:
             logger.error(
-                f"ETL failed on key={key} ({i}/{len(keys)} files processed before failure)",
+                f"ETL failed on key={key} ({i}/{len(keys)} files processed before failure): "
+                f"{type(e).__name__}: {e}",
                 exc_info=True,
             )
             raise

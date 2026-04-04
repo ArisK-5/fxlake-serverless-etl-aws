@@ -48,6 +48,10 @@ class FREDHandler(BaseIngestionHandler):
             "observation_end": end_date,
         }
 
+        # safe_url omits query params (which carry the API key) to prevent
+        # credential leakage in CloudWatch logs and any log-shipping destinations.
+        safe_url = url
+
         # HTTP fetch — network and HTTP protocol errors
         try:
             resp = requests.get(url, params=params, timeout=30)
@@ -56,16 +60,20 @@ class FREDHandler(BaseIngestionHandler):
                 f"Successfully fetched {self.series_id} observations from FRED API"
             )
         except requests.exceptions.Timeout as e:
-            logger.error(f"Timeout fetching {url}: {e}")
-            raise
-        except requests.exceptions.HTTPError as e:
             logger.error(
-                f"HTTP error fetching {url}: status={e.response.status_code}",
+                f"Timeout fetching {safe_url}: series={self.series_id}, {e}",
                 exc_info=True,
             )
             raise
+        except requests.exceptions.HTTPError as e:
+            logger.error(
+                f"HTTP error fetching {safe_url}: status={e.response.status_code}",
+            )
+            raise
         except requests.exceptions.RequestException as e:
-            logger.error(f"Network error fetching {url}: {e}", exc_info=True)
+            logger.error(
+                f"Network error fetching {safe_url}: {type(e).__name__}: {e}",
+            )
             raise
 
         # JSON decode
@@ -73,7 +81,7 @@ class FREDHandler(BaseIngestionHandler):
             raw = resp.json()
         except json.JSONDecodeError:
             logger.error(
-                f"FRED API returned non-JSON response from {url}: "
+                f"FRED API returned non-JSON response from {safe_url}: "
                 f"status={resp.status_code}, body={resp.text[:200]}",
                 exc_info=True,
             )
@@ -84,7 +92,7 @@ class FREDHandler(BaseIngestionHandler):
             return self._parse_fred_response(raw)
         except (KeyError, TypeError, ValueError) as e:
             logger.error(
-                f"Failed to parse FRED response from {url} "
+                f"Failed to parse FRED response from {safe_url} "
                 f"(series={self.series_id}, start={start_date}, end={end_date}): "
                 f"{type(e).__name__}: {e}. Body (first 500 chars): {resp.text[:500]}",
                 exc_info=True,
