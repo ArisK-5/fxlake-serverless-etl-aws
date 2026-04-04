@@ -29,6 +29,16 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "athena_results" {
   }
 }
 
+resource "aws_s3_bucket_server_side_encryption_configuration" "quarantine" {
+  bucket = aws_s3_bucket.quarantine.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
 # CloudWatch log groups
 resource "aws_cloudwatch_log_group" "cloudtrail_logs" {
   name              = "/aws/cloudtrail/fxlake"

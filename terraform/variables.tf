@@ -28,6 +28,11 @@ variable "cloudtrail_logs_bucket_name" {
   type        = string
 }
 
+variable "quarantine_bucket_name" {
+  description = "S3 bucket for quarantined data quality failures"
+  type        = string
+}
+
 variable "metric_namespace_prefix" {
   description = "Prefix for CloudWatch metric namespaces"
   type        = string

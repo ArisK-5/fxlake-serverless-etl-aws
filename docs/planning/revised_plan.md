@@ -691,77 +691,55 @@ After completing, update:
 
 **Rationale:** This is the strongest "production engineering" signal. Demonstrates understanding of data reliability.
 
-#### Session 5A: Quality checks + quarantine pattern (Day 5)
+#### Session 5A: Quality checks + quarantine pattern (Day 5) ✅
 
+**Status:** COMPLETE
 **Approach:** NET-NEW
 **New files:**
-- `lambda/common/quality.py` — data quality check framework
-- `terraform/s3.tf` — add quarantine bucket
-- `tests/test_data_quality.py`
+- `glue/quality.py` — pure data quality check framework (no AWS deps)
+- `tests/test_data_quality.py` — 27 tests for quality checks
 
-**Claude Code prompt:**
-```
-Build a data quality framework integrated into the Glue transform:
+**Modified files:**
+- `glue/glue_transform.py` — integrated quality checks via `_enforce_quality()`
+- `tests/test_glue_transform.py` — 6 integration tests for quarantine/metrics/reports
+- `tests/conftest.py` — added QUARANTINE_BUCKET, METRIC_NAMESPACE to mock
+- `terraform/s3.tf` — quarantine bucket
+- `terraform/security.tf` — quarantine bucket AES-256 encryption
+- `terraform/variables.tf` — quarantine_bucket_name variable
+- `terraform/glue.tf` — new params (QUARANTINE_BUCKET, METRIC_NAMESPACE), --extra-py-files, quality.py S3 upload
+- `terraform/iam.tf` — Glue role: quarantine S3 access + cloudwatch:PutMetricData
 
-1. Create lambda/common/quality.py (or glue/quality.py if better for Glue packaging):
-   - DataQualityChecker class with methods:
-     - check_not_null(df, columns) → returns QualityResult
-     - check_positive(df, column) → returns QualityResult (for rates > 0)
-     - check_date_format(df, column, fmt) → returns QualityResult
-     - check_no_duplicates(df, columns) → returns QualityResult
-     - check_row_count(df, min_rows, max_rows) → returns QualityResult
-     - check_value_range(df, column, min_val, max_val) → returns QualityResult
-   - QualityResult dataclass: passed (bool), check_name, failed_count, total_count, sample_failures
-   - run_all_checks(df, config) → list[QualityResult]
+**Planned vs Delivered:**
+- Planned: DataQualityChecker class → Delivered: pure functions + frozen dataclass (simpler, more testable)
+- Planned: 6 check methods → Delivered: 6 check functions + 2 domain runners + report builder
+- Planned: `lambda/common/quality.py` → Delivered: `glue/quality.py` (Glue packaging via --extra-py-files)
+- Added: `check_value_in_set` and `check_rate_range` (not originally planned)
+- Added: quality report JSON written for every file (not just failures)
 
-2. Modify glue/glue_transform.py:
-   - After creating DataFrame, run quality checks
-   - If any CRITICAL check fails: write failed records to quarantine bucket, raise exception
-   - If WARNING checks fail: log but continue, publish CloudWatch metric
-   - Always write quality report JSON alongside the data
+**Stats:** 165 tests, 97% coverage (quality.py 100%)
 
-3. Add terraform/s3.tf: aws_s3_bucket "quarantine" with encryption.
+#### Session 6A: Quality dashboard + alerting (Day 6 morning) ✅
 
-4. Add quality check configuration per source:
-   - FX rates: rate > 0, date not null, no duplicate (date, target_currency) pairs
-   - ECB: similar checks adapted to ECB schema
-   - FRED: value not null, date not null
+**Status:** COMPLETE
 
-5. Add custom CloudWatch metrics: DataQualityChecksFailed, RecordsQuarantined.
+**Planned vs Delivered:**
 
-6. Write tests with known-bad data (nulls, negatives, duplicates).
+| Planned | Delivered |
+|---------|-----------|
+| CloudWatch alarm for DataQualityChecksFailed > 0 | ✅ Two alarms: fx_rates + economic_indicators (per-domain) |
+| CloudWatch alarm for RecordsQuarantined > threshold | ✅ Single alarm, threshold 0 (any quarantine is notable) |
+| Quality metrics dashboard row | ✅ 4 widgets: Quality Checks Failed (FX), Quality Checks Failed (Econ), Records Quarantined, Stale FX Data |
+| Optional: quality report Lambda | ⏭️ Skipped — quality reports already written by Glue job; SNS summary adds complexity without proportional value |
+| Athena data freshness query | ✅ `SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates` |
+| Validation Lambda freshness check | ✅ Parses latest_date + total_records, 2-day freshness threshold, publishes StaleFXData metric |
 
-After completing, update:
-- CLAUDE.md: update with data quality framework section
-- docs/planning/revised_plan.md: mark Session 5A complete with planned-vs-delivered
-- docs/planning/decision_log.md: add any new decisions made during implementation
-```
+**Files changed:**
+- `terraform/monitoring.tf` — 3 new alarms (DataQualityChecksFailed × 2 domains, RecordsQuarantined) + 4 dashboard widgets
+- `terraform/step_function.tf` — Athena query updated from `SELECT * LIMIT 100` to freshness query
+- `lambda/lambda_validation_function.py` — rewritten: `publish_custom_metric` now takes metric_name param, `_parse_freshness_result()` helper, freshness threshold logic, StaleFXData metric
+- `tests/test_lambda_validation.py` — 15 tests (was 12): fresh data, stale data, boundary 2-day, empty table, plus existing error/edge cases
 
-#### Session 6A: Quality dashboard + alerting (Day 6 morning)
-
-**Claude Code prompt:**
-```
-Extend monitoring for data quality:
-
-1. Update terraform/monitoring.tf:
-   - Add CloudWatch alarm for DataQualityChecksFailed > 0
-   - Add CloudWatch alarm for RecordsQuarantined > threshold
-   - Add quality metrics to the dashboard (new row of widgets)
-
-2. Create a quality report Lambda (optional, if time):
-   - Reads quality report JSONs from processed bucket
-   - Generates summary and publishes to SNS
-
-3. Update the Athena sample query to be more meaningful:
-   - Instead of SELECT * LIMIT 100, run a data freshness check:
-     SELECT MAX(date) as latest_date, COUNT(*) as total_records FROM exchange_rates
-   - Validation Lambda checks if latest_date is recent (within 2 days)
-
-After completing, update:
-- CLAUDE.md: update monitoring section with quality dashboard details
-- docs/planning/revised_plan.md: mark Session 6A complete with planned-vs-delivered
-- docs/planning/decision_log.md: add any new decisions made during implementation
-```
+**Stats:** 168 tests, 97% coverage (validation Lambda 98%)
 
 ---
 

@@ -124,11 +124,32 @@ resource "aws_iam_policy" "glue_s3_policy" {
           aws_s3_bucket.raw.arn,
           "${aws_s3_bucket.raw.arn}/*",
           aws_s3_bucket.processed.arn,
-          "${aws_s3_bucket.processed.arn}/*"
+          "${aws_s3_bucket.processed.arn}/*",
+          aws_s3_bucket.quarantine.arn,
+          "${aws_s3_bucket.quarantine.arn}/*"
         ]
       }
     ]
   })
+}
+
+resource "aws_iam_policy" "glue_cloudwatch_policy" {
+  name = "fxlake-glue-cloudwatch"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action   = "cloudwatch:PutMetricData",
+        Effect   = "Allow",
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "glue_cloudwatch" {
+  role       = aws_iam_role.glue_service_role.name
+  policy_arn = aws_iam_policy.glue_cloudwatch_policy.arn
 }
 
 resource "aws_iam_role_policy_attachment" "glue_s3" {

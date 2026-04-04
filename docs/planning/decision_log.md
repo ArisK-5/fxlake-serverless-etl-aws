@@ -395,3 +395,87 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** The Glue `process_key` router uses a filename prefix heuristic (`fred_*` → economic domain, all others → FX domain). A typo in the prefix string or a change to the file naming convention in one of the Lambda handlers could silently route files to the wrong domain — writing FRED data into `fx_rates/` or FX data into `economic_indicators/`.
 **Decision:** Added `TestCrossDomainIsolation` class in `test_glue_transform.py` with 3 tests: mixed-domain `main()` call asserts 2 keys per domain; FRED-only run asserts `fx_rates/` keys == []; FX-only run asserts `economic_indicators/` keys == [].
 **Rationale:** Schema misrouting is a silent failure — Parquet writes succeed, Athena queries return wrong results, and no error is raised. The tests catch this at the routing layer before any downstream query is affected.
+
+## Session 5A Decisions
+
+### D47: Pure functions over class-based quality checks
+
+**Context:** The planned design called for a `DataQualityChecker` class with methods. Quality checks have no shared mutable state — each check takes a DataFrame and returns a result.
+**Decision:** Implemented as pure functions (`check_no_nulls`, `check_positive_values`, etc.) with a frozen `QualityResult` dataclass and `CheckLevel` enum, rather than a stateful class.
+**Rationale:** Pure functions are simpler to test (no setup/teardown), compose better in domain runners (`run_fx_checks`, `run_economic_checks`), and enforce immutability. The module has zero AWS dependencies, making it testable without moto.
+
+### D48: Quality module in glue/ with --extra-py-files, not lambda/common/
+
+**Context:** Plan suggested `lambda/common/quality.py`. Quality checks run inside the Glue Python Shell job, not Lambda. Glue Python Shell doesn't have the Lambda layer's `sys.path` setup.
+**Decision:** Placed `quality.py` in `glue/` and uploaded to S3 via `aws_s3_object`. Referenced via `--extra-py-files` in the Glue job's `default_arguments`.
+**Rationale:** `--extra-py-files` is the standard Glue mechanism for additional modules. Keeping quality.py in `glue/` next to `glue_transform.py` matches the existing `pythonpath` config in `pyproject.toml` and ensures local tests import it the same way.
+
+### D49: CRITICAL vs WARNING severity routing
+
+**Context:** Not all quality failures should block the pipeline. Duplicate date+currency pairs are data quality issues but not data corruption — the downstream Athena query still returns valid results.
+**Decision:** `CheckLevel.CRITICAL` (null dates, null values, non-positive rates) → quarantine full DataFrame + raise `ValueError`. `CheckLevel.WARNING` (duplicates, out-of-range rates) → publish CloudWatch metric + continue processing.
+**Rationale:** CRITICAL failures indicate data that would produce incorrect query results (nulls in partition keys, negative exchange rates). WARNING failures are anomalies worth alerting on but safe to process. This prevents pipeline halts on benign issues while catching genuine data corruption.
+
+### D50: Quality report JSON written for every file, not just failures
+
+**Context:** Could write quality reports only on failure to reduce S3 writes.
+**Decision:** Always write `{domain}/quality_reports/{stem}_quality.json` to the processed bucket, even when all checks pass.
+**Rationale:** Passing reports provide audit trail for compliance and enable trend analysis (e.g. "which files had zero warnings vs many"). The S3 cost of a small JSON per file is negligible.
+
+### D51: Per-domain quality alarms rather than single aggregate
+
+**Context:** Could create one `DataQualityChecksFailed` alarm without a Domain dimension, or one per domain.
+**Decision:** Two separate alarms: `fxlake-data-quality-checks-failed` (Domain=fx_rates) and `fxlake-data-quality-checks-failed-econ` (Domain=economic_indicators). Single `RecordsQuarantined` alarm without domain dimension.
+**Rationale:** Per-domain alarms let operators immediately identify which data source is failing. Quarantine is rare and always urgent, so a single alarm suffices — the CloudWatch metric already carries the Domain dimension for drill-down.
+
+### D52: Data freshness query replaces SELECT * LIMIT 100
+
+**Context:** The original Athena validation query (`SELECT * FROM fx_rates LIMIT 100`) only verified that *some* data existed but not whether it was *recent*.
+**Decision:** Replaced with `SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates`. Validation Lambda parses these values, checks if `latest_date` is within 2 days, and publishes a `StaleFXData` CloudWatch metric.
+**Rationale:** Freshness is the primary concern for a daily pipeline — stale data means ingestion or transform silently failed. The 2-day threshold accounts for weekends/holidays when FX markets are closed. The new query is cheaper (single aggregate scan vs full row fetch) and provides actionable signal.
+
+### D53: Skip optional quality report Lambda
+
+**Context:** Session 6A plan included an optional Lambda to read quality report JSONs from S3 and publish a summary to SNS.
+**Decision:** Skipped. Quality reports are already written by the Glue job for every file. The existing CloudWatch alarms (DataQualityChecksFailed, RecordsQuarantined) provide real-time alerting.
+**Rationale:** A summary Lambda would duplicate alerting already handled by CloudWatch alarms + SNS. Adding another Lambda increases maintenance cost without proportional value. Operators can inspect quality reports directly in S3 when investigating an alarm.
+
+---
+
+## Session 5B Decisions (2026-04-05) — PR Review Fixes
+
+### D54: QualityResult `__post_init__` invariant validation
+
+**Context:** `QualityResult` is a frozen dataclass, but nothing prevented constructing an inconsistent instance (e.g., `passed=True` with `failing_row_count=5`). A bug in a check function could produce a result that claims success while reporting failures.
+**Decision:** Added `__post_init__` that raises `ValueError` for `passed=True, failing_row_count>0` and `passed=False, failing_row_count<=0`.
+**Rationale:** Frozen dataclasses guarantee no mutation after construction, but not validity at construction. `__post_init__` closes the gap — invalid states become unrepresentable. Two tests added to `test_data_quality.py` to verify.
+
+### D55: `_enforce_quality` parameter typed as `Callable` instead of `object`
+
+**Context:** The `run_checks_fn` parameter in `_enforce_quality` was typed as `object`, bypassing type checker validation.
+**Decision:** Changed to `Callable[[pl.DataFrame], List[QualityResult]]`, added `Callable` and `QualityResult` imports.
+**Rationale:** Precise type annotation lets mypy/pyright catch misuse at static analysis time rather than at runtime.
+
+### D56: StaleFXData CloudWatch alarm added to monitoring.tf
+
+**Context:** The validation Lambda publishes `StaleFXData` metric when data is >2 days old, but no alarm was configured — the metric was emitted but never acted on.
+**Decision:** Added `aws_cloudwatch_metric_alarm.stale_fx_data` with 5-minute period, Sum statistic, threshold >0. Added corresponding dashboard widget.
+**Rationale:** A metric without an alarm is invisible. Stale data is the primary failure mode for a daily pipeline — if ingestion or transform silently fails, stale data is the symptom. The alarm closes the monitoring loop.
+
+### D57: Quarantine bucket public access block
+
+**Context:** All other S3 buckets relied on account-level public access settings, but the quarantine bucket holds potentially sensitive failed-quality data and had no explicit public access block.
+**Decision:** Added `aws_s3_bucket_public_access_block.quarantine` with all four block flags enabled.
+**Rationale:** Defense in depth — if account-level settings are accidentally modified, the bucket-level block prevents public exposure. Quarantine data may contain PII or financial data that failed validation, making it a higher-risk target.
+
+### D58: Defensive `.get("Data", [])` guard in validation Lambda
+
+**Context:** `_parse_freshness_result` assumed Athena result rows always contain a `"Data"` key. A malformed or empty row (e.g., from a query timeout or partial result) would raise `KeyError`.
+**Decision:** Changed `rows[1]["Data"]` to `rows[1].get("Data", [])` with a length check, treating missing data as empty results.
+**Rationale:** Athena results are an external boundary — defensive parsing prevents a `KeyError` from masking the real issue (empty/stale data). Added test `test_malformed_athena_row_returns_empty` to verify.
+
+### D59: Metric publish error logging includes exception type
+
+**Context:** `_publish_metric` in `glue_transform.py` logged `f"Failed to publish metric: {e}"` — for non-`ClientError` exceptions, the message lacked the exception class name.
+**Decision:** Changed to `f"Failed to publish metric {metric_name}: {type(e).__name__}: {e}"` with `exc_info=True`.
+**Rationale:** `type(e).__name__` distinguishes `TypeError` from `ClientError` without needing to read the full traceback. `exc_info=True` preserves the stack trace in CloudWatch for debugging.
