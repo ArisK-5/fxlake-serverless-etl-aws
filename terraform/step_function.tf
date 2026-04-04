@@ -5,8 +5,8 @@ resource "aws_sfn_state_machine" "etl" {
     Comment = "FXLake ETL: Parallel Lambda-Glue-Athena Pipeline",
     StartAt = "Parallel-Ingestion",
     States = {
-      # Runs Frankfurter and ECB ingestion concurrently.
-      # Output array [$[0], $[1]] is reshaped by ResultSelector to named keys.
+      # Runs Frankfurter, ECB, and FRED ingestion concurrently.
+      # Output array [$[0], $[1], $[2]] is reshaped by ResultSelector to named keys.
       # ResultPath merges into input so downstream states still see the full execution context.
       Parallel-Ingestion = {
         Type = "Parallel",
@@ -50,11 +50,32 @@ resource "aws_sfn_state_machine" "etl" {
                 End = true
               }
             }
+          },
+          {
+            StartAt = "Lambda-FRED-Ingestion",
+            States = {
+              Lambda-FRED-Ingestion = {
+                Type           = "Task",
+                Resource       = "arn:aws:states:::lambda:invoke",
+                Parameters     = { FunctionName = aws_lambda_function.fred_ingest.arn },
+                TimeoutSeconds = 90,
+                Retry = [
+                  {
+                    ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+                    IntervalSeconds = 3,
+                    MaxAttempts     = 2,
+                    BackoffRate     = 2.0
+                  }
+                ],
+                End = true
+              }
+            }
           }
         ],
         ResultSelector = {
-          "fx.$"  = "$[0]",
-          "ecb.$" = "$[1]"
+          "fx.$"   = "$[0]",
+          "ecb.$"  = "$[1]",
+          "fred.$" = "$[2]"
         },
         ResultPath = "$.parallel_results",
         Catch = [
@@ -66,8 +87,8 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Check-New-Data"
       },
-      # Skip to Succeed only when BOTH sources are already up to date.
-      # If either source has new data the pipeline runs Glue → Update-State → Athena.
+      # Skip to Succeed only when ALL THREE sources are already up to date.
+      # If any source has new data the pipeline runs Glue → Update-State → Athena.
       # Choice states cannot have Retry/Catch — error handling is in Parallel-Ingestion above.
       Check-New-Data = {
         Type = "Choice",
@@ -80,6 +101,10 @@ resource "aws_sfn_state_machine" "etl" {
               },
               {
                 Variable     = "$.parallel_results.ecb.Payload.status",
+                StringEquals = "no_new_data"
+              },
+              {
+                Variable     = "$.parallel_results.fred.Payload.status",
                 StringEquals = "no_new_data"
               }
             ],
@@ -174,13 +199,47 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
+        Next = "Lambda-Update-FRED-State"
+      },
+      # Commit FRED last_processed_date to DynamoDB after ECB state is committed.
+      Lambda-Update-FRED-State = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = aws_lambda_function.fred_ingest.arn,
+          Payload = {
+            "action"     = "update_state",
+            "end_date.$" = "$.parallel_results.fred.Payload.end_date"
+          }
+        },
+        ResultPath     = "$.fred_state_update",
+        TimeoutSeconds = 30,
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException", "States.TaskFailed"],
+            IntervalSeconds = 3,
+            MaxAttempts     = 3,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "UpdateFREDState-Failed",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
         Next = "Athena-Sample-Query"
       },
+      # Queries fx_rates only (not economic_indicators): FX rates are the core product
+      # and validate that the Glue transform wrote correct Parquet to the processed bucket.
+      # economic_indicators (FRED) is secondary enrichment — validated implicitly by Glue
+      # success. Sampling both tables would double Athena cost with no additional signal.
       Athena-Sample-Query = {
         Type     = "Task",
         Resource = "arn:aws:states:::athena:startQueryExecution.sync",
         Parameters = {
-          QueryString = "SELECT * FROM exchange_rates LIMIT 100;",
+          QueryString = "SELECT * FROM fx_rates LIMIT 100;",
           QueryExecutionContext = {
             Database = aws_glue_catalog_database.fxlake.name
           },
@@ -257,6 +316,11 @@ resource "aws_sfn_state_machine" "etl" {
         CausePath = "$.errorInfo.Cause"
       },
       UpdateECBState-Failed = {
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
+      },
+      UpdateFREDState-Failed = {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"

@@ -48,6 +48,7 @@ jobs:
         run: |
           touch lambda/lambda_ingestion_function.zip
           touch lambda/lambda_ecb_ingestion.zip
+          touch lambda/lambda_fred_ingestion.zip
           touch lambda/lambda_validation_function.zip
 
       - name: Terraform Init (no backend)

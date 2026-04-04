@@ -49,6 +49,29 @@ variable "lambda_ecb_ingestion_name" {
   default = "fxlake-ecb-ingest-lambda"
 }
 
+variable "lambda_fred_ingestion_name" {
+  type    = string
+  default = "fxlake-fred-ingest-lambda"
+}
+
+variable "fred_base_url" {
+  description = "Base URL for the FRED API"
+  type        = string
+  default     = "https://api.stlouisfed.org/fred"
+}
+
+variable "fred_series" {
+  description = "FRED series ID to ingest (e.g. UNRATE, FEDFUNDS)"
+  type        = string
+  default     = "UNRATE"
+}
+
+variable "fred_api_key" {
+  description = "API key for the FRED API (stored as secret)"
+  type        = string
+  sensitive   = true
+}
+
 variable "ecb_base_url" {
   description = "Base URL for the ECB Statistics Data Warehouse SDMX-JSON API"
   type        = string

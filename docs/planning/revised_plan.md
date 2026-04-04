@@ -621,7 +621,20 @@ After completing, update:
 - docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
-#### Session 4A: Third source + testing (Day 4 morning)
+#### Session 4A: Third source + testing (Day 4 morning) ✅ COMPLETE
+
+**Planned vs Delivered:**
+- `lambda/lambda_fred_ingestion.py` — FREDHandler with typed error handling, `"."` sentinel drop, series configured via `FRED_SERIES` env var
+- `tests/test_lambda_fred_ingestion.py` — 23 tests (parse, fetch, filename, static/incremental lambda_handler)
+- `glue/glue_transform.py` — hybrid schema: `fred_*` → `economic_indicators/` (4-col), all else → `fx_rates/` (5-col with source)
+- `tests/test_glue_transform.py` — updated paths/shapes + 9 new FRED/source-detection tests (26 total)
+- `terraform/variables.tf` — added `lambda_fred_ingestion_name`, `fred_base_url`, `fred_series`, `fred_api_key`
+- `terraform/lambda.tf` — added `aws_lambda_function.fred_ingest`
+- `terraform/step_function.tf` — 3rd parallel branch (FRED), Check-New-Data AND all 3, Lambda-Update-FRED-State, UpdateFREDState-Failed, Athena query → `fx_rates`
+- `terraform/iam.tf` — added `fred_ingest.arn` to sfn_policy invoke list
+- `terraform/athena.tf` — renamed `exchange_rates` → `fx_rates` (+ source col), added `economic_indicators` table
+- `lambda/package_lambdas.sh` / `.github/workflows/ci.yml` — FRED zip stub added
+- **Test count:** 132 tests, 97% coverage (added 3 cross-domain isolation tests in Session 4A review)
 
 **Claude Code prompt:**
 ```
