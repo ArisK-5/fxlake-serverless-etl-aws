@@ -37,6 +37,26 @@ class TestQualityResult:
         with pytest.raises(AttributeError):
             r.passed = False  # type: ignore[misc]
 
+    def test_inconsistent_passed_true_with_failures_raises(self) -> None:
+        with pytest.raises(ValueError, match="passed=True"):
+            QualityResult(
+                check_name="test",
+                level=CheckLevel.CRITICAL,
+                passed=True,
+                message="ok",
+                failing_row_count=5,
+            )
+
+    def test_inconsistent_passed_false_with_zero_failures_raises(self) -> None:
+        with pytest.raises(ValueError, match="passed=False"):
+            QualityResult(
+                check_name="test",
+                level=CheckLevel.CRITICAL,
+                passed=False,
+                message="bad",
+                failing_row_count=0,
+            )
+
     def test_fields(self) -> None:
         r = QualityResult(
             check_name="nulls",

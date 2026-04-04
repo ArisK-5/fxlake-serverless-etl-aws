@@ -100,7 +100,7 @@ Every state has Retry and Catch blocks:
 
 **Architecture:**
 - `CheckLevel` enum: `CRITICAL` (quarantine + raise) vs `WARNING` (log + metric)
-- `QualityResult` frozen dataclass: immutable check result
+- `QualityResult` frozen dataclass: immutable check result with `__post_init__` invariant validation (rejects `passed=True` with `failing_row_count>0` and vice versa)
 - 6 check functions: `check_required_columns`, `check_no_nulls`, `check_positive_values`, `check_duplicates`, `check_rate_range`, `check_value_in_set`
 - 2 domain runners: `run_fx_checks(df)`, `run_economic_checks(df)`
 - Helpers: `has_critical_failures(results)`, `build_quality_report(results, key, domain)`
@@ -127,7 +127,8 @@ Every state has Retry and Catch blocks:
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow deps) + quality.py S3 upload via `--extra-py-files` |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |
-| `monitoring.tf` | 10 CloudWatch alarms (incl. quality + quarantine) + dashboard with quality metrics row |
+| `monitoring.tf` | 11 CloudWatch alarms (incl. quality, quarantine, stale data) + dashboard with quality metrics row |
+| `s3.tf` | 5 S3 buckets (raw, processed, athena_results, cloudtrail_logs, quarantine) + quarantine public access block + Athena results 1-day lifecycle |
 | `security.tf` | S3 AES-256 encryption + CloudTrail multi-region trail |
 | `variables.tf` | All configurable inputs (region, bucket names, date range, currency, output format) |
 
@@ -161,7 +162,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 168 tests, 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 171 tests, 97% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests
@@ -189,7 +190,7 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `glue/glue_transform.py` | 93% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard, metric publish warning) |
 | `glue/quality.py` | 100% |
 
-**Overall: 97% (572 statements, 15 missed)**
+**Overall: 97% (579 statements, 15 missed)**
 
 ### Test File Organisation
 
@@ -200,8 +201,8 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (16 tests) |
 | `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |
 | `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain, quality integration (35 tests) |
-| `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder (27 tests) |
-| `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results (15 tests) |
+| `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder, invariant validation (29 tests) |
+| `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
 
 ## CI/CD
 

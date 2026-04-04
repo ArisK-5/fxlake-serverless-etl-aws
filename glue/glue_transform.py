@@ -2,7 +2,7 @@ import io
 import json
 import logging
 import sys
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 import boto3
 import polars as pl
@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 from awsglue.utils import getResolvedOptions
 from botocore.exceptions import ClientError
 from quality import (
+    QualityResult,
     build_quality_report,
     has_critical_failures,
     run_economic_checks,
@@ -137,7 +138,10 @@ def _publish_quality_metric(metric_name: str, value: float, domain: str) -> None
             ],
         )
     except Exception as e:
-        logger.warning(f"Failed to publish metric {metric_name}: {e}")
+        logger.error(
+            f"Failed to publish metric {metric_name}: {type(e).__name__}: {e}",
+            exc_info=True,
+        )
 
 
 def _quarantine_records(df: pl.DataFrame, key: str, domain: str) -> str:
@@ -166,7 +170,7 @@ def _enforce_quality(
     df: pl.DataFrame,
     key: str,
     domain: str,
-    run_checks_fn: object,
+    run_checks_fn: Callable[[pl.DataFrame], List[QualityResult]],
 ) -> None:
     """Run quality checks on *df*. Quarantine + raise on CRITICAL; warn + metric on WARNING."""
     results = run_checks_fn(df)

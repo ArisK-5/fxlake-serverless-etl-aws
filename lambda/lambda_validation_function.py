@@ -54,7 +54,9 @@ def _parse_freshness_result(result_set: dict) -> tuple[str | None, int]:
     if len(rows) < 2:
         return None, 0
 
-    data_row = rows[1]["Data"]
+    data_row = rows[1].get("Data", [])
+    if len(data_row) < 2:
+        return None, 0
     latest_date_str = data_row[0].get("VarCharValue") if data_row[0] else None
     total_records = int(data_row[1].get("VarCharValue", "0"))
     return latest_date_str, total_records

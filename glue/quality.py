@@ -32,6 +32,18 @@ class QualityResult:
     message: str
     failing_row_count: int
 
+    def __post_init__(self) -> None:
+        if self.passed and self.failing_row_count != 0:
+            raise ValueError(
+                f"Inconsistent QualityResult: passed=True but "
+                f"failing_row_count={self.failing_row_count}"
+            )
+        if not self.passed and self.failing_row_count <= 0:
+            raise ValueError(
+                f"Inconsistent QualityResult: passed=False but "
+                f"failing_row_count={self.failing_row_count}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Individual check functions

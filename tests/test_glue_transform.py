@@ -483,18 +483,31 @@ class TestQualityIntegration:
 
         assert _list_processed_keys(s3_mock, prefix="fx_rates/year=") == []
 
-    def test_warning_does_not_raise(self, s3_mock):
-        """WARNING-only failures (e.g. duplicates) should not raise."""
+    def test_warning_duplicate_does_not_raise(self, s3_mock):
+        """WARNING-only failures (duplicates) should log but not raise or quarantine."""
+        # Manually craft JSON with duplicate date+currency rows to trigger WARNING
         dup_data = {
             "base": "EUR",
+            "source": "frankfurter",
             "rates": {
-                "2024-01-02": {"USD": 1.1},
+                "2024-01-02": {"USD": 1.1, "GBP": 0.85},
             },
         }
         _put_json(s3_mock, "dup_rates.json", dup_data)
 
-        # Should not raise — clean data passes all checks
-        out_keys = glue_transform.process_key("dup_rates.json")
+        # Patch _process_fx_key to inject a duplicate row after DataFrame creation
+        original_enforce = glue_transform._enforce_quality
+
+        def _patched_enforce(df, key, domain, run_checks_fn):
+            if domain == "fx_rates":
+                # Duplicate the first row to trigger the WARNING duplicate check
+                df = pl.concat([df, df.head(1)])
+            return original_enforce(df, key, domain, run_checks_fn)
+
+        with patch.object(glue_transform, "_enforce_quality", side_effect=_patched_enforce):
+            out_keys = glue_transform.process_key("dup_rates.json")
+
+        # WARNING does not raise — partitions still written
         assert len(out_keys) >= 1
 
     def test_economic_critical_null_value_quarantines(self, s3_mock):

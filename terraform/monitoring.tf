@@ -177,6 +177,20 @@ resource "aws_cloudwatch_metric_alarm" "data_quality_checks_failed_econ" {
   }
 }
 
+resource "aws_cloudwatch_metric_alarm" "stale_fx_data" {
+  alarm_name          = "fxlake-stale-fx-data"
+  alarm_description   = "Triggered when FX data is older than freshness threshold (>2 days)"
+  namespace           = "${var.metric_namespace_prefix}/Athena"
+  metric_name         = "StaleFXData"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
 resource "aws_cloudwatch_metric_alarm" "records_quarantined" {
   alarm_name          = "fxlake-records-quarantined"
   alarm_description   = "Triggered when records are quarantined due to CRITICAL quality failures"

@@ -439,3 +439,43 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** Session 6A plan included an optional Lambda to read quality report JSONs from S3 and publish a summary to SNS.
 **Decision:** Skipped. Quality reports are already written by the Glue job for every file. The existing CloudWatch alarms (DataQualityChecksFailed, RecordsQuarantined) provide real-time alerting.
 **Rationale:** A summary Lambda would duplicate alerting already handled by CloudWatch alarms + SNS. Adding another Lambda increases maintenance cost without proportional value. Operators can inspect quality reports directly in S3 when investigating an alarm.
+
+---
+
+## Session 5B Decisions (2026-04-05) — PR Review Fixes
+
+### D54: QualityResult `__post_init__` invariant validation
+
+**Context:** `QualityResult` is a frozen dataclass, but nothing prevented constructing an inconsistent instance (e.g., `passed=True` with `failing_row_count=5`). A bug in a check function could produce a result that claims success while reporting failures.
+**Decision:** Added `__post_init__` that raises `ValueError` for `passed=True, failing_row_count>0` and `passed=False, failing_row_count<=0`.
+**Rationale:** Frozen dataclasses guarantee no mutation after construction, but not validity at construction. `__post_init__` closes the gap — invalid states become unrepresentable. Two tests added to `test_data_quality.py` to verify.
+
+### D55: `_enforce_quality` parameter typed as `Callable` instead of `object`
+
+**Context:** The `run_checks_fn` parameter in `_enforce_quality` was typed as `object`, bypassing type checker validation.
+**Decision:** Changed to `Callable[[pl.DataFrame], List[QualityResult]]`, added `Callable` and `QualityResult` imports.
+**Rationale:** Precise type annotation lets mypy/pyright catch misuse at static analysis time rather than at runtime.
+
+### D56: StaleFXData CloudWatch alarm added to monitoring.tf
+
+**Context:** The validation Lambda publishes `StaleFXData` metric when data is >2 days old, but no alarm was configured — the metric was emitted but never acted on.
+**Decision:** Added `aws_cloudwatch_metric_alarm.stale_fx_data` with 5-minute period, Sum statistic, threshold >0. Added corresponding dashboard widget.
+**Rationale:** A metric without an alarm is invisible. Stale data is the primary failure mode for a daily pipeline — if ingestion or transform silently fails, stale data is the symptom. The alarm closes the monitoring loop.
+
+### D57: Quarantine bucket public access block
+
+**Context:** All other S3 buckets relied on account-level public access settings, but the quarantine bucket holds potentially sensitive failed-quality data and had no explicit public access block.
+**Decision:** Added `aws_s3_bucket_public_access_block.quarantine` with all four block flags enabled.
+**Rationale:** Defense in depth — if account-level settings are accidentally modified, the bucket-level block prevents public exposure. Quarantine data may contain PII or financial data that failed validation, making it a higher-risk target.
+
+### D58: Defensive `.get("Data", [])` guard in validation Lambda
+
+**Context:** `_parse_freshness_result` assumed Athena result rows always contain a `"Data"` key. A malformed or empty row (e.g., from a query timeout or partial result) would raise `KeyError`.
+**Decision:** Changed `rows[1]["Data"]` to `rows[1].get("Data", [])` with a length check, treating missing data as empty results.
+**Rationale:** Athena results are an external boundary — defensive parsing prevents a `KeyError` from masking the real issue (empty/stale data). Added test `test_malformed_athena_row_returns_empty` to verify.
+
+### D59: Metric publish error logging includes exception type
+
+**Context:** `_publish_metric` in `glue_transform.py` logged `f"Failed to publish metric: {e}"` — for non-`ClientError` exceptions, the message lacked the exception class name.
+**Decision:** Changed to `f"Failed to publish metric {metric_name}: {type(e).__name__}: {e}"` with `exc_info=True`.
+**Rationale:** `type(e).__name__` distinguishes `TypeError` from `ClientError` without needing to read the full traceback. `exc_info=True` preserves the stack trace in CloudWatch for debugging.

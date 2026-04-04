@@ -249,3 +249,26 @@ class TestLambdaHandler:
     def test_none_execution_id_raises(self):
         with pytest.raises(ValueError, match="Missing QueryExecutionId"):
             validation.lambda_handler({"QueryExecutionId": None}, None)
+
+    def test_malformed_athena_row_returns_empty(self):
+        """Athena row missing 'Data' key should be treated as empty."""
+        mock_athena = MagicMock()
+        mock_athena.get_query_execution.return_value = _make_execution_response()
+        mock_athena.get_query_results.return_value = {
+            "ResultSet": {
+                "Rows": [
+                    {"Data": [{"VarCharValue": "latest_date"}, {"VarCharValue": "total_records"}]},
+                    {},  # malformed row — no "Data" key
+                ]
+            }
+        }
+        mock_cw = MagicMock()
+
+        with patch.object(validation, "athena", mock_athena), \
+             patch.object(validation, "cloudwatch", mock_cw):
+            result = validation.lambda_handler(
+                {"QueryExecutionId": "abc-123"}, None
+            )
+
+        assert result["is_empty"] is True
+        assert result["status"] == "FAILED"
