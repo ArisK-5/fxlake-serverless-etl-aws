@@ -75,7 +75,9 @@ class TestProcessKeyParquet:
         df_jan03 = _read_parquet_from_s3(s3_mock, f"{PARTITION_JAN03}/rates.parquet")
         assert df_jan02.shape == (2, 5)
         assert df_jan03.shape == (2, 5)
-        assert set(df_jan02.columns) == {"base_currency", "target_currency", "rate", "date", "source"}
+        assert set(df_jan02.columns) == {
+            "base_currency", "target_currency", "rate", "date", "source"
+        }
 
     def test_correct_values(self, s3_mock):
         _put_json(s3_mock, "rates.json", SAMPLE_RATES_JSON)
