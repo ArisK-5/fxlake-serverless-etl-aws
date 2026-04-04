@@ -421,3 +421,21 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** Could write quality reports only on failure to reduce S3 writes.
 **Decision:** Always write `{domain}/quality_reports/{stem}_quality.json` to the processed bucket, even when all checks pass.
 **Rationale:** Passing reports provide audit trail for compliance and enable trend analysis (e.g. "which files had zero warnings vs many"). The S3 cost of a small JSON per file is negligible.
+
+### D51: Per-domain quality alarms rather than single aggregate
+
+**Context:** Could create one `DataQualityChecksFailed` alarm without a Domain dimension, or one per domain.
+**Decision:** Two separate alarms: `fxlake-data-quality-checks-failed` (Domain=fx_rates) and `fxlake-data-quality-checks-failed-econ` (Domain=economic_indicators). Single `RecordsQuarantined` alarm without domain dimension.
+**Rationale:** Per-domain alarms let operators immediately identify which data source is failing. Quarantine is rare and always urgent, so a single alarm suffices — the CloudWatch metric already carries the Domain dimension for drill-down.
+
+### D52: Data freshness query replaces SELECT * LIMIT 100
+
+**Context:** The original Athena validation query (`SELECT * FROM fx_rates LIMIT 100`) only verified that *some* data existed but not whether it was *recent*.
+**Decision:** Replaced with `SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates`. Validation Lambda parses these values, checks if `latest_date` is within 2 days, and publishes a `StaleFXData` CloudWatch metric.
+**Rationale:** Freshness is the primary concern for a daily pipeline — stale data means ingestion or transform silently failed. The 2-day threshold accounts for weekends/holidays when FX markets are closed. The new query is cheaper (single aggregate scan vs full row fetch) and provides actionable signal.
+
+### D53: Skip optional quality report Lambda
+
+**Context:** Session 6A plan included an optional Lambda to read quality report JSONs from S3 and publish a summary to SNS.
+**Decision:** Skipped. Quality reports are already written by the Glue job for every file. The existing CloudWatch alarms (DataQualityChecksFailed, RecordsQuarantined) provide real-time alerting.
+**Rationale:** A summary Lambda would duplicate alerting already handled by CloudWatch alarms + SNS. Adding another Lambda increases maintenance cost without proportional value. Operators can inspect quality reports directly in S3 when investigating an alarm.

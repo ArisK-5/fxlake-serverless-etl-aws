@@ -231,15 +231,14 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Athena-Sample-Query"
       },
-      # Queries fx_rates only (not economic_indicators): FX rates are the core product
-      # and validate that the Glue transform wrote correct Parquet to the processed bucket.
-      # economic_indicators (FRED) is secondary enrichment — validated implicitly by Glue
-      # success. Sampling both tables would double Athena cost with no additional signal.
+      # Data freshness query: verifies Glue wrote Parquet and checks how recent the data is.
+      # Queries fx_rates only — FX rates are the core product; economic_indicators validated
+      # implicitly by Glue success. Validation Lambda parses latest_date + total_records.
       Athena-Sample-Query = {
         Type     = "Task",
         Resource = "arn:aws:states:::athena:startQueryExecution.sync",
         Parameters = {
-          QueryString = "SELECT * FROM fx_rates LIMIT 100;",
+          QueryString = "SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates;",
           QueryExecutionContext = {
             Database = aws_glue_catalog_database.fxlake.name
           },

@@ -54,8 +54,8 @@ The pipeline is orchestrated by **Step Functions** and triggered daily by **Even
 4. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB **only after Glue succeeds**. Calls the `api_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
 5. **Lambda (Update-ECB-State)** — commits ECB `last_processed_date` to DynamoDB after FX state is committed. Calls the `ecb_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.ecb.Payload.end_date"}`.
 6. **Lambda (Update-FRED-State)** — commits FRED `last_processed_date` to DynamoDB after ECB state is committed. Calls the `fred_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fred.Payload.end_date"}`.
-7. **Athena** — runs a sample query on the `fx_rates` table via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
-8. **Lambda (Validation)** — checks Athena query status, counts rows, publishes a custom `EmptyQueryResults` CloudWatch metric
+7. **Athena** — runs a data freshness query (`SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates`) via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
+8. **Lambda (Validation)** — parses `latest_date` and `total_records` from Athena results, checks if `latest_date` is within 2 days (freshness threshold), publishes `EmptyQueryResults` and `StaleFXData` CloudWatch metrics
 
 ### Multi-Source Ingestion
 
@@ -127,7 +127,7 @@ Every state has Retry and Catch blocks:
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow deps) + quality.py S3 upload via `--extra-py-files` |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |
-| `monitoring.tf` | 7 CloudWatch alarms + dashboard |
+| `monitoring.tf` | 10 CloudWatch alarms (incl. quality + quarantine) + dashboard with quality metrics row |
 | `security.tf` | S3 AES-256 encryption + CloudTrail multi-region trail |
 | `variables.tf` | All configurable inputs (region, bucket names, date range, currency, output format) |
 
@@ -161,7 +161,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 165 tests, 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 168 tests, 97% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests
@@ -185,11 +185,11 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `lambda/lambda_ingestion_function.py` | 100% |
 | `lambda/lambda_ecb_ingestion.py` | 100% |
 | `lambda/lambda_fred_ingestion.py` | 100% |
-| `lambda/lambda_validation_function.py` | 100% |
+| `lambda/lambda_validation_function.py` | 98% |
 | `glue/glue_transform.py` | 93% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard, metric publish warning) |
 | `glue/quality.py` | 100% |
 
-**Overall: 97% (556 statements, 14 missed)**
+**Overall: 97% (572 statements, 15 missed)**
 
 ### Test File Organisation
 
@@ -201,7 +201,7 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |
 | `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain, quality integration (35 tests) |
 | `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder (27 tests) |
-| `test_lambda_validation.py` | Validation Lambda, CloudWatch metric (12 tests) |
+| `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results (15 tests) |
 
 ## CI/CD
 

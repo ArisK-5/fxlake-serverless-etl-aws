@@ -718,31 +718,28 @@ After completing, update:
 
 **Stats:** 165 tests, 97% coverage (quality.py 100%)
 
-#### Session 6A: Quality dashboard + alerting (Day 6 morning)
+#### Session 6A: Quality dashboard + alerting (Day 6 morning) ✅
 
-**Claude Code prompt:**
-```
-Extend monitoring for data quality:
+**Status:** COMPLETE
 
-1. Update terraform/monitoring.tf:
-   - Add CloudWatch alarm for DataQualityChecksFailed > 0
-   - Add CloudWatch alarm for RecordsQuarantined > threshold
-   - Add quality metrics to the dashboard (new row of widgets)
+**Planned vs Delivered:**
 
-2. Create a quality report Lambda (optional, if time):
-   - Reads quality report JSONs from processed bucket
-   - Generates summary and publishes to SNS
+| Planned | Delivered |
+|---------|-----------|
+| CloudWatch alarm for DataQualityChecksFailed > 0 | ✅ Two alarms: fx_rates + economic_indicators (per-domain) |
+| CloudWatch alarm for RecordsQuarantined > threshold | ✅ Single alarm, threshold 0 (any quarantine is notable) |
+| Quality metrics dashboard row | ✅ 4 widgets: Quality Checks Failed (FX), Quality Checks Failed (Econ), Records Quarantined, Stale FX Data |
+| Optional: quality report Lambda | ⏭️ Skipped — quality reports already written by Glue job; SNS summary adds complexity without proportional value |
+| Athena data freshness query | ✅ `SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates` |
+| Validation Lambda freshness check | ✅ Parses latest_date + total_records, 2-day freshness threshold, publishes StaleFXData metric |
 
-3. Update the Athena sample query to be more meaningful:
-   - Instead of SELECT * LIMIT 100, run a data freshness check:
-     SELECT MAX(date) as latest_date, COUNT(*) as total_records FROM exchange_rates
-   - Validation Lambda checks if latest_date is recent (within 2 days)
+**Files changed:**
+- `terraform/monitoring.tf` — 3 new alarms (DataQualityChecksFailed × 2 domains, RecordsQuarantined) + 4 dashboard widgets
+- `terraform/step_function.tf` — Athena query updated from `SELECT * LIMIT 100` to freshness query
+- `lambda/lambda_validation_function.py` — rewritten: `publish_custom_metric` now takes metric_name param, `_parse_freshness_result()` helper, freshness threshold logic, StaleFXData metric
+- `tests/test_lambda_validation.py` — 15 tests (was 12): fresh data, stale data, boundary 2-day, empty table, plus existing error/edge cases
 
-After completing, update:
-- CLAUDE.md: update monitoring section with quality dashboard details
-- docs/planning/revised_plan.md: mark Session 6A complete with planned-vs-delivered
-- docs/planning/decision_log.md: add any new decisions made during implementation
-```
+**Stats:** 168 tests, 97% coverage (validation Lambda 98%)
 
 ---
 
