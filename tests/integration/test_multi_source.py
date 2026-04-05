@@ -8,7 +8,7 @@ transform correctly routes files to the appropriate domain.
 import io
 import json
 import os
-from typing import Any, List
+from typing import Any
 
 import boto3
 import polars as pl

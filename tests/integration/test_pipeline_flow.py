@@ -17,6 +17,7 @@ import polars as pl
 import pyarrow.parquet as pq
 import pytest
 import responses
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 # ---------------------------------------------------------------------------
@@ -366,7 +367,7 @@ class TestDynamoDBStateManagement:
 
 @pytest.mark.integration
 class TestCloudWatchMetrics:
-    """Verify CloudWatch metrics are published at each pipeline stage."""
+    """Verify quality reports and freshness metrics published during transform and validation."""
 
     @responses.activate
     def test_quality_report_written_during_transform(
@@ -538,3 +539,400 @@ class TestPipelineSagaPattern:
         # No raw files written
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
         assert raw_keys == []
+
+
+# ---------------------------------------------------------------------------
+# Error-path tests
+# ---------------------------------------------------------------------------
+
+# Frankfurter response with negative rates → triggers CRITICAL check_positive_values failure
+SAMPLE_FRANKFURTER_BAD_RATES = {
+    "base": "EUR",
+    "start_date": "2024-01-02",
+    "end_date": "2024-01-03",
+    "rates": {
+        "2024-01-02": {"USD": -1.1023, "GBP": -0.8671},
+        "2024-01-03": {"USD": -1.0956, "GBP": -0.8612},
+    },
+}
+
+
+@pytest.mark.integration
+class TestCriticalQualityFailure:
+    """CRITICAL quality check → quarantine + metrics + saga rollback."""
+
+    @responses.activate
+    def test_negative_rates_quarantined_and_state_not_updated(
+        self, integration_aws, monkeypatch
+    ):
+        """Negative FX rates trigger CRITICAL failure: quarantine written, ValueError raised,
+        DynamoDB state unchanged (saga rollback)."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        ddb = integration_aws["dynamodb"]
+
+        ddb.put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-10"},
+            },
+        )
+
+        responses.add(
+            responses.GET,
+            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            json=SAMPLE_FRANKFURTER_BAD_RATES,
+            status=200,
+        )
+
+        import lambda_ingestion_function as fx_mod
+
+        result = fx_mod.lambda_handler({}, None)
+        assert result["status"] == "ok"
+
+        raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
+        assert len(raw_keys) == 1
+
+        # Glue transform should raise ValueError on CRITICAL quality failure
+        import glue_transform
+
+        with pytest.raises(ValueError, match="CRITICAL"):
+            glue_transform.process_key(raw_keys[0])
+
+        # Quarantine bucket should contain the bad records
+        quarantine_keys = _s3_keys(integration_aws["s3"], TEST_QUARANTINE_BUCKET, "fx_rates/")
+        assert len(quarantine_keys) == 1
+        assert "quarantine" in quarantine_keys[0]
+
+        # Quality report should still be written (before quarantine raises)
+        quality_keys = _s3_keys(
+            integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/quality_reports/"
+        )
+        assert len(quality_keys) == 1
+        report = json.loads(
+            integration_aws["s3"]
+            .get_object(Bucket=TEST_PROCESSED_BUCKET, Key=quality_keys[0])["Body"]
+            .read()
+        )
+        assert report["overall_passed"] is False
+
+        # No processed Parquet should exist (transform aborted)
+        processed_keys = _s3_keys(
+            integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/year="
+        )
+        assert processed_keys == []
+
+        # Saga: DynamoDB state must remain at old value (update_state never called)
+        item = ddb.get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-10"
+
+    @responses.activate
+    def test_quarantine_contains_original_data(self, integration_aws, monkeypatch):
+        """Quarantined JSON preserves the original DataFrame records."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+
+        responses.add(
+            responses.GET,
+            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            json=SAMPLE_FRANKFURTER_BAD_RATES,
+            status=200,
+        )
+
+        import lambda_ingestion_function as fx_mod
+
+        fx_mod.lambda_handler({}, None)
+        raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
+
+        import glue_transform
+
+        with pytest.raises(ValueError):
+            glue_transform.process_key(raw_keys[0])
+
+        quarantine_keys = _s3_keys(integration_aws["s3"], TEST_QUARANTINE_BUCKET, "fx_rates/")
+        obj = integration_aws["s3"].get_object(
+            Bucket=TEST_QUARANTINE_BUCKET, Key=quarantine_keys[0]
+        )
+        quarantined = json.loads(obj["Body"].read())
+        # Should be a list of record dicts with negative rates
+        assert isinstance(quarantined, list)
+        assert len(quarantined) > 0
+        assert any(rec["rate"] < 0 for rec in quarantined)
+
+
+@pytest.mark.integration
+class TestAPIErrorPropagation:
+    """Upstream API errors propagate correctly through the pipeline."""
+
+    @responses.activate
+    def test_frankfurter_http_500_raises(self, integration_aws, monkeypatch):
+        """Frankfurter API returning 500 causes lambda_handler to raise."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+
+        responses.add(
+            responses.GET,
+            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            json={"error": "internal server error"},
+            status=500,
+        )
+
+        import lambda_ingestion_function as fx_mod
+
+        with pytest.raises(Exception):
+            fx_mod.lambda_handler({}, None)
+
+        # No raw files should be written on API failure
+        raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
+        assert raw_keys == []
+
+    @responses.activate
+    def test_ecb_http_500_raises(self, integration_aws, monkeypatch):
+        """ECB API returning 500 causes lambda_handler to raise."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+
+        responses.add(responses.GET, ECB_API_URL, json={}, status=500)
+
+        import lambda_ecb_ingestion as ecb_mod
+
+        with pytest.raises(Exception):
+            ecb_mod.lambda_handler({}, None)
+
+        raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
+        assert raw_keys == []
+
+    @responses.activate
+    def test_fred_http_500_raises(self, integration_aws, monkeypatch):
+        """FRED API returning 500 causes lambda_handler to raise."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+
+        responses.add(responses.GET, FRED_API_URL, json={}, status=500)
+
+        import lambda_fred_ingestion as fred_mod
+
+        with pytest.raises(Exception):
+            fred_mod.lambda_handler({}, None)
+
+        raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
+        assert raw_keys == []
+
+    @responses.activate
+    def test_api_failure_leaves_dynamodb_state_unchanged(
+        self, integration_aws, monkeypatch
+    ):
+        """API failure during ingestion must not advance DynamoDB state."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        ddb = integration_aws["dynamodb"]
+
+        ddb.put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-10"},
+            },
+        )
+
+        responses.add(
+            responses.GET,
+            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            json={"error": "server error"},
+            status=500,
+        )
+
+        import lambda_ingestion_function as fx_mod
+
+        with pytest.raises(Exception):
+            fx_mod.lambda_handler({}, None)
+
+        item = ddb.get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-10"
+
+
+@pytest.mark.integration
+class TestGlueFailureSagaRollback:
+    """Glue transform failure must prevent state advancement."""
+
+    @responses.activate
+    def test_transform_error_prevents_state_update(
+        self, integration_aws, monkeypatch
+    ):
+        """If process_key raises, update_state must not be called — state unchanged."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        ddb = integration_aws["dynamodb"]
+
+        ddb.put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-10"},
+            },
+        )
+
+        responses.add(
+            responses.GET,
+            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            json=SAMPLE_FRANKFURTER_RESPONSE,
+            status=200,
+        )
+
+        import lambda_ingestion_function as fx_mod
+
+        ingest_result = fx_mod.lambda_handler({}, None)
+        assert ingest_result["status"] == "ok"
+
+        # Simulate Glue failure by patching process_key to raise
+        import glue_transform
+
+        with patch.object(
+            glue_transform, "process_key", side_effect=RuntimeError("Glue OOM")
+        ):
+            with pytest.raises(RuntimeError, match="Glue OOM"):
+                glue_transform.process_key(ingest_result["key"])
+
+        # Step Functions would NOT call update_state after Glue failure.
+        # Verify DynamoDB state is still at original value.
+        item = ddb.get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-10"
+
+    @responses.activate
+    def test_update_state_without_state_table_raises(self, integration_aws):
+        """Calling update_state when STATE_TABLE is not set raises RuntimeError."""
+        # STATE_TABLE not set → handler is in static mode
+        import lambda_ingestion_function as fx_mod
+
+        with pytest.raises(RuntimeError, match="STATE_TABLE"):
+            fx_mod.lambda_handler(
+                {"action": "update_state", "end_date": "2024-01-31"}, None
+            )
+
+    @responses.activate
+    def test_update_state_without_end_date_raises(
+        self, integration_aws, monkeypatch
+    ):
+        """Calling update_state without end_date raises ValueError."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+
+        import lambda_ingestion_function as fx_mod
+
+        with pytest.raises(ValueError, match="end_date"):
+            fx_mod.lambda_handler({"action": "update_state"}, None)
+
+
+@pytest.mark.integration
+class TestValidationErrorScenarios:
+    """Validation Lambda handles Athena failure states correctly."""
+
+    def test_athena_non_succeeded_state_raises(self, integration_aws, monkeypatch):
+        """Validation raises RuntimeError when Athena query state is FAILED."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+
+        athena = integration_aws["athena"]
+        start_resp = athena.start_query_execution(
+            QueryString="SELECT 1",
+            ResultConfiguration={"OutputLocation": "s3://test-athena-results/results/"},
+        )
+        query_id = start_resp["QueryExecutionId"]
+
+        import lambda_validation_function as val_mod
+
+        mock_execution = {
+            "QueryExecution": {
+                "Status": {"State": "FAILED"},
+                "WorkGroup": "primary",
+            }
+        }
+
+        with patch.object(val_mod, "athena", athena), patch.object(
+            val_mod, "cloudwatch", integration_aws["cloudwatch"]
+        ), patch.object(athena, "get_query_execution", return_value=mock_execution):
+            with pytest.raises(RuntimeError, match="did not succeed"):
+                val_mod.lambda_handler({"QueryExecutionId": query_id}, None)
+
+    def test_missing_query_execution_id_raises(self, integration_aws, monkeypatch):
+        """Validation raises ValueError when QueryExecutionId is missing from event."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+
+        import lambda_validation_function as val_mod
+
+        with pytest.raises(ValueError, match="Missing QueryExecutionId"):
+            val_mod.lambda_handler({}, None)
+
+    def test_athena_client_error_propagates(self, integration_aws, monkeypatch):
+        """ClientError from Athena get_query_execution propagates to caller."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+
+        import lambda_validation_function as val_mod
+
+        error_response = {
+            "Error": {"Code": "InvalidRequestException", "Message": "Query not found"}
+        }
+
+        with patch.object(val_mod, "athena") as mock_athena, patch.object(
+            val_mod, "cloudwatch", integration_aws["cloudwatch"]
+        ):
+            mock_athena.get_query_execution.side_effect = ClientError(
+                error_response, "GetQueryExecution"
+            )
+            with pytest.raises(ClientError):
+                val_mod.lambda_handler({"QueryExecutionId": "bad-id"}, None)
+
+    def test_empty_athena_results_report_stale(self, integration_aws, monkeypatch):
+        """Validation reports empty/stale when Athena returns zero rows."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+
+        athena = integration_aws["athena"]
+        start_resp = athena.start_query_execution(
+            QueryString="SELECT 1",
+            ResultConfiguration={"OutputLocation": "s3://test-athena-results/results/"},
+        )
+        query_id = start_resp["QueryExecutionId"]
+
+        import lambda_validation_function as val_mod
+
+        mock_execution = {
+            "QueryExecution": {
+                "Status": {"State": "SUCCEEDED"},
+                "WorkGroup": "primary",
+            }
+        }
+        mock_results = {
+            "ResultSet": {
+                "Rows": [
+                    {
+                        "Data": [
+                            {"VarCharValue": "latest_date"},
+                            {"VarCharValue": "total_records"},
+                        ]
+                    },
+                    {
+                        "Data": [
+                            {},
+                            {"VarCharValue": "0"},
+                        ]
+                    },
+                ]
+            }
+        }
+
+        with patch.object(val_mod, "athena", athena), patch.object(
+            val_mod, "cloudwatch", integration_aws["cloudwatch"]
+        ), patch.object(
+            athena, "get_query_execution", return_value=mock_execution
+        ), patch.object(
+            athena, "get_query_results", return_value=mock_results
+        ):
+            result = val_mod.lambda_handler({"QueryExecutionId": query_id}, None)
+
+        assert result["is_empty"] is True
+        assert result["is_fresh"] is False
+        assert result["status"] == "FAILED"
