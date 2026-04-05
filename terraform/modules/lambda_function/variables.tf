@@ -48,3 +48,9 @@ variable "additional_policy_json" {
   type        = string
   default     = null
 }
+
+variable "tracing_mode" {
+  description = "X-Ray tracing mode (Active or PassThrough)"
+  type        = string
+  default     = "Active"
+}

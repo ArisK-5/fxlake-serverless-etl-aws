@@ -825,6 +825,17 @@ After completing, update:
 - docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
+**Session 7B — Delivered (2026-04-05):**
+
+All 3 planned deliverables implemented:
+1. `lambda/common/logging.py` — `_JSONFormatter` (JSON-per-line), `RequestIdFilter`, `configure_logger`, `inject_request_id`, `Timer` context manager. Zero external dependencies (stdlib only).
+2. All 6 Lambda source files refactored: f-string logs → structured `extra={}` key-value logs. `base.py` `run()` wraps execution in `Timer`, logs `duration_ms`. Each handler logs `record_count` on successful fetch. Validation Lambda uses `inject_request_id` + `Timer`.
+3. X-Ray tracing: `tracing_config { mode = "Active" }` on all 4 Lambda resources (2 inline + 2 via module variable). `AWSXRayDaemonWriteAccess` IAM policy on all Lambda roles. `aws-xray-sdk==2.14.0` added to `requirements.txt`. Conditional `patch_all()` gated on `AWS_XRAY_DAEMON_ADDRESS` env var. Validation Lambda packaging updated to include `common/` directory.
+
+**Tests:** 18 new tests in `test_structured_logging.py`. Total: 189 tests, 97% coverage.
+**Decisions:** D65–D67 (stdlib JSON formatter, conditional X-Ray, Timer in base handler)
+**Validation:** `terraform validate` + `terraform fmt -check -recursive` clean, all tests pass
+
 ---
 
 ### Day 8: Integration testing + documentation

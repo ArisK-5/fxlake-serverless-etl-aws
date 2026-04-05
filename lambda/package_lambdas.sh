@@ -81,6 +81,7 @@ if [ -f "requirements_validation.txt" ]; then
 fi
 
 cp lambda_validation_function.py package/
+cp -r common package/
 
 cd package
 zip -r ../lambda_validation_function.zip .

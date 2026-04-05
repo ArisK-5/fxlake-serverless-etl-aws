@@ -1,11 +1,10 @@
-import json
-import logging
 import os
 from datetime import date, timedelta
 from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
+from common.logging import Timer, configure_logger, inject_request_id
 
 NAMESPACE = os.environ["METRIC_NAMESPACE"]
 PIPELINE = os.environ["PIPELINE"]
@@ -14,8 +13,7 @@ FRESHNESS_THRESHOLD_DAYS = 2
 athena = boto3.client("athena")
 cloudwatch = boto3.client("cloudwatch")
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = configure_logger("validation")
 
 
 def publish_custom_metric(metric_name: str, value: int, workgroup: str) -> None:
@@ -34,12 +32,22 @@ def publish_custom_metric(metric_name: str, value: int, workgroup: str) -> None:
                 }
             ],
         )
-        logger.info(f"Published metric {metric_name}={value} to {NAMESPACE}")
+        logger.info(
+            "Published CloudWatch metric",
+            extra={"metric": metric_name, "value": value, "namespace": NAMESPACE},
+        )
     except Exception as e:
         # CloudWatch is non-critical; metric failure must not abort validation
         logger.error(
-            f"Failed to publish metric {metric_name} to {NAMESPACE} "
-            f"(workgroup={workgroup}, value={value}): {type(e).__name__}: {e}",
+            "Failed to publish CloudWatch metric",
+            extra={
+                "metric": metric_name,
+                "namespace": NAMESPACE,
+                "workgroup": workgroup,
+                "value": value,
+                "error_type": type(e).__name__,
+                "error": str(e),
+            },
             exc_info=True,
         )
 
@@ -63,63 +71,72 @@ def _parse_freshness_result(result_set: dict) -> tuple[str | None, int]:
 
 
 def lambda_handler(event: dict, context: Any) -> dict:
+    inject_request_id(logger, context)
+
     query_execution_id = event.get("QueryExecutionId")
     if not query_execution_id:
         raise ValueError("Missing QueryExecutionId")
 
-    try:
-        execution = athena.get_query_execution(QueryExecutionId=query_execution_id)
-    except ClientError as e:
-        logger.error(
-            f"Failed to retrieve Athena execution for "
-            f"query_execution_id={query_execution_id}: "
-            f"{e.response['Error']['Code']}",
-            exc_info=True,
-        )
-        raise
+    with Timer() as timer:
+        try:
+            execution = athena.get_query_execution(QueryExecutionId=query_execution_id)
+        except ClientError as e:
+            logger.error(
+                "Failed to retrieve Athena execution",
+                extra={
+                    "query_execution_id": query_execution_id,
+                    "error_code": e.response["Error"]["Code"],
+                },
+                exc_info=True,
+            )
+            raise
 
-    state = execution["QueryExecution"]["Status"]["State"]
-    workgroup = execution["QueryExecution"].get("WorkGroup", "default")
+        state = execution["QueryExecution"]["Status"]["State"]
+        workgroup = execution["QueryExecution"].get("WorkGroup", "default")
 
-    if state != "SUCCEEDED":
-        logger.error(f"Athena query failed or incomplete. State: {state}")
-        raise RuntimeError(f"Athena query did not succeed. Current state: {state}")
+        if state != "SUCCEEDED":
+            logger.error(
+                "Athena query failed or incomplete",
+                extra={"query_execution_id": query_execution_id, "state": state},
+            )
+            raise RuntimeError(f"Athena query did not succeed. Current state: {state}")
 
-    try:
-        response = athena.get_query_results(QueryExecutionId=query_execution_id)
-    except ClientError as e:
-        logger.error(
-            f"Failed to fetch Athena results for "
-            f"query_execution_id={query_execution_id}: "
-            f"{e.response['Error']['Code']}",
-            exc_info=True,
-        )
-        raise
+        try:
+            response = athena.get_query_results(QueryExecutionId=query_execution_id)
+        except ClientError as e:
+            logger.error(
+                "Failed to fetch Athena results",
+                extra={
+                    "query_execution_id": query_execution_id,
+                    "error_code": e.response["Error"]["Code"],
+                },
+                exc_info=True,
+            )
+            raise
 
-    result_set = response.get("ResultSet", {})
-    latest_date_str, total_records = _parse_freshness_result(result_set)
+        result_set = response.get("ResultSet", {})
+        latest_date_str, total_records = _parse_freshness_result(result_set)
 
-    is_empty = total_records == 0 or latest_date_str is None
-    is_fresh = False
-    if not is_empty and latest_date_str:
-        latest = date.fromisoformat(latest_date_str)
-        is_fresh = (date.today() - latest) <= timedelta(days=FRESHNESS_THRESHOLD_DAYS)
+        is_empty = total_records == 0 or latest_date_str is None
+        is_fresh = False
+        if not is_empty and latest_date_str:
+            latest = date.fromisoformat(latest_date_str)
+            is_fresh = (date.today() - latest) <= timedelta(days=FRESHNESS_THRESHOLD_DAYS)
 
-    publish_custom_metric("EmptyQueryResults", 1 if is_empty else 0, workgroup)
-    publish_custom_metric("StaleFXData", 0 if is_fresh else 1, workgroup)
+        publish_custom_metric("EmptyQueryResults", 1 if is_empty else 0, workgroup)
+        publish_custom_metric("StaleFXData", 0 if is_fresh else 1, workgroup)
 
     logger.info(
-        json.dumps(
-            {
-                "query_execution_id": query_execution_id,
-                "latest_date": latest_date_str,
-                "total_records": total_records,
-                "is_fresh": is_fresh,
-                "is_empty": is_empty,
-                "namespace": NAMESPACE,
-                "workgroup": workgroup,
-            }
-        )
+        "Validation complete",
+        extra={
+            "query_execution_id": query_execution_id,
+            "latest_date": latest_date_str,
+            "total_records": total_records,
+            "is_fresh": is_fresh,
+            "is_empty": is_empty,
+            "workgroup": workgroup,
+            "duration_ms": timer.duration_ms,
+        },
     )
 
     return {

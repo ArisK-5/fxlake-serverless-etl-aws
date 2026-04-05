@@ -24,6 +24,11 @@ resource "aws_iam_role_policy_attachment" "basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "xray" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 resource "aws_iam_policy" "s3_access" {
   count = length(var.s3_bucket_arns) > 0 ? 1 : 0
 
@@ -73,6 +78,10 @@ resource "aws_lambda_function" "this" {
   filename         = var.filename
   timeout          = var.timeout
   source_code_hash = filebase64sha256(var.filename)
+
+  tracing_config {
+    mode = var.tracing_mode
+  }
 
   environment {
     variables = var.env_vars

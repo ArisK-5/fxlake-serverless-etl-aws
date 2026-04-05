@@ -154,6 +154,32 @@ Every state has Retry and Catch blocks:
 
 Glue routes files by filename prefix (`fred_*` → economic domain, all others → FX domain) and writes one Parquet file per date. Athena uses **partition projection** on both catalog tables (`fx_rates` and `economic_indicators`) to resolve partitions without `MSCK REPAIR TABLE`.
 
+### Structured Logging & Observability
+
+All Lambda functions emit **structured JSON logs** (one JSON object per line), compatible with CloudWatch Logs Insights.
+
+**Core module** — `lambda/common/logging.py`:
+- `_JSONFormatter(service)` — formats each `LogRecord` as JSON: `timestamp`, `level`, `service`, `message`, `request_id`, plus any `extra={}` fields
+- `RequestIdFilter(request_id)` — attaches the Lambda `aws_request_id` to every log record via `logging.Filter`
+- `configure_logger(service)` — configures the root logger with JSON formatting; idempotent (replaces formatter on Lambda's pre-installed handler)
+- `inject_request_id(logger, context)` — extracts request ID from Lambda context; handles warm starts by removing stale filters
+- `Timer` — context manager measuring wall-clock time via `time.monotonic_ns()`; exposes `duration_ms` property
+
+**Logging pattern across all handlers:**
+```python
+logger = configure_logger("frankfurter")
+logger.info("Ingestion complete", extra={"records": 42, "key": "exchange_rates_..."})
+```
+
+**CloudWatch Logs Insights query:**
+```
+fields @timestamp, service, message, records
+| filter level = "ERROR"
+| sort @timestamp desc
+```
+
+**X-Ray tracing** — all Lambda functions have `tracing_config { mode = "Active" }` in Terraform. The `aws-xray-sdk` (`patch_all()`) instruments boto3 and requests calls. Activation is gated on `AWS_XRAY_DAEMON_ADDRESS` (present in Lambda runtime, absent locally/in tests). IAM: `AWSXRayDaemonWriteAccess` managed policy on all Lambda roles.
+
 ## Error Handling Patterns
 
 All source files follow these conventions:
@@ -166,7 +192,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 171 tests, 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 189 tests, 97% coverage.
 
 ```bash
 uv run pytest tests/ -v                              # Run all tests
@@ -186,6 +212,7 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 
 | File | Coverage |
 |------|----------|
+| `lambda/common/logging.py` | 100% |
 | `lambda/common/base.py` | 100% |
 | `lambda/lambda_ingestion_function.py` | 100% |
 | `lambda/lambda_ecb_ingestion.py` | 100% |
@@ -194,7 +221,7 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `glue/glue_transform.py` | 93% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard, metric publish warning) |
 | `glue/quality.py` | 100% |
 
-**Overall: 97% (579 statements, 15 missed)**
+**Overall: 97%**
 
 ### Test File Organisation
 
@@ -207,6 +234,7 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain, quality integration (35 tests) |
 | `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder, invariant validation (29 tests) |
 | `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
+| `test_structured_logging.py` | Structured logging — JSON formatter, request ID filter, configure_logger, inject_request_id, Timer (18 tests) |
 
 ## CI/CD
 

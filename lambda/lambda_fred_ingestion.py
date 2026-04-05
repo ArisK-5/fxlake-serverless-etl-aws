@@ -1,13 +1,12 @@
 import json
-import logging
 import os
 from typing import Any
 
 import requests
 from common.base import BaseIngestionHandler
+from common.logging import configure_logger
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = configure_logger("fred")
 
 _DEFAULT_FRED_BASE_URL = "https://api.stlouisfed.org/fred"
 
@@ -56,23 +55,22 @@ class FREDHandler(BaseIngestionHandler):
         try:
             resp = requests.get(url, params=params, timeout=30)
             resp.raise_for_status()
-            logger.debug(
-                f"Successfully fetched {self.series_id} observations from FRED API"
-            )
         except requests.exceptions.Timeout as e:
             logger.error(
-                f"Timeout fetching {safe_url}: series={self.series_id}, {e}",
-                exc_info=True,
+                "Timeout fetching FRED API",
+                extra={"url": safe_url, "series": self.series_id, "error": str(e)},
             )
             raise
         except requests.exceptions.HTTPError as e:
             logger.error(
-                f"HTTP error fetching {safe_url}: status={e.response.status_code}",
+                "HTTP error fetching FRED API",
+                extra={"url": safe_url, "status_code": e.response.status_code},
             )
             raise
         except requests.exceptions.RequestException as e:
             logger.error(
-                f"Network error fetching {safe_url}: {type(e).__name__}: {e}",
+                "Network error fetching FRED API",
+                extra={"url": safe_url, "error_type": type(e).__name__, "error": str(e)},
             )
             raise
 
@@ -81,20 +79,37 @@ class FREDHandler(BaseIngestionHandler):
             raw = resp.json()
         except json.JSONDecodeError:
             logger.error(
-                f"FRED API returned non-JSON response from {safe_url}: "
-                f"status={resp.status_code}, body={resp.text[:200]}",
+                "FRED API returned non-JSON response",
+                extra={"url": safe_url, "status_code": resp.status_code},
                 exc_info=True,
             )
             raise
 
         # Structural parse
         try:
-            return self._parse_fred_response(raw)
+            result = self._parse_fred_response(raw)
+            record_count = len(result.get("observations", {}))
+            logger.info(
+                "Fetched observations from FRED API",
+                extra={
+                    "series": self.series_id,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "record_count": record_count,
+                },
+            )
+            return result
         except (KeyError, TypeError, ValueError) as e:
             logger.error(
-                f"Failed to parse FRED response from {safe_url} "
-                f"(series={self.series_id}, start={start_date}, end={end_date}): "
-                f"{type(e).__name__}: {e}. Body (first 500 chars): {resp.text[:500]}",
+                "Failed to parse FRED response",
+                extra={
+                    "url": safe_url,
+                    "series": self.series_id,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                },
                 exc_info=True,
             )
             raise
@@ -136,8 +151,13 @@ class FREDHandler(BaseIngestionHandler):
         if sentinel_count > 0:
             drop_pct = 100 * sentinel_count // len(observations_list)
             logger.warning(
-                f"Dropped {sentinel_count}/{len(observations_list)} ({drop_pct}%) "
-                f"missing/unreleased observations for series={self.series_id}"
+                "Dropped missing/unreleased observations",
+                extra={
+                    "series": self.series_id,
+                    "dropped": sentinel_count,
+                    "total": len(observations_list),
+                    "drop_pct": drop_pct,
+                },
             )
 
         if not observations:

@@ -7,6 +7,10 @@ resource "aws_lambda_function" "api_ingest" {
   filename         = "../lambda/lambda_ingestion_function.zip"
   timeout          = 60
   source_code_hash = filebase64sha256("../lambda/lambda_ingestion_function.zip")
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       RAW_BUCKET    = var.raw_bucket_name
@@ -86,6 +90,10 @@ resource "aws_lambda_function" "check_query_results" {
   filename         = "../lambda/lambda_validation_function.zip"
   timeout          = 60
   source_code_hash = filebase64sha256("../lambda/lambda_validation_function.zip")
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       METRIC_NAMESPACE = "${var.metric_namespace_prefix}/Athena"
