@@ -54,6 +54,7 @@ class FrankfurterHandler(BaseIngestionHandler):
             logger.error(
                 "Timeout fetching Frankfurter API",
                 extra={"url": api_url, "error": str(e)},
+                exc_info=True,
             )
             raise
         except requests.exceptions.HTTPError as e:

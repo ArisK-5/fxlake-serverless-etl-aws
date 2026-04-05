@@ -30,6 +30,8 @@ class _JSONFormatter(logging.Formatter):
     :func:`configure_logger` or :func:`inject_request_id`.
     """
 
+    _RESERVED = logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
+
     def __init__(self, service: str) -> None:
         super().__init__()
         self._service = service
@@ -48,9 +50,8 @@ class _JSONFormatter(logging.Formatter):
             log_dict["request_id"] = request_id
 
         # Merge caller-supplied extra fields (skip stdlib internal attrs)
-        _RESERVED = logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
         for key, value in record.__dict__.items():
-            if key not in _RESERVED and key not in ("request_id",):
+            if key not in self._RESERVED and key not in ("request_id",):
                 log_dict[key] = value
 
         # Include exception info if present
@@ -131,7 +132,7 @@ def inject_request_id(logger: logging.Logger, context: Any) -> None:
 
 
 class Timer:
-    """Context manager that measures elapsed wall-clock time in milliseconds.
+    """Context manager that measures elapsed monotonic time in milliseconds.
 
     Usage::
 

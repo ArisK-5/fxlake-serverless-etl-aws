@@ -3,6 +3,7 @@
 # Creates a Lambda function with:
 #   - Dedicated IAM role (least-privilege)
 #   - CloudWatch log group with 14-day retention
+#   - X-Ray active tracing
 #   - S3 bucket access (optional)
 #   - Additional IAM policy (optional)
 

@@ -159,11 +159,11 @@ Glue routes files by filename prefix (`fred_*` → economic domain, all others �
 All Lambda functions emit **structured JSON logs** (one JSON object per line), compatible with CloudWatch Logs Insights.
 
 **Core module** — `lambda/common/logging.py`:
-- `_JSONFormatter(service)` — formats each `LogRecord` as JSON: `timestamp`, `level`, `service`, `message`, `request_id`, plus any `extra={}` fields
+- `_JSONFormatter(service)` — formats each `LogRecord` as JSON: `timestamp`, `level`, `service`, `message`, plus any `extra={}` fields. `request_id` is included only when `inject_request_id()` has been called
 - `RequestIdFilter(request_id)` — attaches the Lambda `aws_request_id` to every log record via `logging.Filter`
 - `configure_logger(service)` — configures the root logger with JSON formatting; idempotent (replaces formatter on Lambda's pre-installed handler)
 - `inject_request_id(logger, context)` — extracts request ID from Lambda context; handles warm starts by removing stale filters
-- `Timer` — context manager measuring wall-clock time via `time.monotonic_ns()`; exposes `duration_ms` property
+- `Timer` — context manager measuring monotonic time via `time.monotonic_ns()`; exposes `duration_ms` property
 
 **Logging pattern across all handlers:**
 ```python
