@@ -18,6 +18,11 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "lambda_xray" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 resource "aws_iam_policy" "lambda_s3_policy" {
   name = "fxlake-lambda-s3"
   policy = jsonencode({
@@ -190,8 +195,8 @@ resource "aws_iam_role_policy" "sfn_policy" {
         ],
         Resource = [
           aws_lambda_function.api_ingest.arn,
-          aws_lambda_function.ecb_ingest.arn,
-          aws_lambda_function.fred_ingest.arn,
+          module.ecb_ingest.function_arn,
+          module.fred_ingest.function_arn,
           aws_lambda_function.check_query_results.arn
         ]
       },

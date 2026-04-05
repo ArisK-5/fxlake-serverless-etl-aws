@@ -786,6 +786,18 @@ After completing, update:
 - docs/planning/decision_log.md: add any new decisions made during implementation
 ```
 
+**Session 7A — Delivered (2026-04-05):**
+
+All 5 planned items implemented:
+1. `terraform/bootstrap/main.tf` — S3 bucket (versioned, KMS-encrypted, public access blocked) + DynamoDB lock table (PAY_PER_REQUEST, `LockID` partition key) + `prevent_destroy` lifecycle
+2. `terraform/backend.tf` — S3 backend with DynamoDB locking, commented out with step-by-step migration instructions
+3. `terraform/modules/lambda_function/` — 3 files (main.tf, variables.tf, outputs.tf): creates Lambda + dedicated IAM role + CloudWatch log group (14-day retention) + optional S3/additional policies
+4. ECB and FRED Lambdas refactored to use module in `lambda.tf`. All references updated across `iam.tf` and `step_function.tf`. Frankfurter + validation kept as-is on shared role.
+5. `terraform/versions.tf` — `required_version = ">= 1.5, < 2.0"`, `required_providers` moved from `providers.tf`
+
+**Decisions:** D60–D64 (module scope, per-function IAM, versions.tf separation, commented backend, log group retention)
+**Validation:** `terraform fmt -check -recursive` clean, `terraform validate` passes, 171 tests still green
+
 #### Session 7B: Structured logging + observability (Day 7 afternoon)
 
 **Claude Code prompt:**
@@ -812,6 +824,17 @@ After completing, update:
 - docs/planning/revised_plan.md: mark Session 7B complete with planned-vs-delivered
 - docs/planning/decision_log.md: add any new decisions made during implementation
 ```
+
+**Session 7B — Delivered (2026-04-05):**
+
+All 3 planned deliverables implemented:
+1. `lambda/common/logging.py` — `_JSONFormatter` (JSON-per-line), `RequestIdFilter`, `configure_logger`, `inject_request_id`, `Timer` context manager. Zero external dependencies (stdlib only).
+2. All 6 Lambda source files refactored: f-string logs → structured `extra={}` key-value logs. `base.py` `run()` wraps execution in `Timer`, logs `duration_ms`. Each handler logs `record_count` on successful fetch. Validation Lambda uses `inject_request_id` + `Timer`.
+3. X-Ray tracing: `tracing_config { mode = "Active" }` on all 4 Lambda resources (2 inline + 2 via module variable). `AWSXRayDaemonWriteAccess` IAM policy on all Lambda roles. `aws-xray-sdk==2.14.0` added to `requirements.txt`. Conditional `patch_all()` gated on `AWS_XRAY_DAEMON_ADDRESS` env var. Validation Lambda packaging updated to include `common/` directory.
+
+**Tests:** 18 new tests in `test_structured_logging.py`. Total: 189 tests, 97% coverage.
+**Decisions:** D65–D67 (stdlib JSON formatter, conditional X-Ray, Timer in base handler)
+**Validation:** `terraform validate` + `terraform fmt -check -recursive` clean, all tests pass
 
 ---
 

@@ -1,5 +1,5 @@
 import json
-import logging
+import os
 from abc import ABC, abstractmethod
 from datetime import date, timedelta
 from typing import Any
@@ -7,8 +7,19 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+from common.logging import Timer, configure_logger, inject_request_id
+
+# X-Ray tracing — instruments boto3 and requests when running in Lambda.
+# Skipped gracefully in local/test environments where aws-xray-sdk is absent.
+if os.getenv("AWS_XRAY_DAEMON_ADDRESS"):
+    try:
+        from aws_xray_sdk.core import patch_all
+
+        patch_all()
+    except ImportError:
+        pass
+
+logger = configure_logger("fxlake-ingestion")
 
 PIPELINE_ID = "fxlake"
 
@@ -89,12 +100,19 @@ class BaseIngestionHandler(ABC):
                 ContentType="application/json",
                 Metadata=metadata,
             )
-            logger.debug(f"Saved data to s3://{self.raw_bucket}/{filename}")
+            logger.debug(
+                "Saved data to S3",
+                extra={"bucket": self.raw_bucket, "key": filename},
+            )
             return filename
         except ClientError as e:
             logger.error(
-                f"Failed to write s3://{self.raw_bucket}/{filename}: "
-                f"{e.response['Error']['Code']}",
+                "Failed to write to S3",
+                extra={
+                    "bucket": self.raw_bucket,
+                    "key": filename,
+                    "error_code": e.response["Error"]["Code"],
+                },
                 exc_info=True,
             )
             raise
@@ -124,17 +142,23 @@ class BaseIngestionHandler(ABC):
             code = e.response["Error"]["Code"]
             if code not in _TRANSIENT_DYNAMODB_READ_CODES:
                 logger.error(
-                    f"Permanent DynamoDB error reading from table {self.state_table} "
-                    f"(code={code}). Cannot safely determine incremental start date. "
-                    "Check that the table exists and the Lambda execution role "
-                    "has GetItem permission.",
+                    "Permanent DynamoDB error reading state",
+                    extra={
+                        "table": self.state_table,
+                        "source": self.source_name,
+                        "error_code": code,
+                    },
                     exc_info=True,
                 )
                 raise
             logger.warning(
-                f"Transient DynamoDB read error for source={self.source_name}, "
-                f"table={self.state_table} (code={code}), "
-                f"defaulting to start_date={self.start_date}"
+                "Transient DynamoDB read error, falling back to start_date",
+                extra={
+                    "source": self.source_name,
+                    "table": self.state_table,
+                    "error_code": code,
+                    "fallback_date": self.start_date,
+                },
             )
         return self.start_date
 
@@ -150,14 +174,22 @@ class BaseIngestionHandler(ABC):
                 },
             )
             logger.info(
-                f"Updated DynamoDB state: table={self.state_table}, "
-                f"source={self.source_name}, last_processed_date={processed_date}"
+                "Updated DynamoDB state",
+                extra={
+                    "table": self.state_table,
+                    "source": self.source_name,
+                    "last_processed_date": processed_date,
+                },
             )
         except ClientError as e:
             logger.error(
-                f"Failed to update state in DynamoDB table {self.state_table} "
-                f"(source={self.source_name}, processed_date={processed_date}): "
-                f"{e.response['Error']['Code']}",
+                "Failed to update DynamoDB state",
+                extra={
+                    "table": self.state_table,
+                    "source": self.source_name,
+                    "processed_date": processed_date,
+                    "error_code": e.response["Error"]["Code"],
+                },
                 exc_info=True,
             )
             raise
@@ -166,13 +198,26 @@ class BaseIngestionHandler(ABC):
     # Orchestration entry point
     # ------------------------------------------------------------------
 
-    def run(self, event: dict, _context: Any) -> dict:
+    def run(self, event: dict, context: Any) -> dict:
         """Route the Lambda event to update_state, incremental, or static ingest."""
-        if event.get("action") == "update_state":
-            return self._handle_update_state(event)
-        if self.state_table:
-            return self._incremental_ingest()
-        return self._static_ingest()
+        inject_request_id(logger, context)
+        with Timer() as timer:
+            if event.get("action") == "update_state":
+                result = self._handle_update_state(event)
+            elif self.state_table:
+                result = self._incremental_ingest()
+            else:
+                result = self._static_ingest()
+        logger.info(
+            "Lambda execution complete",
+            extra={
+                "source": self.source_name,
+                "action": event.get("action", "ingest"),
+                "status": result.get("status"),
+                "duration_ms": timer.duration_ms,
+            },
+        )
+        return result
 
     def _handle_update_state(self, event: dict) -> dict:
         """Commit last_processed_date to DynamoDB.
@@ -199,7 +244,8 @@ class BaseIngestionHandler(ABC):
         end_date = event.get("end_date")
         if not end_date:
             logger.error(
-                f"update_state called without 'end_date'. Received keys: {list(event.keys())}"
+                "update_state called without end_date",
+                extra={"received_keys": list(event.keys())},
             )
             raise ValueError("Missing required field 'end_date' in update_state event")
         self.update_last_processed(end_date)
@@ -224,8 +270,11 @@ class BaseIngestionHandler(ABC):
 
         if fetch_start > fetch_end:
             logger.info(
-                f"Already caught up (source={self.source_name}, "
-                f"last_processed_date={last_processed}), no new data to fetch"
+                "Already caught up, no new data to fetch",
+                extra={
+                    "source": self.source_name,
+                    "last_processed_date": last_processed,
+                },
             )
             # end_date is included so Step Functions can always read Payload.end_date
             # regardless of status (both branches of Parallel-Ingestion must supply it).
@@ -240,8 +289,13 @@ class BaseIngestionHandler(ABC):
         self.save_to_s3(data, filename, start_date=fetch_start, end_date=fetch_end)
 
         logger.info(
-            f"Incremental ingestion succeeded: source={self.source_name}, "
-            f"{fetch_start}..{fetch_end}, file: {filename}"
+            "Incremental ingestion succeeded",
+            extra={
+                "source": self.source_name,
+                "start_date": fetch_start,
+                "end_date": fetch_end,
+                "key": filename,
+            },
         )
         return {
             "status": "ok",
@@ -258,7 +312,13 @@ class BaseIngestionHandler(ABC):
         self.save_to_s3(data, filename, start_date=self.start_date, end_date=self.end_date)
 
         logger.info(
-            f"Static ingestion succeeded: source={self.source_name}, file: {filename}"
+            "Static ingestion succeeded",
+            extra={
+                "source": self.source_name,
+                "start_date": self.start_date,
+                "end_date": self.end_date,
+                "key": filename,
+            },
         )
         return {
             "status": "ok",

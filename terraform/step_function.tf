@@ -37,7 +37,7 @@ resource "aws_sfn_state_machine" "etl" {
               Lambda-ECB-Ingestion = {
                 Type           = "Task",
                 Resource       = "arn:aws:states:::lambda:invoke",
-                Parameters     = { FunctionName = aws_lambda_function.ecb_ingest.arn },
+                Parameters     = { FunctionName = module.ecb_ingest.function_arn },
                 TimeoutSeconds = 90,
                 Retry = [
                   {
@@ -57,7 +57,7 @@ resource "aws_sfn_state_machine" "etl" {
               Lambda-FRED-Ingestion = {
                 Type           = "Task",
                 Resource       = "arn:aws:states:::lambda:invoke",
-                Parameters     = { FunctionName = aws_lambda_function.fred_ingest.arn },
+                Parameters     = { FunctionName = module.fred_ingest.function_arn },
                 TimeoutSeconds = 90,
                 Retry = [
                   {
@@ -176,7 +176,7 @@ resource "aws_sfn_state_machine" "etl" {
         Type     = "Task",
         Resource = "arn:aws:states:::lambda:invoke",
         Parameters = {
-          FunctionName = aws_lambda_function.ecb_ingest.arn,
+          FunctionName = module.ecb_ingest.function_arn,
           Payload = {
             "action"     = "update_state",
             "end_date.$" = "$.parallel_results.ecb.Payload.end_date"
@@ -206,7 +206,7 @@ resource "aws_sfn_state_machine" "etl" {
         Type     = "Task",
         Resource = "arn:aws:states:::lambda:invoke",
         Parameters = {
-          FunctionName = aws_lambda_function.fred_ingest.arn,
+          FunctionName = module.fred_ingest.function_arn,
           Payload = {
             "action"     = "update_state",
             "end_date.$" = "$.parallel_results.fred.Payload.end_date"

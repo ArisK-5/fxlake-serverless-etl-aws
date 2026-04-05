@@ -479,3 +479,59 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** `_publish_metric` in `glue_transform.py` logged `f"Failed to publish metric: {e}"` — for non-`ClientError` exceptions, the message lacked the exception class name.
 **Decision:** Changed to `f"Failed to publish metric {metric_name}: {type(e).__name__}: {e}"` with `exc_info=True`.
 **Rationale:** `type(e).__name__` distinguishes `TypeError` from `ClientError` without needing to read the full traceback. `exc_info=True` preserves the stack trace in CloudWatch for debugging.
+
+---
+
+## Session 7A Decisions (2026-04-05)
+
+### D60: Reusable Lambda module for ECB and FRED only
+
+**Context:** The project has 4 Lambda functions sharing a single IAM role (`lambda_exec`). Migrating all 4 into a module would require `moved` blocks for ~12 Terraform resources.
+**Decision:** Create `modules/lambda_function/` and use it for ECB and FRED only. Keep Frankfurter and validation Lambdas as inline resources using the existing shared role.
+**Rationale:** Demonstrates module authorship without risking state migration of existing resources mid-sprint. ECB and FRED were added in Day 3-4, making them natural candidates — they're newer, less entangled, and benefit from per-function IAM roles (least-privilege).
+
+### D61: Module creates dedicated IAM role per Lambda
+
+**Context:** The shared `lambda_exec` role has S3, DynamoDB, Athena, and CloudWatch policies — broader than any single function needs.
+**Decision:** The module creates a dedicated role with only `AWSLambdaBasicExecutionRole` + optional S3 access + optional additional policy JSON. ECB and FRED each get their own role with only raw bucket S3 + DynamoDB access.
+**Rationale:** Least-privilege per function. If one Lambda's role is compromised, it can't access Athena or CloudWatch metrics. The `additional_policy_json` variable keeps the module generic without coupling it to DynamoDB specifics.
+
+### D62: versions.tf separated from providers.tf
+
+**Context:** `providers.tf` contained both the `terraform { required_providers }` block and the `provider "aws"` block. Terraform convention separates version constraints from provider configuration.
+**Decision:** Created `versions.tf` with `required_version = ">= 1.5, < 2.0"` and `required_providers`. Reduced `providers.tf` to just `provider "aws" { region = var.aws_region }`.
+**Rationale:** Standard Terraform layout — `versions.tf` pins infrastructure-as-code tool versions, `providers.tf` configures provider instances. The `< 2.0` upper bound prevents accidental Terraform 2.x upgrades that may have breaking changes.
+
+### D63: Remote state backend commented out with migration instructions
+
+**Context:** The bootstrap creates S3 + DynamoDB for remote state, but enabling the backend requires `terraform init -migrate-state` which needs the bucket to already exist.
+**Decision:** `backend.tf` contains the S3 backend block commented out, with step-by-step migration instructions in comments. `bootstrap/main.tf` is standalone with its own provider — run once, then uncomment backend.
+**Rationale:** Two-phase approach (bootstrap → migrate) is the standard Terraform pattern. Commenting out the backend means the project works with local state out of the box — no chicken-and-egg problem for new developers cloning the repo.
+
+### D64: Module includes CloudWatch log group with 14-day retention
+
+**Context:** Lambda functions auto-create `/aws/lambda/{name}` log groups in CloudWatch with infinite retention. This is invisible in Terraform state and accumulates cost.
+**Decision:** The module creates `aws_cloudwatch_log_group` with 14-day retention. The Lambda `depends_on` the log group to prevent race conditions.
+**Rationale:** Explicit log group management means retention is codified and visible in `terraform plan`. 14 days is sufficient for debugging ingestion issues while keeping CloudWatch costs bounded.
+
+---
+
+## Session 7B Decisions (2026-04-05)
+
+### D65: stdlib JSON formatter over AWS Lambda Powertools
+
+**Context:** AWS Lambda Powertools provides a `Logger` class with structured JSON output, X-Ray correlation, and CloudWatch Logs Insights compatibility. It would cover all Session 7B requirements out of the box.
+**Decision:** Implemented a minimal `_JSONFormatter` using Python's stdlib `logging.Formatter`. No external dependency added for logging.
+**Rationale:** Lambda Powertools pulls in ~15 MB of dependencies (including Pydantic) for a logging module that needs <160 lines of code. The stdlib approach keeps the Lambda deployment package small, avoids version conflicts with other Lambda dependencies, and gives full control over the JSON schema. For a portfolio project, demonstrating understanding of the `logging` module internals is more valuable than importing a framework.
+
+### D66: Conditional X-Ray activation via AWS_XRAY_DAEMON_ADDRESS env var
+
+**Context:** `aws-xray-sdk`'s `patch_all()` monkey-patches `boto3`, `requests`, and other libraries globally. When running locally or in tests, the X-Ray daemon is not available — `patch_all()` either throws or silently wraps every SDK call with tracing overhead.
+**Decision:** Gate `patch_all()` on `os.getenv("AWS_XRAY_DAEMON_ADDRESS")` at module level in `base.py`. The env var is set automatically by the Lambda runtime when X-Ray is enabled; it's absent in local/test environments.
+**Rationale:** Using the daemon address env var (rather than a custom feature flag) is zero-config — no additional env var to manage in Terraform or tests. The `ImportError` catch inside the guard handles the edge case where the SDK is not installed at all. This pattern is recommended by the AWS X-Ray SDK documentation.
+
+### D67: Timer context manager in BaseIngestionHandler.run()
+
+**Context:** Measuring Lambda execution duration requires capturing start/end timestamps. Options: (a) inline `time.monotonic_ns()` calls in each handler, (b) a decorator, (c) a context manager.
+**Decision:** Created a `Timer` context manager in `common/logging.py`. Used in `BaseIngestionHandler.run()` and `lambda_handler` in validation. Exposes `duration_ms` as a property.
+**Rationale:** A context manager composes cleanly with the existing `run()` method structure (which needs the timer result for the final log line). A decorator would require the timing to be logged inside the decorator, coupling logging format to the decorator. `monotonic_ns()` over `time.time()` avoids wall-clock jumps from NTP adjustments.

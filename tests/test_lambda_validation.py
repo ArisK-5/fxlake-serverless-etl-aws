@@ -74,7 +74,7 @@ class TestPublishCustomMetric:
             with patch.object(validation, "cloudwatch", mock_cw):
                 validation.publish_custom_metric("EmptyQueryResults", 0, "fxlake")
 
-        assert "Failed to publish metric" in caplog.text
+        assert "Failed to publish CloudWatch metric" in caplog.text
 
     def test_non_client_error_does_not_propagate(self, caplog):
         mock_cw = MagicMock()

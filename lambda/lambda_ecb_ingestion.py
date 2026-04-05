@@ -1,13 +1,12 @@
 import json
-import logging
 import os
 from typing import Any
 
 import requests
 from common.base import BaseIngestionHandler
+from common.logging import configure_logger
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = configure_logger("ecb")
 
 _DEFAULT_ECB_BASE_URL = "https://data-api.ecb.europa.eu/service/data"
 
@@ -44,18 +43,26 @@ class ECBHandler(BaseIngestionHandler):
         try:
             resp = requests.get(url, params=params, timeout=30)
             resp.raise_for_status()
-            logger.debug("Successfully fetched exchange rates from ECB API")
         except requests.exceptions.Timeout as e:
-            logger.error(f"Timeout fetching {url}: {e}")
+            logger.error(
+                "Timeout fetching ECB API",
+                extra={"url": url, "error": str(e)},
+                exc_info=True,
+            )
             raise
         except requests.exceptions.HTTPError as e:
             logger.error(
-                f"HTTP error fetching {url}: status={e.response.status_code}",
+                "HTTP error fetching ECB API",
+                extra={"url": url, "status_code": e.response.status_code},
                 exc_info=True,
             )
             raise
         except requests.exceptions.RequestException as e:
-            logger.error(f"Network error fetching {url}: {e}", exc_info=True)
+            logger.error(
+                "Network error fetching ECB API",
+                extra={"url": url, "error": str(e)},
+                exc_info=True,
+            )
             raise
 
         # JSON decode
@@ -63,20 +70,35 @@ class ECBHandler(BaseIngestionHandler):
             raw = resp.json()
         except json.JSONDecodeError:
             logger.error(
-                f"ECB API returned non-JSON response from {url}: "
-                f"status={resp.status_code}, body={resp.text[:200]}",
+                "ECB API returned non-JSON response",
+                extra={"url": url, "status_code": resp.status_code},
                 exc_info=True,
             )
             raise
 
         # SDMX structural parse
         try:
-            return self._parse_ecb_response(raw)
+            result = self._parse_ecb_response(raw)
+            record_count = sum(len(v) for v in result.get("rates", {}).values())
+            logger.info(
+                "Fetched exchange rates from ECB API",
+                extra={
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "record_count": record_count,
+                },
+            )
+            return result
         except (KeyError, IndexError, TypeError, ValueError) as e:
             logger.error(
-                f"Failed to parse ECB SDMX response from {url} "
-                f"(start={start_date}, end={end_date}, status={resp.status_code}): "
-                f"{type(e).__name__}: {e}. Body (first 500 chars): {resp.text[:500]}",
+                "Failed to parse ECB SDMX response",
+                extra={
+                    "url": url,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                },
                 exc_info=True,
             )
             raise
