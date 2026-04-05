@@ -26,6 +26,9 @@ help:
 	@echo "  make plan         - Show infrastructure plan"
 	@echo "  make deploy       - Deploy (apply) all infrastructure"
 	@echo "  make destroy      - Tear down all resources"
+	@echo "  make test          - Run unit tests"
+	@echo "  make test-integration - Run integration tests"
+	@echo "  make test-all      - Run all tests with coverage"
 	@echo "  make clean        - Remove Lambda zip and Terraform cache"
 	@echo ""
 
@@ -36,6 +39,24 @@ package:
 	@echo "$(YELLOW)Packaging Lambda functions...$(NC)"
 	cd $(LAMBDA_DIR) && ./package_lambdas.sh
 	@echo "$(GREEN)Lambda packages created successfully!$(NC)"
+
+# -----------------------------------
+# Testing
+# -----------------------------------
+test:
+	@echo "$(YELLOW)Running unit tests...$(NC)"
+	uv run pytest tests/ -v --ignore=tests/integration
+	@echo "$(GREEN)Unit tests passed.$(NC)"
+
+test-integration:
+	@echo "$(YELLOW)Running integration tests...$(NC)"
+	uv run pytest tests/integration/ -v -m integration
+	@echo "$(GREEN)Integration tests passed.$(NC)"
+
+test-all:
+	@echo "$(YELLOW)Running all tests with coverage...$(NC)"
+	uv run pytest tests/ -v --cov=lambda --cov=glue --cov-report=term-missing
+	@echo "$(GREEN)All tests passed.$(NC)"
 
 # -----------------------------------
 # Terraform Commands

@@ -192,12 +192,13 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 189 tests, 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 205 tests (189 unit + 16 integration), 96% coverage.
 
 ```bash
-uv run pytest tests/ -v                              # Run all tests
+make test                # Run unit tests only (ignores tests/integration/)
+make test-integration    # Run integration tests only (-m integration)
+make test-all            # Run all tests with coverage
 uv run pytest tests/test_lambda_ingestion.py -v      # Single file
-uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With coverage
 ```
 
 ### Test Setup (conftest.py)
@@ -221,7 +222,22 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `glue/glue_transform.py` | 93% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard, metric publish warning) |
 | `glue/quality.py` | 100% |
 
-**Overall: 97%**
+**Overall: 96%**
+
+### Integration Tests
+
+Integration tests live in `tests/integration/` and exercise the full pipeline locally using moto + responses mocks. They are marked with `@pytest.mark.integration` (registered in `pyproject.toml`).
+
+| File | What it covers |
+|------|---------------|
+| `test_pipeline_flow.py` | End-to-end: Ingestion → Transform → Validate for each source; DynamoDB state management (incremental + update_state); CloudWatch metrics; saga pattern (state not committed until Glue succeeds) (9 tests) |
+| `test_multi_source.py` | All 3 sources ingested in parallel; correct S3 path prefixes; JSON structure per source; S3 metadata tags; Glue routes to correct domains; distinct FX vs economic schemas; quality reports per domain; Hive partition paths (7 tests) |
+
+**Key patterns:**
+- Each test file has its own `mock_aws()` fixture creating S3 buckets, DynamoDB table, and CloudWatch/Athena clients
+- `responses.activate` intercepts all HTTP calls (Frankfurter, ECB SDMX, FRED)
+- Incremental mode tested via `monkeypatch.setenv("STATE_TABLE", ...)` — first run defaults to `START_DATE`, subsequent runs read DynamoDB state
+- Validation tests patch `athena_client.get_query_results` to simulate Athena output without running queries
 
 ### Test File Organisation
 
@@ -235,6 +251,8 @@ uv run pytest tests/ --cov=lambda --cov=glue --cov-report=term-missing  # With c
 | `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder, invariant validation (29 tests) |
 | `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
 | `test_structured_logging.py` | Structured logging — JSON formatter, request ID filter, configure_logger, inject_request_id, Timer (18 tests) |
+| `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern (9 tests) |
+| `integration/test_multi_source.py` | Multi-source parallel ingestion, Glue schema routing, quality reports (7 tests) |
 
 ## CI/CD
 
@@ -255,7 +273,7 @@ The deploy workflow uses OIDC — no long-lived AWS keys stored in GitHub. Requi
 
 Each `variables.tf` input that has no default must be stored as a GitHub secret prefixed with `TF_`. The deploy workflow writes them to `terraform.tfvars` at runtime via environment variables (never interpolated inline in `run:` steps — security best practice).
 
-Required secrets: `TF_RAW_BUCKET_NAME`, `TF_PROCESSED_BUCKET_NAME`, `TF_ATHENA_RESULTS_BUCKET_NAME`, `TF_CLOUDTRAIL_LOGS_BUCKET_NAME`, `TF_SNS_EMAIL_ADDRESS`.
+Required secrets: `TF_RAW_BUCKET_NAME`, `TF_PROCESSED_BUCKET_NAME`, `TF_ATHENA_RESULTS_BUCKET_NAME`, `TF_CLOUDTRAIL_LOGS_BUCKET_NAME`, `TF_QUARANTINE_BUCKET_NAME`, `TF_SNS_EMAIL_ADDRESS`, `FRED_API_KEY`.
 
 ### Linting
 

@@ -23,6 +23,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["lambda", "glue"]
+markers = ["integration: end-to-end pipeline integration tests (moto + responses)"]
 
 [tool.ruff]
 target-version = "py311"

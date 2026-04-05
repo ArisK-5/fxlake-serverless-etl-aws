@@ -840,31 +840,35 @@ All 3 planned deliverables implemented:
 
 ### Day 8: Integration testing + documentation
 
-#### Session 8A: Integration tests (Day 8 morning)
+#### Session 8A: Integration tests (Day 8 morning) ✅
 
-**Claude Code prompt:**
-```
-Create integration tests that validate the full pipeline logic locally:
+**Status:** COMPLETE (2026-04-05)
+**Approach:** NET-NEW
 
-1. tests/integration/test_pipeline_flow.py:
-   - Use moto to mock ALL AWS services
-   - Test: Ingestion → Transform → Validate flow
-   - Verify S3 objects created at each stage
-   - Verify DynamoDB state updated
-   - Verify CloudWatch metrics published
+**New files:**
+- `tests/integration/__init__.py` — package init
+- `tests/integration/test_pipeline_flow.py` — 9 end-to-end pipeline tests (4 classes)
+- `tests/integration/test_multi_source.py` — 7 multi-source tests (2 classes)
 
-2. tests/integration/test_multi_source.py:
-   - Test parallel ingestion of all sources
-   - Verify each source writes to correct S3 path
-   - Verify Glue handles multiple input schemas
+**Modified files:**
+- `pyproject.toml` — added `integration` marker registration
+- `Makefile` — 3 updated targets: `test` (excludes integration), `test-integration`, `test-all` (coverage)
+- `CLAUDE.md` — updated Tests section with integration test details, counts, coverage
 
-3. Add Makefile target: make test-integration
+**Planned vs Delivered:**
 
-After completing, update:
-- CLAUDE.md: update Tests section with integration test details
-- docs/planning/revised_plan.md: mark Session 8A complete with planned-vs-delivered
-- docs/planning/decision_log.md: add any new decisions made during implementation
-```
+| Planned | Delivered |
+|---------|-----------|
+| Ingestion → Transform → Validate flow | ✅ 3 tests: Frankfurter→FX, FRED→economic, ECB→FX (source detection) |
+| Verify S3 objects at each stage | ✅ Raw JSON keys, processed Parquet keys, quality report keys all verified |
+| Verify DynamoDB state updated | ✅ 2 tests: incremental read + update_state commit; independent state per source |
+| Verify CloudWatch metrics published | ✅ 2 tests: quality report during transform; validation freshness metrics (patched Athena) |
+| Parallel ingestion of all sources | ✅ 3 tests: correct S3 prefixes, JSON structure per source, S3 metadata source tags |
+| Glue handles multiple schemas | ✅ 4 tests: domain routing, distinct FX vs economic schemas, quality reports per domain, Hive partitions |
+| `make test-integration` | ✅ Plus updated `make test` to exclude integration, `make test-all` for full coverage |
+| — | ✅ Added: saga pattern tests (state not committed when transform skipped; no_new_data short-circuit) |
+
+**Stats:** 205 tests (189 unit + 16 integration), 96% coverage, 18s runtime
 
 ---
 
