@@ -32,7 +32,9 @@ jobs:
       TF_PROCESSED_BUCKET_NAME: ${{ secrets.TF_PROCESSED_BUCKET_NAME }}
       TF_ATHENA_RESULTS_BUCKET_NAME: ${{ secrets.TF_ATHENA_RESULTS_BUCKET_NAME }}
       TF_CLOUDTRAIL_LOGS_BUCKET_NAME: ${{ secrets.TF_CLOUDTRAIL_LOGS_BUCKET_NAME }}
+      TF_QUARANTINE_BUCKET_NAME: ${{ secrets.TF_QUARANTINE_BUCKET_NAME }}
       TF_SNS_EMAIL_ADDRESS: ${{ secrets.TF_SNS_EMAIL_ADDRESS }}
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +48,15 @@ jobs:
           # token.actions.githubusercontent.com with the correct repo condition.
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Package Lambda functions
+        run: bash package_lambdas.sh
+        working-directory: lambda
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -106,6 +117,15 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Package Lambda functions
+        run: bash package_lambdas.sh
+        working-directory: lambda
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
