@@ -535,3 +535,25 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** Measuring Lambda execution duration requires capturing start/end timestamps. Options: (a) inline `time.monotonic_ns()` calls in each handler, (b) a decorator, (c) a context manager.
 **Decision:** Created a `Timer` context manager in `common/logging.py`. Used in `BaseIngestionHandler.run()` and `lambda_handler` in validation. Exposes `duration_ms` as a property.
 **Rationale:** A context manager composes cleanly with the existing `run()` method structure (which needs the timer result for the final log line). A decorator would require the timing to be logged inside the decorator, coupling logging format to the decorator. `monotonic_ns()` over `time.time()` avoids wall-clock jumps from NTP adjustments.
+
+---
+
+## Session 8A Decisions (2026-04-05)
+
+### D68: Per-file fixtures over shared conftest for integration tests
+
+**Context:** Integration tests need moto `mock_aws()` with S3 + DynamoDB + CloudWatch. The existing unit test `conftest.py` already provides `s3_mock` and `aws_mock` fixtures. Options: (a) reuse/extend conftest fixtures, (b) define self-contained fixtures in each integration test file.
+**Decision:** Each integration test file defines its own fixture (`integration_aws`, `multi_source_aws`) that creates all required AWS resources within a single `mock_aws()` context.
+**Rationale:** Integration tests exercise multiple modules together and need control over the exact resource set (e.g., quarantine bucket, CloudWatch client). Coupling to conftest fixtures creates fragile dependencies — a conftest change for unit tests could break integration tests. Self-contained fixtures make each test file independently runnable and easier to reason about.
+
+### D69: Separate Makefile targets for unit vs integration tests
+
+**Context:** Integration tests are slower (~18s total suite) and test cross-module behaviour. Options: (a) single `make test` runs everything, (b) separate targets with `--ignore` and `-m` flags.
+**Decision:** Three targets: `make test` (unit only, `--ignore=tests/integration`), `make test-integration` (`-m integration`), `make test-all` (full suite with coverage).
+**Rationale:** CI can run unit tests on every push (fast feedback) and integration tests on PR only. Developers can iterate on unit tests without waiting for integration. The `test-all` target with coverage gives the complete picture when needed.
+
+### D70: Saga pattern tests validate state-commit ordering
+
+**Context:** The pipeline uses a saga pattern — DynamoDB state is only committed after Glue succeeds (via a separate `update_state` Lambda invocation). This ordering is critical but not enforced by the unit tests, which test each Lambda in isolation.
+**Decision:** Added two dedicated saga tests: (1) state not updated when transform is skipped, (2) `no_new_data` short-circuits the pipeline without modifying state.
+**Rationale:** The saga ordering is the pipeline's most important correctness invariant. A regression here causes data duplication (state committed before transform) or data loss (state committed after partial failure). Integration tests are the right level to verify this cross-module contract.

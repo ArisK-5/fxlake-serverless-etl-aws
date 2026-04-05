@@ -60,6 +60,8 @@ jobs:
           processed_bucket_name       = "$TF_PROCESSED_BUCKET_NAME"
           athena_results_bucket_name  = "$TF_ATHENA_RESULTS_BUCKET_NAME"
           cloudtrail_logs_bucket_name = "$TF_CLOUDTRAIL_LOGS_BUCKET_NAME"
+          quarantine_bucket_name      = "$TF_QUARANTINE_BUCKET_NAME"
+          fred_api_key                = "$FRED_API_KEY"
           sns_email_address           = "$TF_SNS_EMAIL_ADDRESS"
           EOF
 
@@ -93,6 +95,8 @@ jobs:
       TF_ATHENA_RESULTS_BUCKET_NAME: ${{ secrets.TF_ATHENA_RESULTS_BUCKET_NAME }}
       TF_CLOUDTRAIL_LOGS_BUCKET_NAME: ${{ secrets.TF_CLOUDTRAIL_LOGS_BUCKET_NAME }}
       TF_SNS_EMAIL_ADDRESS: ${{ secrets.TF_SNS_EMAIL_ADDRESS }}
+      TF_QUARANTINE_BUCKET_NAME: ${{ secrets.TF_QUARANTINE_BUCKET_NAME }}
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -116,6 +120,8 @@ jobs:
           athena_results_bucket_name  = "$TF_ATHENA_RESULTS_BUCKET_NAME"
           cloudtrail_logs_bucket_name = "$TF_CLOUDTRAIL_LOGS_BUCKET_NAME"
           sns_email_address           = "$TF_SNS_EMAIL_ADDRESS"
+          quarantine_bucket_name      = "$TF_QUARANTINE_BUCKET_NAME"
+          fred_api_key                = "$FRED_API_KEY"
           EOF
 
       - name: Terraform Init
