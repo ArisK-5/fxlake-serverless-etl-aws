@@ -891,36 +891,24 @@ All 3 planned deliverables implemented:
 4. 10 new tests (5 for `_backfill_ingest`, 5 for `run()` backfill routing) — TDD approach, all pass. Total: 228 tests (199 unit + 29 integration)
 5. Documentation: CLAUDE.md, decision_log.md (D72), revised_plan.md updated
 
-#### Session 9B: Architecture Decision Records (Day 9 afternoon)
+#### Session 9B: Architecture Decision Records (Day 9 afternoon) ✅
 
-**Claude Code prompt:**
-```
-Create docs/adr/ directory with Architecture Decision Records:
+**Status:** Complete (2026-04-06)
 
-1. ADR-001: Use Polars over PySpark for transformation
-   - Context: Glue Python Shell vs Spark
-   - Decision: Polars for cost (0.0625 DPU) and performance
-   - Consequences: Limited to single-node processing
-
-2. ADR-002: DynamoDB for pipeline state tracking
-   - Context: SSM Parameter Store vs DynamoDB vs S3 marker files
-   - Decision: DynamoDB for atomic updates and query flexibility
-
+**Planned:**
+1. ADR-001: Polars over PySpark
+2. ADR-002: DynamoDB for pipeline state
 3. ADR-003: Parallel ingestion with Step Functions
-   - Context: Sequential vs parallel source ingestion
-   - Decision: Parallel state for independent sources
+4. ADR-004: Data quality checks in Glue
 
-4. ADR-004: Data quality checks in Glue vs separate Lambda
-   - Context: Where to validate data
-   - Decision: In Glue transform for single-pass efficiency
-
-Use the standard ADR template (Title, Status, Context, Decision, Consequences).
-
-After completing, update:
-- CLAUDE.md: add ADR section with links
-- docs/planning/revised_plan.md: mark Session 9B complete with planned-vs-delivered
-- docs/planning/decision_log.md: add any new decisions made during implementation
-```
+**Delivered:**
+1. Created `docs/adr/` with 4 ADRs using standard template (Title, Status, Date, Context, Decision, Consequences)
+2. Each ADR includes alternatives considered, positive/negative consequences, and migration paths
+3. ADR-001: documents 32x cost reduction, Python 3.9 constraint, single-node ceiling
+4. ADR-002: documents composite key design, transient error allowlist, SSM/S3 alternatives
+5. ADR-003: documents ResultSelector pattern, fan-out/fan-in, all-or-nothing trade-off
+6. ADR-004: documents single-pass architecture, quarantine flow, Great Expectations alternative
+7. CLAUDE.md: added ADR summary table with links
 
 ---
 

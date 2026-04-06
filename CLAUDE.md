@@ -294,6 +294,17 @@ uv run ruff check .        # lint
 uv run ruff check . --fix  # auto-fix
 ```
 
+## Architecture Decision Records
+
+ADRs live in `docs/adr/` and document the key architectural choices with full context, consequences, and alternatives considered:
+
+| ADR | Decision | Key trade-off |
+|-----|----------|---------------|
+| [ADR-001](docs/adr/ADR-001-polars-over-pyspark.md) | Polars over PySpark | 32x cost reduction (0.0625 DPU) vs single-node ceiling |
+| [ADR-002](docs/adr/ADR-002-dynamodb-for-pipeline-state.md) | DynamoDB for pipeline state | Atomic writes + composite key vs overkill for 3 records |
+| [ADR-003](docs/adr/ADR-003-parallel-ingestion-step-functions.md) | Parallel ingestion via Step Functions | 3x faster ingestion vs all-or-nothing failure mode |
+| [ADR-004](docs/adr/ADR-004-data-quality-in-glue.md) | Data quality checks in Glue | Single-pass efficiency vs coupled deployment |
+
 ## Planning
 
 - `docs/planning/revised_plan.md` — 10-day extension plan with session prompts
