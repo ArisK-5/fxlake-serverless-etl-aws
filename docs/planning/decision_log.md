@@ -567,7 +567,7 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 ### D72: Backfill mode — pass execution input through to Lambdas
 
 **Context:** Need historical backfill capability without disrupting incremental pipeline state. Two design options: (a) add a separate "backfill" Step Function, or (b) make the existing state machine accept input parameters.
-**Decision:** Reuse the existing state machine. Added `"Payload.$" = "$"` to all three ingestion Lambda Parameters in the Parallel-Ingestion branches. Added `_handle_backfill`/`_backfill_ingest` to `BaseIngestionHandler.run()` — routes when `event.mode == "backfill"`, uses event's `start_date`/`end_date`, never touches DynamoDB. `update_state` action takes priority over backfill mode (defensive ordering). Normal scheduled runs pass empty input `{}` which routes to incremental as before.
+**Decision:** Reuse the existing state machine. Added `"Payload.$" = "$"` to all three ingestion Lambda Parameters in the Parallel-Ingestion branches. Added `_handle_backfill` to `BaseIngestionHandler.run()` — routes when `event.mode == "backfill"`, validates dates (ISO format, ordering), delegates to `_perform_ingest(mode="backfill")`, never touches DynamoDB. `update_state` action takes priority over backfill mode (defensive ordering). Normal scheduled runs pass empty input `{}` which routes to incremental as before.
 **Rationale:** Single state machine avoids IAM duplication and keeps monitoring unified. The `"Payload.$" = "$"` pattern is the standard Step Functions approach for forwarding execution input. Backfill deliberately skips DynamoDB state to avoid corrupting the incremental watermark.
 
 ### D73: Architecture Decision Records in docs/adr/

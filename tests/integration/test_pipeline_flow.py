@@ -250,6 +250,143 @@ class TestFullPipelineFlow:
 
 
 @pytest.mark.integration
+class TestBackfillPipeline:
+    """Backfill mode: ingestion with explicit dates, no DynamoDB state mutation."""
+
+    @responses.activate
+    def test_frankfurter_backfill_ingests_and_transforms(
+        self, integration_aws, monkeypatch
+    ):
+        """Backfill ingestion writes raw JSON, Glue produces Parquet, DynamoDB untouched."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        ddb = integration_aws["dynamodb"]
+
+        # Seed existing state — backfill must NOT change it
+        ddb.put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-10"},
+            },
+        )
+
+        responses.add(
+            responses.GET,
+            f"{FRANKFURTER_API_URL}/2023-06-01..2023-06-30",
+            json=SAMPLE_FRANKFURTER_RESPONSE,
+            status=200,
+        )
+
+        import lambda_ingestion_function as fx_mod
+
+        result = fx_mod.lambda_handler(
+            {"mode": "backfill", "start_date": "2023-06-01", "end_date": "2023-06-30"},
+            None,
+        )
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "backfill"
+        assert result["start_date"] == "2023-06-01"
+        assert result["end_date"] == "2023-06-30"
+
+        # Raw data written to S3
+        raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
+        assert len(raw_keys) == 1
+
+        # Transform produces partitioned Parquet
+        import glue_transform
+
+        glue_transform.process_key(raw_keys[0])
+
+        processed_keys = _s3_keys(
+            integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/year="
+        )
+        assert len(processed_keys) >= 1
+
+        # DynamoDB state must be unchanged (backfill never touches it)
+        item = ddb.get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-10"
+
+    @responses.activate
+    def test_fred_backfill_routes_to_economic_domain(
+        self, integration_aws, monkeypatch
+    ):
+        """FRED backfill → Glue transform routes to economic_indicators domain."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+
+        responses.add(responses.GET, FRED_API_URL, json=SAMPLE_FRED_RESPONSE, status=200)
+
+        import lambda_fred_ingestion as fred_mod
+
+        result = fred_mod.lambda_handler(
+            {"mode": "backfill", "start_date": "2023-01-01", "end_date": "2023-12-31"},
+            None,
+        )
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "backfill"
+
+        raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
+        fred_key = next(k for k in raw_keys if k.startswith("fred_"))
+
+        import glue_transform
+
+        glue_transform.process_key(fred_key)
+
+        econ_keys = _s3_keys(
+            integration_aws["s3"], TEST_PROCESSED_BUCKET, "economic_indicators/year="
+        )
+        assert len(econ_keys) >= 1
+
+        df = _read_parquet(integration_aws["s3"], TEST_PROCESSED_BUCKET, econ_keys[0])
+        assert set(df.columns) == {"date", "source", "series_id", "value"}
+        assert df["source"][0] == "fred"
+
+    @responses.activate
+    def test_backfill_api_failure_does_not_corrupt_state(
+        self, integration_aws, monkeypatch
+    ):
+        """API failure during backfill must not affect DynamoDB state."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        ddb = integration_aws["dynamodb"]
+
+        ddb.put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "frankfurter"},
+                "last_processed_date": {"S": "2024-01-10"},
+            },
+        )
+
+        responses.add(
+            responses.GET,
+            f"{FRANKFURTER_API_URL}/2023-06-01..2023-06-30",
+            json={"error": "server error"},
+            status=500,
+        )
+
+        import lambda_ingestion_function as fx_mod
+
+        with pytest.raises(Exception):
+            fx_mod.lambda_handler(
+                {"mode": "backfill", "start_date": "2023-06-01", "end_date": "2023-06-30"},
+                None,
+            )
+
+        # DynamoDB unchanged
+        item = ddb.get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-01-10"
+
+
+@pytest.mark.integration
 class TestDynamoDBStateManagement:
     """Verify DynamoDB state is correctly read and updated across the pipeline."""
 

@@ -81,7 +81,8 @@ FRED-specific: fetches `series/observations` for a single configurable series (d
 - `save_to_s3(data, filename)` — S3 write with `source` metadata
 - `get_last_processed()` / `update_last_processed(date)` — DynamoDB state (allowlist-guarded fallback)
 - `run(event, context)` — routes `update_state` action, backfill mode, incremental mode, or static mode
-- `_incremental_ingest()` / `_static_ingest()` / `_handle_update_state()` / `_backfill_ingest()` — shared orchestration
+- `_handle_update_state()` / `_handle_backfill()` / `_incremental_ingest()` / `_static_ingest()` — mode dispatchers
+- `_perform_ingest(start_date, end_date, mode)` — unified fetch → save → log → return workflow for all ingest modes
 
 Subclasses implement `fetch_data(start, end)` and `make_filename(start, end)`.
 
@@ -201,7 +202,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 228 tests (199 unit + 29 integration), 96% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 247 tests (215 unit + 32 integration), 97% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
@@ -222,8 +223,8 @@ uv run pytest tests/test_lambda_ingestion.py -v      # Single file
 
 | File | Coverage |
 |------|----------|
-| `lambda/common/logging.py` | 100% |
-| `lambda/common/base.py` | 100% |
+| `lambda/common/logging.py` | 95% |
+| `lambda/common/base.py` | 96% |
 | `lambda/lambda_ingestion_function.py` | 100% |
 | `lambda/lambda_ecb_ingestion.py` | 100% |
 | `lambda/lambda_fred_ingestion.py` | 100% |
@@ -231,7 +232,7 @@ uv run pytest tests/test_lambda_ingestion.py -v      # Single file
 | `glue/glue_transform.py` | 93% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard, metric publish warning) |
 | `glue/quality.py` | 100% |
 
-**Overall: 96%**
+**Overall: 97%**
 
 ### Integration Tests
 
@@ -239,7 +240,7 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 
 | File | What it covers |
 |------|---------------|
-| `test_pipeline_flow.py` | End-to-end: Ingestion → Transform → Validate for each source; DynamoDB state management (incremental + update_state); CloudWatch metrics; saga pattern; CRITICAL quality failure + quarantine; API HTTP 500 propagation; Glue failure saga rollback; validation Athena error scenarios (22 tests) |
+| `test_pipeline_flow.py` | End-to-end: Ingestion → Transform → Validate for each source; DynamoDB state management (incremental + update_state); CloudWatch metrics; saga pattern; CRITICAL quality failure + quarantine; API HTTP 500 propagation; Glue failure saga rollback; validation Athena errors; backfill pipeline (25 tests) |
 | `test_multi_source.py` | All 3 sources ingested in parallel; correct S3 path prefixes; JSON structure per source; S3 metadata tags; Glue routes to correct domains; distinct FX vs economic schemas; quality reports per domain; Hive partition paths (7 tests) |
 
 **Key patterns:**
@@ -252,15 +253,15 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 
 | File | What it covers |
 |------|---------------|
-| `test_base_handler.py` | `BaseIngestionHandler` — save_to_s3, DynamoDB state, orchestration, saga pattern, backfill mode (34 tests) |
+| `test_base_handler.py` | `BaseIngestionHandler` — save_to_s3, DynamoDB state, orchestration, saga pattern, backfill validation, _perform_ingest (55 tests) |
 | `test_lambda_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
-| `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (16 tests) |
+| `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (20 tests) |
 | `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |
 | `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain, quality integration (35 tests) |
 | `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder, invariant validation (29 tests) |
 | `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
 | `test_structured_logging.py` | Structured logging — JSON formatter, request ID filter, configure_logger, inject_request_id, Timer (18 tests) |
-| `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, Glue failure rollback, validation Athena errors (22 tests) |
+| `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, Glue failure rollback, validation Athena errors, backfill pipeline (25 tests) |
 | `integration/test_multi_source.py` | Multi-source parallel ingestion, Glue schema routing, quality reports (7 tests) |
 
 ## CI/CD
