@@ -91,6 +91,13 @@ jobs:
           path: terraform/tfplan
           retention-days: 1
 
+      - name: Upload Lambda zips
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zips
+          path: lambda/*.zip
+          retention-days: 1
+
   # ---------------------------------------------------------------------------
   # Terraform Apply -- requires manual approval via GitHub environment
   # ---------------------------------------------------------------------------
@@ -118,15 +125,6 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Package Lambda functions
-        run: bash package_lambdas.sh
-        working-directory: lambda
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -143,6 +141,12 @@ jobs:
           quarantine_bucket_name      = "$TF_QUARANTINE_BUCKET_NAME"
           fred_api_key                = "$FRED_API_KEY"
           EOF
+
+      - name: Download Lambda zips
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-zips
+          path: lambda
 
       - name: Terraform Init
         run: terraform init
