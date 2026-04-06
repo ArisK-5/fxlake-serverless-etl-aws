@@ -147,7 +147,21 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
-        Next = "Lambda-Update-FX-State"
+        Next = "Check-Backfill-Mode"
+      },
+      # Backfill runs must NOT update DynamoDB state — skip straight to Athena.
+      # The "mode" key is only present in backfill payloads (see _perform_ingest).
+      Check-Backfill-Mode = {
+        Type    = "Choice",
+        Comment = "Skip state updates for backfill executions to protect the incremental watermark.",
+        Choices = [
+          {
+            Variable     = "$.parallel_results.fx.Payload.mode",
+            StringEquals = "backfill",
+            Next         = "Athena-Sample-Query"
+          }
+        ],
+        Default = "Lambda-Update-FX-State"
       },
       # Commit Frankfurter last_processed_date to DynamoDB only after Glue succeeds.
       # Prevents state corruption if Glue fails after ingestion writes the raw file.

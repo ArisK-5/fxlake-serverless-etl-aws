@@ -290,10 +290,9 @@ class BaseIngestionHandler(ABC):
         Functions ``Check-New-Data`` Choice state routes to ``Pipeline-Already-Up-To-Date``
         (Succeed state) when it sees this status value.
         Returns ``{"status": "ok", "end_date": ..., ...}`` on a successful fetch — the
-        ``end_date`` key is consumed by the ``Lambda-Update-FX-State`` or
-        ``Lambda-Update-ECB-State`` step post-Glue.
-        Does NOT commit state to DynamoDB; that is deferred to Lambda-Update-FX-State /
-        Lambda-Update-ECB-State.
+        ``end_date`` key is consumed by the ``Lambda-Update-FX-State``,
+        ``Lambda-Update-ECB-State``, or ``Lambda-Update-FRED-State`` step post-Glue.
+        Does NOT commit state to DynamoDB; that is deferred to the Update-*-State steps.
         """
         last_processed = self.get_last_processed()
         fetch_start = (date.fromisoformat(last_processed) + timedelta(days=1)).isoformat()
