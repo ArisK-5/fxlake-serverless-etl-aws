@@ -563,3 +563,15 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** CI/CD `terraform apply` failed with `AlreadyExistsException` on every resource — S3 buckets, IAM roles, DynamoDB table, Glue database, CloudWatch log groups all already exist. Root cause: `backend.tf` was commented out, so each CI run used empty local state and tried to create all resources from scratch.
 **Decision:** Activated the S3 remote state backend. Ran `terraform/bootstrap/` to create the versioned, KMS-encrypted state bucket (`fxlake-tfstate-*`) and DynamoDB lock table (`fxlake-tfstate-lock`). Migrated local `.tfstate` to S3 via `terraform init -migrate-state`.
 **Rationale:** Remote state is required for CI/CD — without shared state, Terraform cannot track existing resources. The bootstrap module was already prepared (Day 7) but never activated. Migration from local state was clean (0 add, 4 change, 0 destroy — only Lambda source_code_hash diffs).
+
+### D72: Backfill mode — pass execution input through to Lambdas
+
+**Context:** Need historical backfill capability without disrupting incremental pipeline state. Two design options: (a) add a separate "backfill" Step Function, or (b) make the existing state machine accept input parameters.
+**Decision:** Reuse the existing state machine. Added `"Payload.$" = "$"` to all three ingestion Lambda Parameters in the Parallel-Ingestion branches. Added `_handle_backfill` to `BaseIngestionHandler.run()` — routes when `event.mode == "backfill"`, validates dates (ISO format, ordering), delegates to `_perform_ingest(mode="backfill")`, never touches DynamoDB. `update_state` action takes priority over backfill mode (defensive ordering). Normal scheduled runs pass empty input `{}` which routes to incremental as before.
+**Rationale:** Single state machine avoids IAM duplication and keeps monitoring unified. The `"Payload.$" = "$"` pattern is the standard Step Functions approach for forwarding execution input. Backfill deliberately skips DynamoDB state to avoid corrupting the incremental watermark.
+
+### D73: Architecture Decision Records in docs/adr/
+
+**Context:** Key architectural decisions were captured informally in this decision log and in CLAUDE.md but lacked the structured format expected in production codebases. ADRs provide a standard, discoverable format.
+**Decision:** Created `docs/adr/` with 4 ADRs covering the four most consequential design choices: Polars over PySpark (ADR-001), DynamoDB for state (ADR-002), parallel ingestion (ADR-003), quality checks in Glue (ADR-004). Used the standard ADR template (Title, Status, Date, Context, Decision, Consequences) with additions: alternatives considered and migration paths.
+**Rationale:** ADRs are a portfolio signal for thoughtful engineering. Each ADR is grounded in actual implementation details (DPU costs, error codes, Terraform config) rather than generic trade-off lists, demonstrating that the decisions were made deliberately.

@@ -874,62 +874,41 @@ All 3 planned deliverables implemented:
 
 ### Day 9: Advanced Features
 
-#### Session 9A: Backfill capability (Day 9 morning)
+#### Session 9A: Backfill capability (Day 9 morning) ✅
 
-**Claude Code prompt:**
-```
-Add backfill mode to the pipeline:
+**Status:** Complete (2026-04-06)
 
-1. Modify Step Function to accept input parameters:
-   - { "mode": "backfill", "start_date": "2023-01-01", "end_date": "2023-12-31" }
-   - { "mode": "incremental" } — default, uses DynamoDB state
-   - Pass mode/dates through to Lambda via Step Function parameters
+**Planned:**
+1. Modify Step Function to accept input parameters (mode, start_date, end_date)
+2. Modify Lambda handlers to respect mode parameter
+3. Add Makefile target: `make backfill START=... END=...`
+4. Write tests for backfill mode
 
-2. Modify Lambda handlers to respect mode parameter from event:
-   - "backfill": use provided dates, ignore DynamoDB state
-   - "incremental": use DynamoDB state (existing behavior)
+**Delivered:**
+1. Step Function ASL: added `"Payload.$" = "$"` to all 3 ingestion Lambda Parameters — forwards execution input to Lambdas (empty `{}` on normal runs, backfill payload on manual runs)
+2. `BaseIngestionHandler.run()`: new routing branch `mode == "backfill"` → `_handle_backfill` → `_backfill_ingest`. Validates required `start_date`/`end_date`. Does NOT touch DynamoDB state. `update_state` action still takes priority (defensive ordering)
+3. `make backfill START=2023-01-01 END=2023-12-31` — reads SFN ARN from `terraform output`, starts execution with backfill input JSON
+4. 10 new tests (5 for `_backfill_ingest`, 5 for `run()` backfill routing) — TDD approach, all pass. Total: 228 tests (199 unit + 29 integration)
+5. Documentation: CLAUDE.md, decision_log.md (D72), revised_plan.md updated
 
-3. Add Makefile target: make backfill START=2023-01-01 END=2023-12-31
-   - Calls: aws stepfunctions start-execution with backfill input
+#### Session 9B: Architecture Decision Records (Day 9 afternoon) ✅
 
-4. Write tests for backfill mode.
+**Status:** Complete (2026-04-06)
 
-After completing, update:
-- CLAUDE.md: update with backfill capability details
-- docs/planning/revised_plan.md: mark Session 9A complete with planned-vs-delivered
-- docs/planning/decision_log.md: add any new decisions made during implementation
-```
-
-#### Session 9B: Architecture Decision Records (Day 9 afternoon)
-
-**Claude Code prompt:**
-```
-Create docs/adr/ directory with Architecture Decision Records:
-
-1. ADR-001: Use Polars over PySpark for transformation
-   - Context: Glue Python Shell vs Spark
-   - Decision: Polars for cost (0.0625 DPU) and performance
-   - Consequences: Limited to single-node processing
-
-2. ADR-002: DynamoDB for pipeline state tracking
-   - Context: SSM Parameter Store vs DynamoDB vs S3 marker files
-   - Decision: DynamoDB for atomic updates and query flexibility
-
+**Planned:**
+1. ADR-001: Polars over PySpark
+2. ADR-002: DynamoDB for pipeline state
 3. ADR-003: Parallel ingestion with Step Functions
-   - Context: Sequential vs parallel source ingestion
-   - Decision: Parallel state for independent sources
+4. ADR-004: Data quality checks in Glue
 
-4. ADR-004: Data quality checks in Glue vs separate Lambda
-   - Context: Where to validate data
-   - Decision: In Glue transform for single-pass efficiency
-
-Use the standard ADR template (Title, Status, Context, Decision, Consequences).
-
-After completing, update:
-- CLAUDE.md: add ADR section with links
-- docs/planning/revised_plan.md: mark Session 9B complete with planned-vs-delivered
-- docs/planning/decision_log.md: add any new decisions made during implementation
-```
+**Delivered:**
+1. Created `docs/adr/` with 4 ADRs using standard template (Title, Status, Date, Context, Decision, Consequences)
+2. Each ADR includes alternatives considered, positive/negative consequences, and migration paths
+3. ADR-001: documents 32x cost reduction, Python 3.9 constraint, single-node ceiling
+4. ADR-002: documents composite key design, transient error allowlist, SSM/S3 alternatives
+5. ADR-003: documents ResultSelector pattern, fan-out/fan-in, all-or-nothing trade-off
+6. ADR-004: documents single-pass architecture, quarantine flow, Great Expectations alternative
+7. CLAUDE.md: added ADR summary table with links
 
 ---
 

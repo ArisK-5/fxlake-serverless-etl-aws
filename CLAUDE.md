@@ -36,6 +36,14 @@ make clean       # Remove .zip files and all Terraform local state/cache
 
 All Terraform commands run from the `terraform/` directory. Configuration goes in `terraform/terraform.tfvars` (copy from `terraform/terraform.tfvars.example`).
 
+### Backfill
+
+```bash
+make backfill START=2023-01-01 END=2023-12-31   # Historical re-ingestion (does not affect DynamoDB state)
+```
+
+Starts a Step Functions execution with `mode: "backfill"` input. Lambdas use the provided dates directly and skip DynamoDB state management.
+
 ### Diagram Generation
 
 Architecture and workflow diagrams are generated via Python scripts:
@@ -72,8 +80,9 @@ FRED-specific: fetches `series/observations` for a single configurable series (d
 `BaseIngestionHandler` (abstract) provides:
 - `save_to_s3(data, filename)` — S3 write with `source` metadata
 - `get_last_processed()` / `update_last_processed(date)` — DynamoDB state (allowlist-guarded fallback)
-- `run(event, context)` — routes `update_state` action, incremental mode, or static mode
-- `_incremental_ingest()` / `_static_ingest()` / `_handle_update_state()` — shared orchestration
+- `run(event, context)` — routes `update_state` action, backfill mode, incremental mode, or static mode
+- `_handle_update_state()` / `_handle_backfill()` / `_incremental_ingest()` / `_static_ingest()` — mode dispatchers
+- `_perform_ingest(start_date, end_date, mode)` — unified fetch → save → log → return workflow for all ingest modes
 
 Subclasses implement `fetch_data(start, end)` and `make_filename(start, end)`.
 
@@ -84,7 +93,8 @@ ECB response parsing: SDMX-JSON format (`dataSets[0].series["FREQ:CCY:..."]`) is
 Each handler supports two modes controlled by the `STATE_TABLE` env var. DynamoDB state is keyed by `(pipeline_id="fxlake", source=<source_name>)` — each source has independent state.
 
 - **Incremental mode** (`STATE_TABLE` set): reads `last_processed_date` from DynamoDB, defaults to `START_DATE` on first run. Fetches `last_processed_date+1` to `min(today, END_DATE)`. Returns `end_date` in payload for Step Functions to pass to the `Lambda-Update-State` step.
-- **Static fallback** (`STATE_TABLE` not set): fetches the full `START_DATE..END_DATE` range (used for backfills/testing).
+- **Backfill mode** (`event.mode == "backfill"`): uses `start_date` and `end_date` from the event payload directly. Does NOT read or write DynamoDB state — safe for historical re-ingestion without corrupting the incremental watermark. Triggered via `make backfill START=... END=...` or manual Step Functions execution with `{"mode": "backfill", "start_date": "...", "end_date": "..."}`.
+- **Static fallback** (`STATE_TABLE` not set): fetches the full `START_DATE..END_DATE` range (used for testing).
 
 ### Step Functions Error Handling
 
@@ -121,7 +131,7 @@ Every state has Retry and Catch blocks:
 
 | File | What it defines |
 |------|----------------|
-| `step_function.tf` | ASL definition for 8-stage orchestration: Parallel-Ingestion (3 branches) → Choice → Glue → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation, with Retry/Catch + 7 Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. |
+| `step_function.tf` | ASL definition for 9-stage orchestration: Parallel-Ingestion (3 branches) → Check-New-Data → Glue → Check-Backfill-Mode → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation, with Retry/Catch + 7 Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. `Check-Backfill-Mode` skips Update-State steps for backfill executions to protect the incremental watermark. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
 | `lambda.tf` | Frankfurter + validation Lambdas (inline), ECB + FRED Lambdas (via `modules/lambda_function`), EventBridge rule/target (→ Step Functions) |
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow deps) + quality.py S3 upload via `--extra-py-files` |
@@ -192,7 +202,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 218 tests (189 unit + 29 integration), 96% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 247 tests (215 unit + 32 integration), 97% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
@@ -213,8 +223,8 @@ uv run pytest tests/test_lambda_ingestion.py -v      # Single file
 
 | File | Coverage |
 |------|----------|
-| `lambda/common/logging.py` | 100% |
-| `lambda/common/base.py` | 100% |
+| `lambda/common/logging.py` | 95% |
+| `lambda/common/base.py` | 96% |
 | `lambda/lambda_ingestion_function.py` | 100% |
 | `lambda/lambda_ecb_ingestion.py` | 100% |
 | `lambda/lambda_fred_ingestion.py` | 100% |
@@ -222,7 +232,7 @@ uv run pytest tests/test_lambda_ingestion.py -v      # Single file
 | `glue/glue_transform.py` | 93% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard, metric publish warning) |
 | `glue/quality.py` | 100% |
 
-**Overall: 96%**
+**Overall: 97%**
 
 ### Integration Tests
 
@@ -230,7 +240,7 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 
 | File | What it covers |
 |------|---------------|
-| `test_pipeline_flow.py` | End-to-end: Ingestion → Transform → Validate for each source; DynamoDB state management (incremental + update_state); CloudWatch metrics; saga pattern; CRITICAL quality failure + quarantine; API HTTP 500 propagation; Glue failure saga rollback; validation Athena error scenarios (22 tests) |
+| `test_pipeline_flow.py` | End-to-end: Ingestion → Transform → Validate for each source; DynamoDB state management (incremental + update_state); CloudWatch metrics; saga pattern; CRITICAL quality failure + quarantine; API HTTP 500 propagation; Glue failure saga rollback; validation Athena errors; backfill pipeline (25 tests) |
 | `test_multi_source.py` | All 3 sources ingested in parallel; correct S3 path prefixes; JSON structure per source; S3 metadata tags; Glue routes to correct domains; distinct FX vs economic schemas; quality reports per domain; Hive partition paths (7 tests) |
 
 **Key patterns:**
@@ -243,15 +253,15 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 
 | File | What it covers |
 |------|---------------|
-| `test_base_handler.py` | `BaseIngestionHandler` — save_to_s3, DynamoDB state, orchestration, saga pattern (24 tests) |
+| `test_base_handler.py` | `BaseIngestionHandler` — save_to_s3, DynamoDB state, orchestration, saga pattern, backfill validation, _perform_ingest (55 tests) |
 | `test_lambda_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
-| `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (16 tests) |
+| `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (20 tests) |
 | `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |
 | `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain, quality integration (35 tests) |
 | `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder, invariant validation (29 tests) |
 | `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
 | `test_structured_logging.py` | Structured logging — JSON formatter, request ID filter, configure_logger, inject_request_id, Timer (18 tests) |
-| `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, Glue failure rollback, validation Athena errors (22 tests) |
+| `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, Glue failure rollback, validation Athena errors, backfill pipeline (25 tests) |
 | `integration/test_multi_source.py` | Multi-source parallel ingestion, Glue schema routing, quality reports (7 tests) |
 
 ## CI/CD
@@ -284,6 +294,17 @@ Ruff config is in `pyproject.toml` (`[tool.ruff]`). Rules: E, F, W, I (PEP 8 + i
 uv run ruff check .        # lint
 uv run ruff check . --fix  # auto-fix
 ```
+
+## Architecture Decision Records
+
+ADRs live in `docs/adr/` and document the key architectural choices with full context, consequences, and alternatives considered:
+
+| ADR | Decision | Key trade-off |
+|-----|----------|---------------|
+| [ADR-001](docs/adr/ADR-001-polars-over-pyspark.md) | Polars over PySpark | 32x cost reduction (0.0625 DPU) vs single-node ceiling |
+| [ADR-002](docs/adr/ADR-002-dynamodb-for-pipeline-state.md) | DynamoDB for pipeline state | Atomic writes + composite key vs overkill for 3 records |
+| [ADR-003](docs/adr/ADR-003-parallel-ingestion-step-functions.md) | Parallel ingestion via Step Functions | 3x faster ingestion vs all-or-nothing failure mode |
+| [ADR-004](docs/adr/ADR-004-data-quality-in-glue.md) | Data quality checks in Glue | Single-pass efficiency vs coupled deployment |
 
 ## Planning
 

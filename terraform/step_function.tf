@@ -15,9 +15,12 @@ resource "aws_sfn_state_machine" "etl" {
             StartAt = "Lambda-FX-Ingestion",
             States = {
               Lambda-FX-Ingestion = {
-                Type           = "Task",
-                Resource       = "arn:aws:states:::lambda:invoke",
-                Parameters     = { FunctionName = aws_lambda_function.api_ingest.arn },
+                Type     = "Task",
+                Resource = "arn:aws:states:::lambda:invoke",
+                Parameters = {
+                  FunctionName = aws_lambda_function.api_ingest.arn,
+                  "Payload.$"  = "$"
+                },
                 TimeoutSeconds = 90,
                 Retry = [
                   {
@@ -35,9 +38,12 @@ resource "aws_sfn_state_machine" "etl" {
             StartAt = "Lambda-ECB-Ingestion",
             States = {
               Lambda-ECB-Ingestion = {
-                Type           = "Task",
-                Resource       = "arn:aws:states:::lambda:invoke",
-                Parameters     = { FunctionName = module.ecb_ingest.function_arn },
+                Type     = "Task",
+                Resource = "arn:aws:states:::lambda:invoke",
+                Parameters = {
+                  FunctionName = module.ecb_ingest.function_arn,
+                  "Payload.$"  = "$"
+                },
                 TimeoutSeconds = 90,
                 Retry = [
                   {
@@ -55,9 +61,12 @@ resource "aws_sfn_state_machine" "etl" {
             StartAt = "Lambda-FRED-Ingestion",
             States = {
               Lambda-FRED-Ingestion = {
-                Type           = "Task",
-                Resource       = "arn:aws:states:::lambda:invoke",
-                Parameters     = { FunctionName = module.fred_ingest.function_arn },
+                Type     = "Task",
+                Resource = "arn:aws:states:::lambda:invoke",
+                Parameters = {
+                  FunctionName = module.fred_ingest.function_arn,
+                  "Payload.$"  = "$"
+                },
                 TimeoutSeconds = 90,
                 Retry = [
                   {
@@ -122,7 +131,7 @@ resource "aws_sfn_state_machine" "etl" {
         Parameters = { JobName = aws_glue_job.transform.name },
         # ResultPath preserves $.parallel_results so Lambda-Update-*-State can read end_date.
         ResultPath     = "$.glue",
-        TimeoutSeconds = 180,
+        TimeoutSeconds = 600,
         Retry = [
           {
             ErrorEquals     = ["Glue.ConcurrentRunsExceededException", "States.HeartbeatTimeout"],
@@ -138,7 +147,21 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
-        Next = "Lambda-Update-FX-State"
+        Next = "Check-Backfill-Mode"
+      },
+      # Backfill runs must NOT update DynamoDB state — skip straight to Athena.
+      # The "mode" key is only present in backfill payloads (see _perform_ingest).
+      Check-Backfill-Mode = {
+        Type    = "Choice",
+        Comment = "Skip state updates for backfill executions to protect the incremental watermark.",
+        Choices = [
+          {
+            Variable     = "$.parallel_results.fx.Payload.mode",
+            StringEquals = "backfill",
+            Next         = "Athena-Sample-Query"
+          }
+        ],
+        Default = "Lambda-Update-FX-State"
       },
       # Commit Frankfurter last_processed_date to DynamoDB only after Glue succeeds.
       # Prevents state corruption if Glue fails after ingestion writes the raw file.

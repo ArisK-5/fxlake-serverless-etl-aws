@@ -199,11 +199,13 @@ class BaseIngestionHandler(ABC):
     # ------------------------------------------------------------------
 
     def run(self, event: dict, context: Any) -> dict:
-        """Route the Lambda event to update_state, incremental, or static ingest."""
+        """Route the Lambda event to update_state, backfill, incremental, or static ingest."""
         inject_request_id(logger, context)
         with Timer() as timer:
             if event.get("action") == "update_state":
                 result = self._handle_update_state(event)
+            elif event.get("mode") == "backfill":
+                result = self._handle_backfill(event)
             elif self.state_table:
                 result = self._incremental_ingest()
             else:
@@ -251,6 +253,36 @@ class BaseIngestionHandler(ABC):
         self.update_last_processed(end_date)
         return {"status": "state_updated", "last_processed_date": end_date}
 
+    def _handle_backfill(self, event: dict) -> dict:
+        """Validate backfill event and delegate to _perform_ingest.
+
+        Args:
+            event: must contain ``mode: "backfill"``, ``start_date``, and ``end_date``
+                   (ISO 8601 format, e.g. ``"2023-01-01"``).
+
+        Raises:
+            ValueError: if ``start_date`` or ``end_date`` is missing, whitespace-only,
+                        not valid ISO 8601, or if ``start_date > end_date``.
+        """
+        start_date = event.get("start_date")
+        end_date = event.get("end_date")
+        if not (start_date and start_date.strip()):
+            raise ValueError("Backfill mode requires 'start_date' in event")
+        if not (end_date and end_date.strip()):
+            raise ValueError("Backfill mode requires 'end_date' in event")
+        start_date = start_date.strip()
+        end_date = end_date.strip()
+        try:
+            parsed_start = date.fromisoformat(start_date)
+            parsed_end = date.fromisoformat(end_date)
+        except ValueError as e:
+            raise ValueError(f"Invalid ISO date format in backfill event: {e}") from e
+        if parsed_start > parsed_end:
+            raise ValueError(
+                f"start_date ({start_date}) must be <= end_date ({end_date})"
+            )
+        return self._perform_ingest(start_date, end_date, mode="backfill")
+
     def _incremental_ingest(self) -> dict:
         """Fetch only dates newer than last_processed_date in DynamoDB.
 
@@ -258,10 +290,9 @@ class BaseIngestionHandler(ABC):
         Functions ``Check-New-Data`` Choice state routes to ``Pipeline-Already-Up-To-Date``
         (Succeed state) when it sees this status value.
         Returns ``{"status": "ok", "end_date": ..., ...}`` on a successful fetch — the
-        ``end_date`` key is consumed by the ``Lambda-Update-FX-State`` or
-        ``Lambda-Update-ECB-State`` step post-Glue.
-        Does NOT commit state to DynamoDB; that is deferred to Lambda-Update-FX-State /
-        Lambda-Update-ECB-State.
+        ``end_date`` key is consumed by the ``Lambda-Update-FX-State``,
+        ``Lambda-Update-ECB-State``, or ``Lambda-Update-FRED-State`` step post-Glue.
+        Does NOT commit state to DynamoDB; that is deferred to the Update-*-State steps.
         """
         last_processed = self.get_last_processed()
         fetch_start = (date.fromisoformat(last_processed) + timedelta(days=1)).isoformat()
@@ -284,46 +315,48 @@ class BaseIngestionHandler(ABC):
                 "end_date": fetch_end,
             }
 
-        data = self.fetch_data(fetch_start, fetch_end)
-        filename = self.make_filename(fetch_start, fetch_end)
-        self.save_to_s3(data, filename, start_date=fetch_start, end_date=fetch_end)
-
-        logger.info(
-            "Incremental ingestion succeeded",
-            extra={
-                "source": self.source_name,
-                "start_date": fetch_start,
-                "end_date": fetch_end,
-                "key": filename,
-            },
-        )
-        return {
-            "status": "ok",
-            "key": filename,
-            "start_date": fetch_start,
-            "end_date": fetch_end,
-            "source": self.source_name,
-        }
+        return self._perform_ingest(fetch_start, fetch_end, mode="incremental")
 
     def _static_ingest(self) -> dict:
         """Fetch the full configured date range (start_date..end_date)."""
-        data = self.fetch_data(self.start_date, self.end_date)
-        filename = self.make_filename(self.start_date, self.end_date)
-        self.save_to_s3(data, filename, start_date=self.start_date, end_date=self.end_date)
+        return self._perform_ingest(self.start_date, self.end_date, mode="static")
+
+    def _perform_ingest(self, start_date: str, end_date: str, mode: str = "static") -> dict:
+        """Execute the core ingestion workflow: fetch, filename, save, log, return.
+
+        This shared method consolidates the fetch → make_filename → save_to_s3 →
+        log → return pattern used by backfill, incremental, and static modes.
+
+        Args:
+            start_date: ISO date string for the range start.
+            end_date: ISO date string for the range end.
+            mode: one of "backfill", "incremental", or "static" (for logging and response).
+
+        Returns:
+            Response dict with status "ok" and metadata (key, start_date, end_date, source,
+            and "mode" only for backfill).
+        """
+        data = self.fetch_data(start_date, end_date)
+        filename = self.make_filename(start_date, end_date)
+        self.save_to_s3(data, filename, start_date=start_date, end_date=end_date)
 
         logger.info(
-            "Static ingestion succeeded",
+            f"{mode.capitalize()} ingestion succeeded",
             extra={
                 "source": self.source_name,
-                "start_date": self.start_date,
-                "end_date": self.end_date,
+                "start_date": start_date,
+                "end_date": end_date,
                 "key": filename,
             },
         )
-        return {
+
+        result = {
             "status": "ok",
             "key": filename,
-            "start_date": self.start_date,
-            "end_date": self.end_date,
+            "start_date": start_date,
+            "end_date": end_date,
             "source": self.source_name,
         }
+        if mode == "backfill":
+            result["mode"] = "backfill"
+        return result

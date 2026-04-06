@@ -413,3 +413,177 @@ class TestIncrementalIngestDateCapping:
         result = handler._incremental_ingest()
 
         assert result["end_date"] == "2024-01-31"
+
+
+# ---------------------------------------------------------------------------
+# _perform_ingest and backfill routing
+# ---------------------------------------------------------------------------
+class TestPerformIngest:
+    """Test the shared ingestion logic for all modes (backfill, incremental, static)."""
+
+    @pytest.fixture
+    def backfill_dates(self):
+        """Standard backfill date range for testing."""
+        return "2023-01-01", "2023-06-30"
+
+    def test_backfill_fetches_explicit_date_range(self, s3_mock, backfill_dates):
+        """Backfill uses event dates, not DynamoDB or env START_DATE/END_DATE."""
+        start, end = backfill_dates
+        handler = ConcreteHandler()
+        result = handler._perform_ingest(start, end, mode="backfill")
+
+        assert result["status"] == "ok"
+        assert result["start_date"] == start
+        assert result["end_date"] == end
+        assert result["mode"] == "backfill"
+        assert result["key"] == f"test_{start}_to_{end}.json"
+
+    def test_backfill_saves_data_to_s3(self, s3_mock, backfill_dates):
+        handler = ConcreteHandler()
+        start, end = backfill_dates
+        result = handler._perform_ingest(start, end, mode="backfill")
+
+        obj = s3_mock.get_object(Bucket="test-raw-bucket", Key=result["key"])
+        body = json.loads(obj["Body"].read())
+        assert body == SAMPLE_DATA
+
+    def test_backfill_does_not_touch_dynamodb(self, aws_mock, monkeypatch, backfill_dates):
+        """Backfill must NOT read or write DynamoDB state."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        handler = ConcreteHandler()
+        handler._dynamodb = MagicMock()
+        start, end = backfill_dates
+
+        handler._perform_ingest(start, end, mode="backfill")
+
+        handler._dynamodb.get_item.assert_not_called()
+        handler._dynamodb.put_item.assert_not_called()
+
+    def test_backfill_works_without_state_table(self, s3_mock, backfill_dates):
+        """Backfill works even when STATE_TABLE is not configured."""
+        handler = ConcreteHandler()  # no STATE_TABLE → state_table=None
+        start, end = backfill_dates
+        result = handler._perform_ingest(start, end, mode="backfill")
+
+        assert result["status"] == "ok"
+
+    def test_static_mode_includes_mode_key_only_for_backfill(self, s3_mock):
+        """Only backfill mode should include 'mode' key in response."""
+        handler = ConcreteHandler()
+        backfill_result = handler._perform_ingest("2023-01-01", "2023-06-30", mode="backfill")
+        static_result = handler._perform_ingest("2023-01-01", "2023-06-30", mode="static")
+
+        assert "mode" in backfill_result
+        assert "mode" not in static_result
+
+    def test_propagates_fetch_failure(self, s3_mock):
+        handler = ConcreteHandler(fail_fetch=RuntimeError("API down"))
+
+        with pytest.raises(RuntimeError, match="API down"):
+            handler._perform_ingest("2023-01-01", "2023-06-30", mode="backfill")
+
+    def test_propagates_s3_write_failure(self, s3_mock):
+        handler = ConcreteHandler()
+        handler._s3 = MagicMock()
+        error_response = {"Error": {"Code": "NoSuchBucket", "Message": "Not found"}}
+        handler._s3.put_object.side_effect = ClientError(error_response, "PutObject")
+
+        with pytest.raises(ClientError, match="NoSuchBucket"):
+            handler._perform_ingest("2023-01-01", "2023-06-30", mode="backfill")
+
+
+# ---------------------------------------------------------------------------
+# run() — backfill routing
+# ---------------------------------------------------------------------------
+class TestRunBackfill:
+    def test_routes_backfill_mode(self, s3_mock):
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": "2023-01-01", "end_date": "2023-06-30"}
+
+        result = handler.run(event, None)
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "backfill"
+        assert result["start_date"] == "2023-01-01"
+        assert result["end_date"] == "2023-06-30"
+
+    def test_backfill_requires_start_date(self, s3_mock):
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "end_date": "2023-06-30"}
+
+        with pytest.raises(ValueError, match="start_date"):
+            handler.run(event, None)
+
+    def test_backfill_requires_end_date(self, s3_mock):
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": "2023-01-01"}
+
+        with pytest.raises(ValueError, match="end_date"):
+            handler.run(event, None)
+
+    def test_backfill_takes_priority_over_incremental(self, aws_mock, monkeypatch):
+        """mode=backfill should route to backfill even when STATE_TABLE is set."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": "2023-01-01", "end_date": "2023-06-30"}
+
+        result = handler.run(event, None)
+
+        assert result["mode"] == "backfill"
+
+    def test_update_state_still_takes_priority_over_backfill(self, aws_mock, monkeypatch):
+        """action=update_state must still work even if mode=backfill is also present."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        handler = ConcreteHandler()
+        event = {
+            "action": "update_state",
+            "mode": "backfill",
+            "end_date": "2024-01-31",
+        }
+
+        result = handler.run(event, None)
+
+        assert result["status"] == "state_updated"
+
+    @pytest.mark.parametrize("bad_date", ["  ", "\t", "\n", ""])
+    def test_backfill_rejects_whitespace_only_start_date(self, s3_mock, bad_date):
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": bad_date, "end_date": "2023-06-30"}
+
+        with pytest.raises(ValueError, match="start_date"):
+            handler.run(event, None)
+
+    @pytest.mark.parametrize("bad_date", ["  ", "\t", "\n", ""])
+    def test_backfill_rejects_whitespace_only_end_date(self, s3_mock, bad_date):
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": "2023-01-01", "end_date": bad_date}
+
+        with pytest.raises(ValueError, match="end_date"):
+            handler.run(event, None)
+
+    @pytest.mark.parametrize(
+        "bad_date", ["invalid-date", "2023-13-45", "2023/01/01", "01-01-2023"]
+    )
+    def test_backfill_rejects_invalid_date_format(self, s3_mock, bad_date):
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": bad_date, "end_date": "2023-06-30"}
+
+        with pytest.raises(ValueError, match="date format"):
+            handler.run(event, None)
+
+    def test_backfill_rejects_reversed_dates(self, s3_mock):
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": "2023-12-31", "end_date": "2023-01-01"}
+
+        with pytest.raises(ValueError, match="start_date.*<=.*end_date"):
+            handler.run(event, None)
+
+    def test_backfill_accepts_same_start_and_end_date(self, s3_mock):
+        """Single-day backfill should work."""
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": "2023-01-01", "end_date": "2023-01-01"}
+
+        result = handler.run(event, None)
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "backfill"
