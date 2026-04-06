@@ -29,6 +29,7 @@ help:
 	@echo "  make test          - Run unit tests"
 	@echo "  make test-integration - Run integration tests"
 	@echo "  make test-all      - Run all tests with coverage"
+	@echo "  make backfill START=YYYY-MM-DD END=YYYY-MM-DD - Run historical backfill"
 	@echo "  make clean        - Remove Lambda zip and Terraform cache"
 	@echo ""
 
@@ -80,6 +81,24 @@ destroy:
 	@echo "$(YELLOW)Destroying infrastructure...$(NC)"
 	cd $(TF_DIR) && terraform destroy -auto-approve
 	@echo "$(GREEN)All infrastructure removed.$(NC)"
+
+# -----------------------------------
+# Backfill
+# -----------------------------------
+backfill:
+ifndef START
+	$(error START is required. Usage: make backfill START=2023-01-01 END=2023-12-31)
+endif
+ifndef END
+	$(error END is required. Usage: make backfill START=2023-01-01 END=2023-12-31)
+endif
+	@echo "$(YELLOW)Starting backfill: $(START) to $(END)...$(NC)"
+	$(eval SFN_ARN := $(shell cd $(TF_DIR) && terraform output -raw step_function_arn))
+	aws stepfunctions start-execution \
+		--state-machine-arn "$(SFN_ARN)" \
+		--input '{"mode":"backfill","start_date":"$(START)","end_date":"$(END)"}' \
+		--name "backfill-$(START)-to-$(END)-$$(date +%s)"
+	@echo "$(GREEN)Backfill execution started.$(NC)"
 
 # -----------------------------------
 # Utility Commands

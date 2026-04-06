@@ -413,3 +413,105 @@ class TestIncrementalIngestDateCapping:
         result = handler._incremental_ingest()
 
         assert result["end_date"] == "2024-01-31"
+
+
+# ---------------------------------------------------------------------------
+# _backfill_ingest — explicit date range from event, no DynamoDB interaction
+# ---------------------------------------------------------------------------
+class TestBackfillIngest:
+    def test_fetches_explicit_date_range(self, s3_mock):
+        """Backfill uses event dates, not DynamoDB or env START_DATE/END_DATE."""
+        handler = ConcreteHandler()
+        result = handler._backfill_ingest("2023-01-01", "2023-06-30")
+
+        assert result["status"] == "ok"
+        assert result["start_date"] == "2023-01-01"
+        assert result["end_date"] == "2023-06-30"
+        assert result["mode"] == "backfill"
+        assert result["key"] == "test_2023-01-01_to_2023-06-30.json"
+
+    def test_saves_data_to_s3(self, s3_mock):
+        handler = ConcreteHandler()
+        result = handler._backfill_ingest("2023-01-01", "2023-06-30")
+
+        obj = s3_mock.get_object(Bucket="test-raw-bucket", Key=result["key"])
+        body = json.loads(obj["Body"].read())
+        assert body == SAMPLE_DATA
+
+    def test_does_not_touch_dynamodb(self, aws_mock, monkeypatch):
+        """Backfill must NOT read or write DynamoDB state."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        handler = ConcreteHandler()
+        handler._dynamodb = MagicMock()
+
+        handler._backfill_ingest("2023-01-01", "2023-06-30")
+
+        handler._dynamodb.get_item.assert_not_called()
+        handler._dynamodb.put_item.assert_not_called()
+
+    def test_works_without_state_table(self, s3_mock):
+        """Backfill works even when STATE_TABLE is not configured."""
+        handler = ConcreteHandler()  # no STATE_TABLE → state_table=None
+        result = handler._backfill_ingest("2023-01-01", "2023-06-30")
+
+        assert result["status"] == "ok"
+
+    def test_propagates_fetch_failure(self, s3_mock):
+        handler = ConcreteHandler(fail_fetch=RuntimeError("API down"))
+
+        with pytest.raises(RuntimeError, match="API down"):
+            handler._backfill_ingest("2023-01-01", "2023-06-30")
+
+
+# ---------------------------------------------------------------------------
+# run() — backfill routing
+# ---------------------------------------------------------------------------
+class TestRunBackfill:
+    def test_routes_backfill_mode(self, s3_mock):
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": "2023-01-01", "end_date": "2023-06-30"}
+
+        result = handler.run(event, None)
+
+        assert result["status"] == "ok"
+        assert result["mode"] == "backfill"
+        assert result["start_date"] == "2023-01-01"
+        assert result["end_date"] == "2023-06-30"
+
+    def test_backfill_requires_start_date(self, s3_mock):
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "end_date": "2023-06-30"}
+
+        with pytest.raises(ValueError, match="start_date"):
+            handler.run(event, None)
+
+    def test_backfill_requires_end_date(self, s3_mock):
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": "2023-01-01"}
+
+        with pytest.raises(ValueError, match="end_date"):
+            handler.run(event, None)
+
+    def test_backfill_takes_priority_over_incremental(self, aws_mock, monkeypatch):
+        """mode=backfill should route to backfill even when STATE_TABLE is set."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        handler = ConcreteHandler()
+        event = {"mode": "backfill", "start_date": "2023-01-01", "end_date": "2023-06-30"}
+
+        result = handler.run(event, None)
+
+        assert result["mode"] == "backfill"
+
+    def test_update_state_still_takes_priority_over_backfill(self, aws_mock, monkeypatch):
+        """action=update_state must still work even if mode=backfill is also present."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        handler = ConcreteHandler()
+        event = {
+            "action": "update_state",
+            "mode": "backfill",
+            "end_date": "2024-01-31",
+        }
+
+        result = handler.run(event, None)
+
+        assert result["status"] == "state_updated"

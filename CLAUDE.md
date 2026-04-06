@@ -36,6 +36,14 @@ make clean       # Remove .zip files and all Terraform local state/cache
 
 All Terraform commands run from the `terraform/` directory. Configuration goes in `terraform/terraform.tfvars` (copy from `terraform/terraform.tfvars.example`).
 
+### Backfill
+
+```bash
+make backfill START=2023-01-01 END=2023-12-31   # Historical re-ingestion (does not affect DynamoDB state)
+```
+
+Starts a Step Functions execution with `mode: "backfill"` input. Lambdas use the provided dates directly and skip DynamoDB state management.
+
 ### Diagram Generation
 
 Architecture and workflow diagrams are generated via Python scripts:
@@ -72,8 +80,8 @@ FRED-specific: fetches `series/observations` for a single configurable series (d
 `BaseIngestionHandler` (abstract) provides:
 - `save_to_s3(data, filename)` — S3 write with `source` metadata
 - `get_last_processed()` / `update_last_processed(date)` — DynamoDB state (allowlist-guarded fallback)
-- `run(event, context)` — routes `update_state` action, incremental mode, or static mode
-- `_incremental_ingest()` / `_static_ingest()` / `_handle_update_state()` — shared orchestration
+- `run(event, context)` — routes `update_state` action, backfill mode, incremental mode, or static mode
+- `_incremental_ingest()` / `_static_ingest()` / `_handle_update_state()` / `_backfill_ingest()` — shared orchestration
 
 Subclasses implement `fetch_data(start, end)` and `make_filename(start, end)`.
 
@@ -84,7 +92,8 @@ ECB response parsing: SDMX-JSON format (`dataSets[0].series["FREQ:CCY:..."]`) is
 Each handler supports two modes controlled by the `STATE_TABLE` env var. DynamoDB state is keyed by `(pipeline_id="fxlake", source=<source_name>)` — each source has independent state.
 
 - **Incremental mode** (`STATE_TABLE` set): reads `last_processed_date` from DynamoDB, defaults to `START_DATE` on first run. Fetches `last_processed_date+1` to `min(today, END_DATE)`. Returns `end_date` in payload for Step Functions to pass to the `Lambda-Update-State` step.
-- **Static fallback** (`STATE_TABLE` not set): fetches the full `START_DATE..END_DATE` range (used for backfills/testing).
+- **Backfill mode** (`event.mode == "backfill"`): uses `start_date` and `end_date` from the event payload directly. Does NOT read or write DynamoDB state — safe for historical re-ingestion without corrupting the incremental watermark. Triggered via `make backfill START=... END=...` or manual Step Functions execution with `{"mode": "backfill", "start_date": "...", "end_date": "..."}`.
+- **Static fallback** (`STATE_TABLE` not set): fetches the full `START_DATE..END_DATE` range (used for testing).
 
 ### Step Functions Error Handling
 
@@ -192,7 +201,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 218 tests (189 unit + 29 integration), 96% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 228 tests (199 unit + 29 integration), 96% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
@@ -243,7 +252,7 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 
 | File | What it covers |
 |------|---------------|
-| `test_base_handler.py` | `BaseIngestionHandler` — save_to_s3, DynamoDB state, orchestration, saga pattern (24 tests) |
+| `test_base_handler.py` | `BaseIngestionHandler` — save_to_s3, DynamoDB state, orchestration, saga pattern, backfill mode (34 tests) |
 | `test_lambda_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
 | `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (16 tests) |
 | `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |

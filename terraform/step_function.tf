@@ -17,7 +17,10 @@ resource "aws_sfn_state_machine" "etl" {
               Lambda-FX-Ingestion = {
                 Type           = "Task",
                 Resource       = "arn:aws:states:::lambda:invoke",
-                Parameters     = { FunctionName = aws_lambda_function.api_ingest.arn },
+                Parameters = {
+                  FunctionName = aws_lambda_function.api_ingest.arn,
+                  "Payload.$"  = "$"
+                },
                 TimeoutSeconds = 90,
                 Retry = [
                   {
@@ -37,7 +40,10 @@ resource "aws_sfn_state_machine" "etl" {
               Lambda-ECB-Ingestion = {
                 Type           = "Task",
                 Resource       = "arn:aws:states:::lambda:invoke",
-                Parameters     = { FunctionName = module.ecb_ingest.function_arn },
+                Parameters = {
+                  FunctionName = module.ecb_ingest.function_arn,
+                  "Payload.$"  = "$"
+                },
                 TimeoutSeconds = 90,
                 Retry = [
                   {
@@ -57,7 +63,10 @@ resource "aws_sfn_state_machine" "etl" {
               Lambda-FRED-Ingestion = {
                 Type           = "Task",
                 Resource       = "arn:aws:states:::lambda:invoke",
-                Parameters     = { FunctionName = module.fred_ingest.function_arn },
+                Parameters = {
+                  FunctionName = module.fred_ingest.function_arn,
+                  "Payload.$"  = "$"
+                },
                 TimeoutSeconds = 90,
                 Retry = [
                   {

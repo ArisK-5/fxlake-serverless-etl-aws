@@ -199,11 +199,13 @@ class BaseIngestionHandler(ABC):
     # ------------------------------------------------------------------
 
     def run(self, event: dict, context: Any) -> dict:
-        """Route the Lambda event to update_state, incremental, or static ingest."""
+        """Route the Lambda event to update_state, backfill, incremental, or static ingest."""
         inject_request_id(logger, context)
         with Timer() as timer:
             if event.get("action") == "update_state":
                 result = self._handle_update_state(event)
+            elif event.get("mode") == "backfill":
+                result = self._handle_backfill(event)
             elif self.state_table:
                 result = self._incremental_ingest()
             else:
@@ -250,6 +252,50 @@ class BaseIngestionHandler(ABC):
             raise ValueError("Missing required field 'end_date' in update_state event")
         self.update_last_processed(end_date)
         return {"status": "state_updated", "last_processed_date": end_date}
+
+    def _handle_backfill(self, event: dict) -> dict:
+        """Validate backfill event and delegate to _backfill_ingest.
+
+        Args:
+            event: must contain ``mode: "backfill"``, ``start_date``, and ``end_date``.
+
+        Raises:
+            ValueError: if ``start_date`` or ``end_date`` is missing.
+        """
+        start_date = event.get("start_date")
+        end_date = event.get("end_date")
+        if not start_date:
+            raise ValueError("Backfill mode requires 'start_date' in event")
+        if not end_date:
+            raise ValueError("Backfill mode requires 'end_date' in event")
+        return self._backfill_ingest(start_date, end_date)
+
+    def _backfill_ingest(self, start_date: str, end_date: str) -> dict:
+        """Fetch an explicit date range without reading or writing DynamoDB state.
+
+        Used for historical backfills triggered manually via Step Functions input.
+        """
+        data = self.fetch_data(start_date, end_date)
+        filename = self.make_filename(start_date, end_date)
+        self.save_to_s3(data, filename, start_date=start_date, end_date=end_date)
+
+        logger.info(
+            "Backfill ingestion succeeded",
+            extra={
+                "source": self.source_name,
+                "start_date": start_date,
+                "end_date": end_date,
+                "key": filename,
+            },
+        )
+        return {
+            "status": "ok",
+            "mode": "backfill",
+            "key": filename,
+            "start_date": start_date,
+            "end_date": end_date,
+            "source": self.source_name,
+        }
 
     def _incremental_ingest(self) -> dict:
         """Fetch only dates newer than last_processed_date in DynamoDB.

@@ -874,31 +874,22 @@ All 3 planned deliverables implemented:
 
 ### Day 9: Advanced Features
 
-#### Session 9A: Backfill capability (Day 9 morning)
+#### Session 9A: Backfill capability (Day 9 morning) ✅
 
-**Claude Code prompt:**
-```
-Add backfill mode to the pipeline:
+**Status:** Complete (2026-04-06)
 
-1. Modify Step Function to accept input parameters:
-   - { "mode": "backfill", "start_date": "2023-01-01", "end_date": "2023-12-31" }
-   - { "mode": "incremental" } — default, uses DynamoDB state
-   - Pass mode/dates through to Lambda via Step Function parameters
+**Planned:**
+1. Modify Step Function to accept input parameters (mode, start_date, end_date)
+2. Modify Lambda handlers to respect mode parameter
+3. Add Makefile target: `make backfill START=... END=...`
+4. Write tests for backfill mode
 
-2. Modify Lambda handlers to respect mode parameter from event:
-   - "backfill": use provided dates, ignore DynamoDB state
-   - "incremental": use DynamoDB state (existing behavior)
-
-3. Add Makefile target: make backfill START=2023-01-01 END=2023-12-31
-   - Calls: aws stepfunctions start-execution with backfill input
-
-4. Write tests for backfill mode.
-
-After completing, update:
-- CLAUDE.md: update with backfill capability details
-- docs/planning/revised_plan.md: mark Session 9A complete with planned-vs-delivered
-- docs/planning/decision_log.md: add any new decisions made during implementation
-```
+**Delivered:**
+1. Step Function ASL: added `"Payload.$" = "$"` to all 3 ingestion Lambda Parameters — forwards execution input to Lambdas (empty `{}` on normal runs, backfill payload on manual runs)
+2. `BaseIngestionHandler.run()`: new routing branch `mode == "backfill"` → `_handle_backfill` → `_backfill_ingest`. Validates required `start_date`/`end_date`. Does NOT touch DynamoDB state. `update_state` action still takes priority (defensive ordering)
+3. `make backfill START=2023-01-01 END=2023-12-31` — reads SFN ARN from `terraform output`, starts execution with backfill input JSON
+4. 10 new tests (5 for `_backfill_ingest`, 5 for `run()` backfill routing) — TDD approach, all pass. Total: 228 tests (199 unit + 29 integration)
+5. Documentation: CLAUDE.md, decision_log.md (D72), revised_plan.md updated
 
 #### Session 9B: Architecture Decision Records (Day 9 afternoon)
 
