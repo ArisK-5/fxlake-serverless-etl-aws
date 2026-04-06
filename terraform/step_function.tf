@@ -131,7 +131,7 @@ resource "aws_sfn_state_machine" "etl" {
         Parameters = { JobName = aws_glue_job.transform.name },
         # ResultPath preserves $.parallel_results so Lambda-Update-*-State can read end_date.
         ResultPath     = "$.glue",
-        TimeoutSeconds = 180,
+        TimeoutSeconds = 600,
         Retry = [
           {
             ErrorEquals     = ["Glue.ConcurrentRunsExceededException", "States.HeartbeatTimeout"],
