@@ -12,12 +12,12 @@
 # To revert to local state:
 #   terraform init -migrate-state -backend-config="path=terraform.tfstate"
 
-# terraform {
-#   backend "s3" {
-#     bucket         = "fxlake-tfstate-ACCOUNT_ID"
-#     key            = "fxlake/terraform.tfstate"
-#     region         = "us-east-1"
-#     dynamodb_table = "fxlake-tfstate-lock"
-#     encrypt        = true
-#   }
-# }
+terraform {
+  backend "s3" {
+    bucket         = "fxlake-tfstate-017820677269"
+    key            = "fxlake/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "fxlake-tfstate-lock"
+    encrypt        = true
+  }
+}

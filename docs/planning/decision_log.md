@@ -557,3 +557,9 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** The pipeline uses a saga pattern — DynamoDB state is only committed after Glue succeeds (via a separate `update_state` Lambda invocation). This ordering is critical but not enforced by the unit tests, which test each Lambda in isolation.
 **Decision:** Added two dedicated saga tests: (1) state not updated when transform is skipped, (2) `no_new_data` short-circuits the pipeline without modifying state.
 **Rationale:** The saga ordering is the pipeline's most important correctness invariant. A regression here causes data duplication (state committed before transform) or data loss (state committed after partial failure). Integration tests are the right level to verify this cross-module contract.
+
+### D71: Terraform remote state backend activation
+
+**Context:** CI/CD `terraform apply` failed with `AlreadyExistsException` on every resource — S3 buckets, IAM roles, DynamoDB table, Glue database, CloudWatch log groups all already exist. Root cause: `backend.tf` was commented out, so each CI run used empty local state and tried to create all resources from scratch.
+**Decision:** Activated the S3 remote state backend. Ran `terraform/bootstrap/` to create the versioned, KMS-encrypted state bucket (`fxlake-tfstate-*`) and DynamoDB lock table (`fxlake-tfstate-lock`). Migrated local `.tfstate` to S3 via `terraform init -migrate-state`.
+**Rationale:** Remote state is required for CI/CD — without shared state, Terraform cannot track existing resources. The bootstrap module was already prepared (Day 7) but never activated. Migration from local state was clean (0 add, 4 change, 0 destroy — only Lambda source_code_hash diffs).
