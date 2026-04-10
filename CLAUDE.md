@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-FXLake is a serverless ETL pipeline on AWS that fetches daily foreign exchange rates from multiple sources (Frankfurter API, ECB Statistics Data Warehouse), transforms them with Polars, and makes them queryable via Athena. Infrastructure is managed entirely with Terraform.
+FXLake is a serverless ETL pipeline on AWS that fetches daily financial data from three independent sources (Frankfurter API, ECB Statistics Data Warehouse, FRED), transforms it with Polars, enforces data quality checks, and makes it queryable via Athena. Infrastructure is managed entirely with Terraform.
 
 ## Commands
 
