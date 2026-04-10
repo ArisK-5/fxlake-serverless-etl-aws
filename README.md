@@ -44,7 +44,7 @@ Terraform · S3 · Lambda · Glue · Athena · Step Functions · EventBridge · 
 │   ├── adr/                            # Architecture Decision Records (ADR-001–004)
 │   └── planning/                       # Project planning docs
 ├── glue/
-│   ├── glue_transform.py              # Glue Python Shell job (Polars transform)
+│   ├── glue_transform.py               # Glue Python Shell job (Polars transform)
 │   └── quality.py                      # Data quality check framework
 ├── lambda/
 │   ├── common/
@@ -68,13 +68,18 @@ Terraform · S3 · Lambda · Glue · Athena · Step Functions · EventBridge · 
 │   ├── monitoring.tf                  # 11 CloudWatch alarms + dashboard
 │   ├── iam.tf                         # Least-privilege roles/policies
 │   ├── security.tf                    # S3 encryption + CloudTrail
-│   └── variables.tf                   # All configurable inputs
+│   ├── variables.tf                   # All configurable inputs
+│   ├── outputs.tf                     # Exported values (ARNs, names)
+│   ├── versions.tf                    # Terraform + provider version constraints
+│   ├── providers.tf                   # AWS provider configuration
+│   └── backend.tf                     # Remote state backend (S3 + DynamoDB)
 ├── tests/
+│   ├── conftest.py                    # Shared fixtures (moto mocks, env setup)
 │   ├── integration/
 │   │   ├── test_pipeline_flow.py      # End-to-end pipeline tests (25 tests)
 │   │   └── test_multi_source.py       # Multi-source parallel ingestion (7 tests)
 │   ├── test_base_handler.py           # Base handler tests (55 tests)
-│   ├── test_lambda_ingestion.py       # Frankfurter handler (19 tests)
+│   ├── test_lambda_fx_ingestion.py    # Frankfurter handler (19 tests)
 │   ├── test_lambda_ecb_ingestion.py   # ECB handler (20 tests)
 │   ├── test_lambda_fred_ingestion.py  # FRED handler (23 tests)
 │   ├── test_glue_transform.py         # Glue transform (35 tests)
@@ -99,7 +104,7 @@ The pipeline orchestrates a 9-stage serverless ETL flow using AWS services:
 - **Amazon EventBridge** triggers the pipeline daily.
 - **CloudWatch** provides 11 alarms (including data quality and staleness), a dashboard, and structured JSON logging. **X-Ray** traces all Lambda and SDK calls.
 - **IAM** enforces least-privilege access; **CloudTrail** records all API activity.
-- **Terraform** manages all 47+ resources across 11+ configuration files.
+- **Terraform** manages all 65+ resources across 11+ configuration files.
 
 Diagrams are generated with [Diagrams](https://diagrams.mingrammer.com) — see [cloud-architecture.py](assets/cloud-architecture.py) and [dev-workflow.py](assets/dev-workflow.py).
 
