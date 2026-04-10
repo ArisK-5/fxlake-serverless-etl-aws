@@ -24,4 +24,5 @@ uv.lock
 __pycache__/
 *.py[cod]
 *.coverage
-*.py,cover
+*.py,
+coverhtmlcov/
