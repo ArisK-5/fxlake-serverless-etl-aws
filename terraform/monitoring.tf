@@ -30,7 +30,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 
   dimensions = {
-    FunctionName = aws_lambda_function.api_ingest.function_name
+    FunctionName = aws_lambda_function.fx_ingest.function_name
   }
 }
 
@@ -138,6 +138,74 @@ resource "aws_cloudwatch_metric_alarm" "step_function_throttles" {
 }
 
 #######################################
+# Data Quality Alarms
+#######################################
+
+resource "aws_cloudwatch_metric_alarm" "data_quality_checks_failed" {
+  alarm_name          = "fxlake-data-quality-checks-failed"
+  alarm_description   = "Triggered when any data quality check fails during Glue transform"
+  namespace           = "${var.metric_namespace_prefix}/Quality"
+  metric_name         = "DataQualityChecksFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    Domain = "fx_rates"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "data_quality_checks_failed_econ" {
+  alarm_name          = "fxlake-data-quality-checks-failed-econ"
+  alarm_description   = "Triggered when any economic indicators quality check fails"
+  namespace           = "${var.metric_namespace_prefix}/Quality"
+  metric_name         = "DataQualityChecksFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    Domain = "economic_indicators"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "stale_fx_data" {
+  alarm_name          = "fxlake-stale-fx-data"
+  alarm_description   = "Triggered when FX data is older than freshness threshold (>2 days)"
+  namespace           = "${var.metric_namespace_prefix}/Athena"
+  metric_name         = "StaleFXData"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "records_quarantined" {
+  alarm_name          = "fxlake-records-quarantined"
+  alarm_description   = "Triggered when records are quarantined due to CRITICAL quality failures"
+  namespace           = "${var.metric_namespace_prefix}/Quality"
+  metric_name         = "RecordsQuarantined"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+#######################################
 # CloudTrail Unauthorized Access Alarm
 #######################################
 
@@ -160,7 +228,8 @@ resource "aws_cloudwatch_metric_alarm" "unauthorized_api_alarm" {
 #######################################
 
 locals {
-  athena_namespace = "${var.metric_namespace_prefix}/Athena"
+  athena_namespace  = "${var.metric_namespace_prefix}/Athena"
+  quality_namespace = "${var.metric_namespace_prefix}/Quality"
 }
 
 resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
@@ -178,11 +247,11 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.api_ingest.function_name]
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.fx_ingest.function_name]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Lambda Errors (API Ingestion)"
+          title  = "Lambda Errors (FX Ingestion)"
           period = 60
           stat   = "Sum"
         }
@@ -317,6 +386,82 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
           region = var.aws_region
           title  = "SNS Notifications Delivered"
           period = 60
+          stat   = "Sum"
+        }
+      },
+
+      # Data Quality — Checks Failed (FX Rates)
+      {
+        type   = "metric"
+        x      = 0
+        y      = 12
+        width  = 6
+        height = 6
+        properties = {
+          metrics = [
+            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "fx_rates"]
+          ]
+          view   = "singleValue"
+          region = var.aws_region
+          title  = "Quality Checks Failed (FX)"
+          period = 300
+          stat   = "Sum"
+        }
+      },
+
+      # Data Quality — Checks Failed (Economic)
+      {
+        type   = "metric"
+        x      = 6
+        y      = 12
+        width  = 6
+        height = 6
+        properties = {
+          metrics = [
+            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "economic_indicators"]
+          ]
+          view   = "singleValue"
+          region = var.aws_region
+          title  = "Quality Checks Failed (Econ)"
+          period = 300
+          stat   = "Sum"
+        }
+      },
+
+      # Data Quality — Records Quarantined
+      {
+        type   = "metric"
+        x      = 12
+        y      = 12
+        width  = 6
+        height = 6
+        properties = {
+          metrics = [
+            [local.quality_namespace, "RecordsQuarantined"]
+          ]
+          view   = "singleValue"
+          region = var.aws_region
+          title  = "Records Quarantined"
+          period = 300
+          stat   = "Sum"
+        }
+      },
+
+      # Data Freshness — Stale FX Data
+      {
+        type   = "metric"
+        x      = 18
+        y      = 12
+        width  = 6
+        height = 6
+        properties = {
+          metrics = [
+            [local.athena_namespace, "StaleFXData"]
+          ]
+          view   = "singleValue"
+          region = var.aws_region
+          title  = "Stale FX Data (>2 days)"
+          period = 300
           stat   = "Sum"
         }
       }

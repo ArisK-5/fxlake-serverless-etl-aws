@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, fxlake-v2-production]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  python-lint-test:
+    name: Python — Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint with ruff
+        run: uv run ruff check .
+
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=lambda --cov=glue --cov-report=term-missing --cov-fail-under=80
+
+  lambda-package:
+    name: Lambda — Package & Verify
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Package Lambda functions
+        run: |
+          cd lambda
+          chmod +x package_lambdas.sh
+          ./package_lambdas.sh
+
+      - name: Verify zip artifacts are non-empty
+        run: |
+          for zip_file in lambda_fx_ingestion.zip lambda_ecb_ingestion.zip lambda_fred_ingestion.zip lambda_validation_function.zip; do
+            if [ ! -s "lambda/${zip_file}" ]; then
+              echo "❌ ERROR: ${zip_file} is missing or empty"
+              exit 1
+            fi
+            echo "✅ ${zip_file} OK ($(du -h "lambda/${zip_file}" | cut -f1))"
+          done
+
+  terraform-validate:
+    name: Terraform — Validate
+    needs: lambda-package
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Create stub Lambda zips for validation
+        # filebase64sha256() evaluates at validate time; stubs satisfy the function.
+        # Real packaging is verified by the lambda-package job.
+        run: |
+          touch lambda/lambda_fx_ingestion.zip
+          touch lambda/lambda_ecb_ingestion.zip
+          touch lambda/lambda_fred_ingestion.zip
+          touch lambda/lambda_validation_function.zip
+
+      - name: Terraform Init (no backend)
+        run: terraform init -backend=false
+        working-directory: terraform
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: terraform
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: terraform

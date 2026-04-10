@@ -6,7 +6,7 @@
 *.tfstate.*
 
 # Terraform plan output (binary)
-tfplan 
+tfplan
 
 # Backup files created by Terraform
 *.backup
@@ -17,8 +17,15 @@ tfplan
 # Misc files
 *.zip
 main.py
-pyproject.toml
 .python-version
 .venv/
 uv.lock
-.Ds_store
+.DS_Store
+__pycache__/
+*.py[cod]
+*.coverage
+htmlcov/
+.pytest_cache/
+.idea/
+.vscode/
+*.log

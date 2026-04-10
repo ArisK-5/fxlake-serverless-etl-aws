@@ -6,10 +6,11 @@
 # Variables
 TF_DIR=terraform
 LAMBDA_DIR=lambda
-LAMBDA_ZIP=lambda_ingestion_function.zip
+LAMBDA_ZIP=lambda_fx_ingestion.zip
 
 # Colors for output
 GREEN=\033[0;32m
+RED=\033[0;31m
 YELLOW=\033[1;33m
 NC=\033[0m # No Color
 
@@ -26,6 +27,10 @@ help:
 	@echo "  make plan         - Show infrastructure plan"
 	@echo "  make deploy       - Deploy (apply) all infrastructure"
 	@echo "  make destroy      - Tear down all resources"
+	@echo "  make test          - Run unit tests"
+	@echo "  make test-integration - Run integration tests"
+	@echo "  make test-all      - Run all tests with coverage"
+	@echo "  make backfill START=YYYY-MM-DD END=YYYY-MM-DD - Run historical backfill"
 	@echo "  make clean        - Remove Lambda zip and Terraform cache"
 	@echo ""
 
@@ -36,6 +41,24 @@ package:
 	@echo "$(YELLOW)Packaging Lambda functions...$(NC)"
 	cd $(LAMBDA_DIR) && ./package_lambdas.sh
 	@echo "$(GREEN)Lambda packages created successfully!$(NC)"
+
+# -----------------------------------
+# Testing
+# -----------------------------------
+test:
+	@echo "$(YELLOW)Running unit tests...$(NC)"
+	uv run pytest tests/ -v --ignore=tests/integration
+	@echo "$(GREEN)Unit tests passed.$(NC)"
+
+test-integration:
+	@echo "$(YELLOW)Running integration tests...$(NC)"
+	uv run pytest tests/integration/ -v -m integration
+	@echo "$(GREEN)Integration tests passed.$(NC)"
+
+test-all:
+	@echo "$(YELLOW)Running all tests with coverage...$(NC)"
+	uv run pytest tests/ -v --cov=lambda --cov=glue --cov-report=term-missing
+	@echo "$(GREEN)All tests passed.$(NC)"
 
 # -----------------------------------
 # Terraform Commands
@@ -61,10 +84,34 @@ destroy:
 	@echo "$(GREEN)All infrastructure removed.$(NC)"
 
 # -----------------------------------
+# Backfill
+# -----------------------------------
+backfill:
+ifndef START
+	$(error START is required. Usage: make backfill START=2023-01-01 END=2023-12-31)
+endif
+ifndef END
+	$(error END is required. Usage: make backfill START=2023-01-01 END=2023-12-31)
+endif
+	@echo "$(YELLOW)Starting backfill: $(START) to $(END)...$(NC)"
+	$(eval SFN_ARN := $(shell cd $(TF_DIR) && terraform output -raw step_function_arn 2>&1))
+	@if [ -z "$(SFN_ARN)" ] || echo "$(SFN_ARN)" | grep -qi "error"; then \
+		echo "$(RED)ERROR: Failed to retrieve Step Function ARN from Terraform.$(NC)"; \
+		echo "$(RED)Run 'make init' and 'make deploy' first.$(NC)"; \
+		exit 1; \
+	fi
+	aws stepfunctions start-execution \
+		--state-machine-arn "$(SFN_ARN)" \
+		--input '{"mode":"backfill","start_date":"$(START)","end_date":"$(END)"}' \
+		--name "backfill-$(START)-to-$(END)-$$(date +%s)" \
+	|| (echo "$(RED)ERROR: Failed to start backfill execution.$(NC)" && exit 1)
+	@echo "$(GREEN)Backfill execution started.$(NC)"
+
+# -----------------------------------
 # Utility Commands
 # -----------------------------------
 clean:
 	@echo "$(YELLOW)Cleaning up...$(NC)"
-	rm -f $(LAMBDA_DIR)/lambda_ingestion_function.zip $(LAMBDA_DIR)/lambda_validation_function.zip
+	rm -f $(LAMBDA_DIR)/lambda_fx_ingestion.zip $(LAMBDA_DIR)/lambda_ecb_ingestion.zip $(LAMBDA_DIR)/lambda_fred_ingestion.zip $(LAMBDA_DIR)/lambda_validation_function.zip
 	cd $(TF_DIR) && rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup
 	@echo "$(GREEN)Local cleanup complete.$(NC)"

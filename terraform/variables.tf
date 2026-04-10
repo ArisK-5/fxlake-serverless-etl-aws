@@ -28,6 +28,11 @@ variable "cloudtrail_logs_bucket_name" {
   type        = string
 }
 
+variable "quarantine_bucket_name" {
+  description = "S3 bucket for quarantined data quality failures"
+  type        = string
+}
+
 variable "metric_namespace_prefix" {
   description = "Prefix for CloudWatch metric namespaces"
   type        = string
@@ -39,9 +44,43 @@ variable "sns_email_address" {
   type        = string
 }
 
-variable "lambda_ingestion_name" {
+variable "lambda_fx_ingestion_name" {
   type    = string
-  default = "fxlake-api-ingest-lambda"
+  default = "fxlake-fx-ingest-lambda"
+}
+
+variable "lambda_ecb_ingestion_name" {
+  type    = string
+  default = "fxlake-ecb-ingest-lambda"
+}
+
+variable "lambda_fred_ingestion_name" {
+  type    = string
+  default = "fxlake-fred-ingest-lambda"
+}
+
+variable "fred_base_url" {
+  description = "Base URL for the FRED API"
+  type        = string
+  default     = "https://api.stlouisfed.org/fred"
+}
+
+variable "fred_series" {
+  description = "FRED series ID to ingest (e.g. UNRATE, FEDFUNDS)"
+  type        = string
+  default     = "UNRATE"
+}
+
+variable "fred_api_key" {
+  description = "API key for the FRED API (stored as secret)"
+  type        = string
+  sensitive   = true
+}
+
+variable "ecb_base_url" {
+  description = "Base URL for the ECB Statistics Data Warehouse SDMX-JSON API"
+  type        = string
+  default     = "https://data-api.ecb.europa.eu/service/data"
 }
 
 variable "lambda_validation_name" {
@@ -82,6 +121,12 @@ variable "fx_base_currency" {
   description = "Base currency for exchange rates"
   type        = string
   default     = "EUR"
+}
+
+variable "dynamodb_state_table_name" {
+  description = "DynamoDB table name for pipeline state tracking"
+  type        = string
+  default     = "fxlake-pipeline-state"
 }
 
 variable "fx_output_format" {

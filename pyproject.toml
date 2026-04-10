@@ -1,0 +1,37 @@
+[project]
+name = "fxlake-serverless-etl-aws"
+version = "0.1.0"
+description = "Serverless ETL pipeline on AWS for daily foreign exchange rates"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.40.72",
+    "diagrams>=0.24.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "moto[s3,cloudwatch,athena,dynamodb]>=5.0",
+    "responses>=0.25",
+    "polars>=0.18.8",
+    "pyarrow>=14.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["lambda", "glue"]
+markers = ["integration: end-to-end pipeline integration tests (moto + responses)"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# conftest.py must set env vars and patch sys.modules before importing test deps
+"tests/conftest.py" = ["E402"]

@@ -1,61 +1,79 @@
 #!/bin/bash
 set -e
 
-#############################################
-# Build: lambda_ingestion_function.py
-#############################################
+# -----------------------------------------------------------
+# Validate that all required source files exist before building
+# -----------------------------------------------------------
+REQUIRED_FILES=(
+  lambda_fx_ingestion.py
+  lambda_ecb_ingestion.py
+  lambda_fred_ingestion.py
+  lambda_validation_function.py
+)
 
-echo "📦 Building Lambda: Ingestion Function..."
+echo "🔍 Validating Lambda source files..."
 
-# Clean up any existing files
-rm -rf package lambda_ingestion_function.zip
+for f in "${REQUIRED_FILES[@]}"; do
+  if [ ! -f "$f" ]; then
+    echo "❌ ERROR: Required source file not found: $f"
+    exit 1
+  fi
+done
 
-# Create a temporary directory for dependencies
-mkdir -p package
-
-# Install dependencies from requirements.txt
-if [ -f "requirements.txt" ]; then
-  pip3 install --target ./package -r requirements.txt
+if [ ! -d "common" ]; then
+  echo "❌ ERROR: Required directory not found: common/"
+  exit 1
 fi
 
-# Copy Lambda function to package directory
-cp lambda_ingestion_function.py package/
+echo "✅ All source files present."
 
-# Create zip file for ingestion Lambda
-cd package
-zip -r ../lambda_ingestion_function.zip .
-cd ..
+# -----------------------------------------------------------
+# Helper: build one Lambda zip
+#   Usage: build_lambda <source_file> <zip_name> [requirements_file]
+# -----------------------------------------------------------
+build_lambda() {
+  local source_file="$1"
+  local zip_name="$2"
+  local req_file="${3:-requirements.txt}"
 
-# Clean up
-rm -rf package
+  echo "📦 Building Lambda: ${source_file}..."
 
-#############################################
-# Build: lambda_validation_function.py
-#############################################
+  rm -rf package "${zip_name}"
+  mkdir -p package
 
-echo "📦 Building Lambda: Validation Function..."
+  if [ -f "${req_file}" ]; then
+    echo "  📚 Installing dependencies from ${req_file}..."
+    pip3 install --target ./package -r "${req_file}"
+  else
+    echo "  ⚠️  No ${req_file} found — skipping dependency install"
+  fi
 
-# Clean up any existing files
-rm -rf package lambda_validation_function.zip
+  cp "${source_file}" package/
+  cp -r common package/
 
-# Create a temporary directory for dependencies (if any)
-mkdir -p package
+  cd package
+  zip -r "../${zip_name}" .
+  cd ..
 
-# Install dependencies if validation function has its own requirements
-if [ -f "requirements_validation.txt" ]; then
-  pip3 install --target ./package -r requirements_validation.txt
-fi
+  rm -rf package
 
-# Copy validation Lambda function to package directory
-cp lambda_validation_function.py package/
+  # Verify zip was created and is non-empty
+  if [ ! -s "${zip_name}" ]; then
+    echo "❌ ERROR: ${zip_name} is missing or empty after build"
+    exit 1
+  fi
 
-# Create zip file for validation Lambda
-cd package
-zip -r ../lambda_validation_function.zip .
-cd ..
+  echo "  ✅ Created ${zip_name} ($(du -h "${zip_name}" | cut -f1))"
+}
 
-# Clean up
-rm -rf package
+# -----------------------------------------------------------
+# Build each Lambda
+# -----------------------------------------------------------
+build_lambda lambda_fx_ingestion.py       lambda_fx_ingestion.zip
+build_lambda lambda_ecb_ingestion.py      lambda_ecb_ingestion.zip
+build_lambda lambda_fred_ingestion.py     lambda_fred_ingestion.zip
+build_lambda lambda_validation_function.py lambda_validation_function.zip requirements_validation.txt
 
+echo ""
 echo "✅ Lambda packaging complete."
-echo "Created: lambda_ingestion_function.zip and lambda_validation_function.zip"
+echo "Created: lambda_fx_ingestion.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip"

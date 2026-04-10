@@ -18,6 +18,11 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "lambda_xray" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 resource "aws_iam_policy" "lambda_s3_policy" {
   name = "fxlake-lambda-s3"
   policy = jsonencode({
@@ -46,6 +51,28 @@ resource "aws_iam_policy" "lambda_s3_policy" {
 resource "aws_iam_role_policy_attachment" "lambda_s3_attach" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = aws_iam_policy.lambda_s3_policy.arn
+}
+
+resource "aws_iam_policy" "lambda_dynamodb_policy" {
+  name = "fxlake-lambda-dynamodb"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+        ],
+        Effect   = "Allow",
+        Resource = aws_dynamodb_table.pipeline_state.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_dynamodb_attach" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.lambda_dynamodb_policy.arn
 }
 
 resource "aws_iam_role_policy" "check_query_results_policy" {
@@ -102,11 +129,32 @@ resource "aws_iam_policy" "glue_s3_policy" {
           aws_s3_bucket.raw.arn,
           "${aws_s3_bucket.raw.arn}/*",
           aws_s3_bucket.processed.arn,
-          "${aws_s3_bucket.processed.arn}/*"
+          "${aws_s3_bucket.processed.arn}/*",
+          aws_s3_bucket.quarantine.arn,
+          "${aws_s3_bucket.quarantine.arn}/*"
         ]
       }
     ]
   })
+}
+
+resource "aws_iam_policy" "glue_cloudwatch_policy" {
+  name = "fxlake-glue-cloudwatch"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action   = "cloudwatch:PutMetricData",
+        Effect   = "Allow",
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "glue_cloudwatch" {
+  role       = aws_iam_role.glue_service_role.name
+  policy_arn = aws_iam_policy.glue_cloudwatch_policy.arn
 }
 
 resource "aws_iam_role_policy_attachment" "glue_s3" {
@@ -146,7 +194,9 @@ resource "aws_iam_role_policy" "sfn_policy" {
           "lambda:InvokeFunction"
         ],
         Resource = [
-          aws_lambda_function.api_ingest.arn,
+          aws_lambda_function.fx_ingest.arn,
+          module.ecb_ingest.function_arn,
+          module.fred_ingest.function_arn,
           aws_lambda_function.check_query_results.arn
         ]
       },
@@ -227,6 +277,32 @@ resource "aws_iam_role_policy" "sfn_policy" {
         # Resource = "${aws_cloudwatch_log_group.stepfunctions_logs.arn}:*"
       }
     ]
+  })
+}
+
+# EventBridge role to invoke Step Functions
+resource "aws_iam_role" "eventbridge_sfn_invoke_role" {
+  name = "fxlake-eventbridge-sfn-invoke-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
+      Principal = { Service = "events.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "eventbridge_sfn_invoke_policy" {
+  name = "fxlake-eventbridge-sfn-invoke-policy"
+  role = aws_iam_role.eventbridge_sfn_invoke_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect   = "Allow",
+      Action   = "states:StartExecution",
+      Resource = aws_sfn_state_machine.etl.arn
+    }]
   })
 }
 
