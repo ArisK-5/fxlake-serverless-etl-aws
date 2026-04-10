@@ -86,6 +86,19 @@ FRED-specific: fetches `series/observations` for a single configurable series (d
 
 Subclasses implement `fetch_data(start, end)` and `make_filename(start, end)`.
 
+#### Adding a New Lambda Function
+
+When adding `lambda_new_source.py`, update **all** of these (missing any one causes a silent deployment failure):
+
+1. `lambda/lambda_new_source.py` — handler code extending `BaseIngestionHandler`
+2. `lambda/package_lambdas.sh` — add `build_lambda` call for the new file
+3. `terraform/lambda.tf` — `aws_lambda_function` resource with correct `handler` and `filename`
+4. `terraform/variables.tf` — add `lambda_new_source_name` variable
+5. `terraform/iam.tf` — IAM role/policy if the Lambda needs AWS permissions
+6. `terraform/step_function.tf` — wire into the state machine orchestration
+7. `.github/workflows/ci.yml` — add stub zip in `terraform-validate` job; `lambda-package` job auto-discovers via `package_lambdas.sh`
+8. `tests/test_lambda_new_source.py` — unit tests for the new handler
+
 ECB response parsing: SDMX-JSON format (`dataSets[0].series["FREQ:CCY:..."]`) is normalised into `{"base": "EUR", "source": "ecb", "rates": {date: {ccy: rate}}}`.
 
 ### Incremental Processing
@@ -196,13 +209,13 @@ All source files follow these conventions:
 
 - **Module-level config**: `os.environ[]` (not `os.getenv`) for required vars — fails fast at cold start if missing. `os.getenv()` for optional vars (e.g., `STATE_TABLE`)
 - **Exception catches are type-specific**: `ClientError` for AWS SDK errors, `Timeout`/`HTTPError`/`ConnectionError` for HTTP, `json.JSONDecodeError`/`KeyError`/`ValueError` for data parsing
-- **All catches re-raise** after logging — no silent swallowing (except `publish_custom_metric` which catches `Exception` because metric failure must not abort validation)
+- **All catches re-raise** after logging — no silent swallowing (except `_publish_quality_metric` in `glue_transform.py` which catches `ClientError` only because CloudWatch metric failure must not abort the pipeline; other exceptions propagate to surface bugs)
 - **All error logs include context**: bucket names, filenames, API URLs, query IDs, error codes
 - **Type annotations** on all function signatures
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 247 tests (215 unit + 32 integration), 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 249 tests (217 unit + 32 integration), 97% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
@@ -229,7 +242,7 @@ uv run pytest tests/test_lambda_fx_ingestion.py -v    # Single file
 | `lambda/lambda_ecb_ingestion.py` | 100% |
 | `lambda/lambda_fred_ingestion.py` | 100% |
 | `lambda/lambda_validation_function.py` | 98% |
-| `glue/glue_transform.py` | 93% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard, metric publish warning) |
+| `glue/glue_transform.py` | 94% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard) |
 | `glue/quality.py` | 100% |
 
 **Overall: 97%**
@@ -257,7 +270,7 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 | `test_lambda_fx_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
 | `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (20 tests) |
 | `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |
-| `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain, quality integration (35 tests) |
+| `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain, quality integration, metric error handling (37 tests) |
 | `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder, invariant validation (29 tests) |
 | `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
 | `test_structured_logging.py` | Structured logging — JSON formatter, request ID filter, configure_logger, inject_request_id, Timer (18 tests) |
@@ -270,7 +283,7 @@ Two GitHub Actions workflows in `.github/workflows/`:
 
 | Workflow | Trigger | Jobs |
 |----------|---------|------|
-| `ci.yml` | PR → `main` or `fxlake-v2-production` | `python-lint-test` (ruff + pytest), `terraform-validate` (init + validate + fmt check) |
+| `ci.yml` | PR → `main` or `fxlake-v2-production` | `python-lint-test` (ruff + pytest), `lambda-package` (runs `package_lambdas.sh` + verifies non-empty zips), `terraform-validate` (init + validate + fmt check, depends on `lambda-package`) |
 | `deploy.yml` | Push → `main` or `fxlake-v2-production` | `terraform-plan` (always, uploads `tfplan` artifact with 1-day retention), `terraform-apply` (downloads artifact, manual approval via `production` environment — applies the exact plan from the plan job, not a fresh plan) |
 
 ### AWS Authentication (OIDC)

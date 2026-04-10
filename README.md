@@ -124,7 +124,7 @@ Diagrams are generated with [Diagrams](https://diagrams.mingrammer.com) — see 
 - **Saga Pattern:** DynamoDB state is only committed after Glue succeeds, preventing data corruption on partial failures.
 - **Structured Observability:** JSON logging across all Lambdas, X-Ray tracing, 11 CloudWatch alarms, and a monitoring dashboard.
 - **CI/CD:** GitHub Actions with OIDC authentication — lint + test on PRs, plan + apply on merge.
-- **97% Test Coverage:** 247 tests (215 unit + 32 integration) using pytest, moto, and responses.
+- **97% Test Coverage:** 249 tests (217 unit + 32 integration) using pytest, moto, and responses.
 
 ### Skills Demonstrated
 
@@ -251,7 +251,7 @@ Two GitHub Actions workflows with **OIDC authentication** (no stored AWS credent
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `ci.yml` | Pull request | Ruff lint + pytest (unit tests) + `terraform validate` + `terraform fmt -check` |
+| `ci.yml` | Pull request | Ruff lint + pytest (unit tests) + Lambda packaging + zip verification + `terraform validate` + `terraform fmt -check` |
 | `deploy.yml` | Push to `main` | `terraform plan` (uploads artifact) → manual approval → `terraform apply` (exact plan from artifact) |
 
 ### Required GitHub Secrets
