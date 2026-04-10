@@ -526,3 +526,30 @@ class TestQualityIntegration:
         obj = s3_mock.get_object(Bucket="test-quarantine-bucket", Key=q_key)
         quarantined = json.loads(obj["Body"].read())
         assert len(quarantined) == 1
+
+
+class TestPublishQualityMetric:
+    """Tests for _publish_quality_metric error handling."""
+
+    def test_client_error_is_swallowed(self, caplog):
+        """CloudWatch ClientError should be logged but not raised."""
+        error_response = {"Error": {"Code": "InternalFailure", "Message": "oops"}}
+        with patch.object(
+            glue_transform.cloudwatch,
+            "put_metric_data",
+            side_effect=ClientError(error_response, "PutMetricData"),
+        ):
+            # Should NOT raise
+            glue_transform._publish_quality_metric("TestMetric", 1.0, "fx_rates")
+
+        assert "InternalFailure" in caplog.text
+
+    def test_non_client_error_propagates(self):
+        """Non-CloudWatch errors (bugs) must propagate, not be swallowed."""
+        with patch.object(
+            glue_transform.cloudwatch,
+            "put_metric_data",
+            side_effect=TypeError("unexpected None"),
+        ):
+            with pytest.raises(TypeError, match="unexpected None"):
+                glue_transform._publish_quality_metric("TestMetric", 1.0, "fx_rates")

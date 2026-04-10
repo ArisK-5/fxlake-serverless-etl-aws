@@ -196,12 +196,12 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 
 ## Day 1 Implementation Decisions (2026-03-30)
 
-### D16: Broad `except Exception` justified in `publish_custom_metric`
+### D16: `_publish_quality_metric` exception scope — narrowed to `ClientError`
 
-**Context:** PR review recommended narrowing `except Exception` to `except ClientError` in `publish_custom_metric()`. A follow-up review reversed this.
-**Decision:** Keep `except Exception` — this is the ONE place where broad catching is correct.
-**Rationale:** CloudWatch metric publishing is non-critical. A `BotoCoreError` (connection-level), `EndpointConnectionError`, or even a `TypeError` from bad metric data must NOT crash the validation handler. `ClientError` only covers AWS API errors — it misses the entire `BotoCoreError` hierarchy. The function's explicit purpose is "log and continue regardless."
-**Interview talking point:** "I can explain why every except clause has the scope it has."
+**Context:** PR review recommended narrowing `except Exception` to `except ClientError` in `publish_custom_metric()`. A follow-up review reversed this, keeping broad `except Exception`. A subsequent PR review (PR #21 findings) reversed it again to `except ClientError`.
+**Decision:** Narrow to `except ClientError` in `_publish_quality_metric` (Glue transform). The validation Lambda's `publish_custom_metric` retains `except Exception` because it is the final pipeline step with no downstream consequences.
+**Rationale:** In `glue_transform.py`, swallowing `TypeError`/`AttributeError` hides real bugs (e.g. passing `None` as metric value). `ClientError` covers all AWS API failures (throttling, permissions, service errors). Non-`ClientError` exceptions indicate code bugs that should surface in logs and execution history. The validation Lambda is different — it's the terminal step, so broad catching there is acceptable (see `publish_custom_metric` in `lambda_validation_function.py`).
+**Interview talking point:** "I can explain why every except clause has the scope it has — and why the same function in two contexts can justify different scopes."
 
 ### D17: Lambda handler outer try/except restored with structured context
 

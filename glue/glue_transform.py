@@ -124,7 +124,13 @@ def _write_partition(df: "pl.DataFrame", out_key: str) -> None:
 
 
 def _publish_quality_metric(metric_name: str, value: float, domain: str) -> None:
-    """Publish a quality metric to CloudWatch. Non-critical — logs and continues on failure."""
+    """Publish a quality metric to CloudWatch.
+
+    Only CloudWatch API errors (ClientError) are swallowed — metric publishing
+    must not abort the pipeline.  Other exceptions (TypeError, AttributeError,
+    etc.) indicate bugs and are allowed to propagate so they surface in logs
+    and execution history.
+    """
     try:
         cloudwatch.put_metric_data(
             Namespace=metric_namespace,
@@ -137,9 +143,9 @@ def _publish_quality_metric(metric_name: str, value: float, domain: str) -> None
                 }
             ],
         )
-    except Exception as e:
+    except ClientError as e:
         logger.error(
-            f"Failed to publish metric {metric_name}: {type(e).__name__}: {e}",
+            f"Failed to publish metric {metric_name}: {e.response['Error']['Code']}",
             exc_info=True,
         )
 

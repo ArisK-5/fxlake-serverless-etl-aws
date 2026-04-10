@@ -55,7 +55,7 @@ Each "Day" below is a logical work unit of 5-8 hours, NOT a calendar day. At 2-3
 2. **Error handling hardening (unplanned):** Reviews revealed issues in production code that should be fixed before building on top of it:
    - `fetch_exchange_rates()`: `json.JSONDecodeError` fell through all catches (not a `RequestException` subclass)
    - `save_to_s3()`: bare `except Exception` → narrowed to `ClientError`
-   - `publish_custom_metric()`: `except ClientError` was too narrow for its purpose → widened back to `except Exception` (justified — see D16)
+   - `publish_custom_metric()`: `except ClientError` was initially too narrow → widened to `except Exception` (D16). Later, `_publish_quality_metric` in Glue was narrowed back to `except ClientError` (PR #21 review) — bugs like `TypeError` should surface, not be swallowed mid-pipeline. Validation Lambda retains broad catch since it's the terminal step.
    - `lambda_handler()`: outer try/except removed then restored with structured context (see D17)
 
 3. **Step Function error classes refined (unplanned):** Generic `States.TaskFailed` replaced with service-specific errors (`Athena.InternalServerException`, `Lambda.AWSLambdaException`, `Glue.ConcurrentRunsExceededException`). See D18-D19.

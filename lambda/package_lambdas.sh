@@ -1,93 +1,79 @@
 #!/bin/bash
 set -e
 
-#############################################
-# Build: lambda_fx_ingestion.py
-#############################################
+# -----------------------------------------------------------
+# Validate that all required source files exist before building
+# -----------------------------------------------------------
+REQUIRED_FILES=(
+  lambda_fx_ingestion.py
+  lambda_ecb_ingestion.py
+  lambda_fred_ingestion.py
+  lambda_validation_function.py
+)
 
-echo "📦 Building Lambda: FX Ingestion Function..."
+echo "🔍 Validating Lambda source files..."
 
-rm -rf package lambda_fx_ingestion.zip
-mkdir -p package
+for f in "${REQUIRED_FILES[@]}"; do
+  if [ ! -f "$f" ]; then
+    echo "❌ ERROR: Required source file not found: $f"
+    exit 1
+  fi
+done
 
-if [ -f "requirements.txt" ]; then
-  pip3 install --target ./package -r requirements.txt
+if [ ! -d "common" ]; then
+  echo "❌ ERROR: Required directory not found: common/"
+  exit 1
 fi
 
-cp lambda_fx_ingestion.py package/
-cp -r common package/
+echo "✅ All source files present."
 
-cd package
-zip -r ../lambda_fx_ingestion.zip .
-cd ..
+# -----------------------------------------------------------
+# Helper: build one Lambda zip
+#   Usage: build_lambda <source_file> <zip_name> [requirements_file]
+# -----------------------------------------------------------
+build_lambda() {
+  local source_file="$1"
+  local zip_name="$2"
+  local req_file="${3:-requirements.txt}"
 
-rm -rf package
+  echo "📦 Building Lambda: ${source_file}..."
 
-#############################################
-# Build: lambda_ecb_ingestion.py
-#############################################
+  rm -rf package "${zip_name}"
+  mkdir -p package
 
-echo "📦 Building Lambda: ECB Ingestion Function..."
+  if [ -f "${req_file}" ]; then
+    echo "  📚 Installing dependencies from ${req_file}..."
+    pip3 install --target ./package -r "${req_file}"
+  else
+    echo "  ⚠️  No ${req_file} found — skipping dependency install"
+  fi
 
-rm -rf package lambda_ecb_ingestion.zip
-mkdir -p package
+  cp "${source_file}" package/
+  cp -r common package/
 
-if [ -f "requirements.txt" ]; then
-  pip3 install --target ./package -r requirements.txt
-fi
+  cd package
+  zip -r "../${zip_name}" .
+  cd ..
 
-cp lambda_ecb_ingestion.py package/
-cp -r common package/
+  rm -rf package
 
-cd package
-zip -r ../lambda_ecb_ingestion.zip .
-cd ..
+  # Verify zip was created and is non-empty
+  if [ ! -s "${zip_name}" ]; then
+    echo "❌ ERROR: ${zip_name} is missing or empty after build"
+    exit 1
+  fi
 
-rm -rf package
+  echo "  ✅ Created ${zip_name} ($(du -h "${zip_name}" | cut -f1))"
+}
 
-#############################################
-# Build: lambda_fred_ingestion.py
-#############################################
+# -----------------------------------------------------------
+# Build each Lambda
+# -----------------------------------------------------------
+build_lambda lambda_fx_ingestion.py       lambda_fx_ingestion.zip
+build_lambda lambda_ecb_ingestion.py      lambda_ecb_ingestion.zip
+build_lambda lambda_fred_ingestion.py     lambda_fred_ingestion.zip
+build_lambda lambda_validation_function.py lambda_validation_function.zip requirements_validation.txt
 
-echo "📦 Building Lambda: FRED Ingestion Function..."
-
-rm -rf package lambda_fred_ingestion.zip
-mkdir -p package
-
-if [ -f "requirements.txt" ]; then
-  pip3 install --target ./package -r requirements.txt
-fi
-
-cp lambda_fred_ingestion.py package/
-cp -r common package/
-
-cd package
-zip -r ../lambda_fred_ingestion.zip .
-cd ..
-
-rm -rf package
-
-#############################################
-# Build: lambda_validation_function.py
-#############################################
-
-echo "📦 Building Lambda: Validation Function..."
-
-rm -rf package lambda_validation_function.zip
-mkdir -p package
-
-if [ -f "requirements_validation.txt" ]; then
-  pip3 install --target ./package -r requirements_validation.txt
-fi
-
-cp lambda_validation_function.py package/
-cp -r common package/
-
-cd package
-zip -r ../lambda_validation_function.zip .
-cd ..
-
-rm -rf package
-
+echo ""
 echo "✅ Lambda packaging complete."
 echo "Created: lambda_fx_ingestion.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip"
