@@ -143,7 +143,7 @@ class TestParallelIngestion:
 
         import lambda_ecb_ingestion as ecb_mod
         import lambda_fred_ingestion as fred_mod
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_result = fx_mod.lambda_handler({}, None)
         ecb_result = ecb_mod.lambda_handler({}, None)
@@ -177,7 +177,7 @@ class TestParallelIngestion:
 
         import lambda_ecb_ingestion as ecb_mod
         import lambda_fred_ingestion as fred_mod
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_mod.lambda_handler({}, None)
         ecb_mod.lambda_handler({}, None)
@@ -219,7 +219,7 @@ class TestParallelIngestion:
 
         import lambda_ecb_ingestion as ecb_mod
         import lambda_fred_ingestion as fred_mod
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_mod.lambda_handler({}, None)
         ecb_mod.lambda_handler({}, None)
@@ -261,7 +261,7 @@ class TestGlueMultiSchema:
 
         import lambda_ecb_ingestion as ecb_mod
         import lambda_fred_ingestion as fred_mod
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_mod.lambda_handler({}, None)
         ecb_mod.lambda_handler({}, None)
@@ -300,7 +300,7 @@ class TestGlueMultiSchema:
         responses.add(responses.GET, FRED_API_URL, json=SAMPLE_FRED, status=200)
 
         import lambda_fred_ingestion as fred_mod
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_mod.lambda_handler({}, None)
         fred_mod.lambda_handler({}, None)
@@ -338,7 +338,7 @@ class TestGlueMultiSchema:
         responses.add(responses.GET, FRED_API_URL, json=SAMPLE_FRED, status=200)
 
         import lambda_fred_ingestion as fred_mod
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_mod.lambda_handler({}, None)
         fred_mod.lambda_handler({}, None)
@@ -380,7 +380,7 @@ class TestGlueMultiSchema:
             status=200,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_mod.lambda_handler({}, None)
 

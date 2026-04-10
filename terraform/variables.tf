@@ -44,9 +44,9 @@ variable "sns_email_address" {
   type        = string
 }
 
-variable "lambda_ingestion_name" {
+variable "lambda_fx_ingestion_name" {
   type    = string
-  default = "fxlake-api-ingest-lambda"
+  default = "fxlake-fx-ingest-lambda"
 }
 
 variable "lambda_ecb_ingestion_name" {

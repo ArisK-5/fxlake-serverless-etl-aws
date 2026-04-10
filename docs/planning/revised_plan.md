@@ -914,7 +914,16 @@ All 3 planned deliverables implemented:
 
 ### Day 10: Final Polish + Demo Readiness
 
-#### Session 10A: README + diagram update (Day 10 morning)
+#### Session 10A: README + diagram update (Day 10 morning) ✅
+
+**Status:** Complete (2026-04-10)
+
+**Delivered:**
+1. Updated `assets/cloud-architecture.py`: added 3 data sources, parallel Lambda ingestion, DynamoDB state, quarantine bucket, Glue with Polars, full data flow with edge labels
+2. Regenerated `assets/diagrams/cloud-architecture.png` (300 KB)
+3. Rewrote `README.md`: new repo structure tree, architecture section with multi-source pipeline, data sources table, data quality framework table, CI/CD section with GitHub secrets, backfill instructions, ADR links, updated features/skills
+4. Updated `CLAUDE.md`: project overview now mentions all 3 sources + quality checks
+5. Added D74 to decision_log.md
 
 **Claude Code prompt:**
 ```

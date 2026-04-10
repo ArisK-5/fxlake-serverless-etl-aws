@@ -152,7 +152,7 @@ class TestFullPipelineFlow:
         )
 
         # --- Stage 1: Ingestion ---
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         result = fx_mod.lambda_handler({}, None)
 
@@ -278,7 +278,7 @@ class TestBackfillPipeline:
             status=200,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         result = fx_mod.lambda_handler(
             {"mode": "backfill", "start_date": "2023-06-01", "end_date": "2023-06-30"},
@@ -370,7 +370,7 @@ class TestBackfillPipeline:
             status=500,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         with pytest.raises(Exception):
             fx_mod.lambda_handler(
@@ -415,7 +415,7 @@ class TestDynamoDBStateManagement:
             status=200,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         ingest_result = fx_mod.lambda_handler({}, None)
         assert ingest_result["status"] == "ok"
@@ -476,7 +476,7 @@ class TestDynamoDBStateManagement:
 
         import lambda_ecb_ingestion as ecb_mod
         import lambda_fred_ingestion as fred_mod
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_result = fx_mod.lambda_handler({}, None)
         ecb_result = ecb_mod.lambda_handler({}, None)
@@ -519,7 +519,7 @@ class TestCloudWatchMetrics:
             status=200,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         result = fx_mod.lambda_handler({}, None)
 
@@ -631,7 +631,7 @@ class TestPipelineSagaPattern:
             status=200,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_mod.lambda_handler({}, None)
 
@@ -663,7 +663,7 @@ class TestPipelineSagaPattern:
 
         import lambda_ecb_ingestion as ecb_mod
         import lambda_fred_ingestion as fred_mod
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_result = fx_mod.lambda_handler({}, None)
         ecb_result = ecb_mod.lambda_handler({}, None)
@@ -723,7 +723,7 @@ class TestCriticalQualityFailure:
             status=200,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         result = fx_mod.lambda_handler({}, None)
         assert result["status"] == "ok"
@@ -779,7 +779,7 @@ class TestCriticalQualityFailure:
             status=200,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         fx_mod.lambda_handler({}, None)
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
@@ -816,7 +816,7 @@ class TestAPIErrorPropagation:
             status=500,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         with pytest.raises(Exception):
             fx_mod.lambda_handler({}, None)
@@ -879,7 +879,7 @@ class TestAPIErrorPropagation:
             status=500,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         with pytest.raises(Exception):
             fx_mod.lambda_handler({}, None)
@@ -919,7 +919,7 @@ class TestGlueFailureSagaRollback:
             status=200,
         )
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         ingest_result = fx_mod.lambda_handler({}, None)
         assert ingest_result["status"] == "ok"
@@ -945,7 +945,7 @@ class TestGlueFailureSagaRollback:
     def test_update_state_without_state_table_raises(self, integration_aws):
         """Calling update_state when STATE_TABLE is not set raises RuntimeError."""
         # STATE_TABLE not set → handler is in static mode
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         with pytest.raises(RuntimeError, match="STATE_TABLE"):
             fx_mod.lambda_handler(
@@ -959,7 +959,7 @@ class TestGlueFailureSagaRollback:
         """Calling update_state without end_date raises ValueError."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
 
-        import lambda_ingestion_function as fx_mod
+        import lambda_fx_ingestion as fx_mod
 
         with pytest.raises(ValueError, match="end_date"):
             fx_mod.lambda_handler({"action": "update_state"}, None)

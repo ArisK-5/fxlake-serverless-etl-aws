@@ -6,7 +6,7 @@
 # Variables
 TF_DIR=terraform
 LAMBDA_DIR=lambda
-LAMBDA_ZIP=lambda_ingestion_function.zip
+LAMBDA_ZIP=lambda_fx_ingestion.zip
 
 # Colors for output
 GREEN=\033[0;32m
@@ -112,6 +112,6 @@ endif
 # -----------------------------------
 clean:
 	@echo "$(YELLOW)Cleaning up...$(NC)"
-	rm -f $(LAMBDA_DIR)/lambda_ingestion_function.zip $(LAMBDA_DIR)/lambda_validation_function.zip
+	rm -f $(LAMBDA_DIR)/lambda_fx_ingestion.zip $(LAMBDA_DIR)/lambda_ecb_ingestion.zip $(LAMBDA_DIR)/lambda_fred_ingestion.zip $(LAMBDA_DIR)/lambda_validation_function.zip
 	cd $(TF_DIR) && rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup
 	@echo "$(GREEN)Local cleanup complete.$(NC)"

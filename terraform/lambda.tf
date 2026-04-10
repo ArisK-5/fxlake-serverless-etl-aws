@@ -1,12 +1,12 @@
-resource "aws_lambda_function" "api_ingest" {
-  function_name    = var.lambda_ingestion_name
+resource "aws_lambda_function" "fx_ingest" {
+  function_name    = var.lambda_fx_ingestion_name
   description      = "Fetches historical exchange rates from Frankfurter API and stores them in S3 for ETL processing"
-  handler          = "lambda_ingestion_function.lambda_handler"
+  handler          = "lambda_fx_ingestion.lambda_handler"
   runtime          = "python3.12"
   role             = aws_iam_role.lambda_exec.arn
-  filename         = "../lambda/lambda_ingestion_function.zip"
+  filename         = "../lambda/lambda_fx_ingestion.zip"
   timeout          = 60
-  source_code_hash = filebase64sha256("../lambda/lambda_ingestion_function.zip")
+  source_code_hash = filebase64sha256("../lambda/lambda_fx_ingestion.zip")
   tracing_config {
     mode = "Active"
   }

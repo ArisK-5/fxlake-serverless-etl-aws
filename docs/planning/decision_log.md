@@ -575,3 +575,11 @@ Sonnet 4.5 review of the plan raised 5 concerns. Validated against actual codeba
 **Context:** Key architectural decisions were captured informally in this decision log and in CLAUDE.md but lacked the structured format expected in production codebases. ADRs provide a standard, discoverable format.
 **Decision:** Created `docs/adr/` with 4 ADRs covering the four most consequential design choices: Polars over PySpark (ADR-001), DynamoDB for state (ADR-002), parallel ingestion (ADR-003), quality checks in Glue (ADR-004). Used the standard ADR template (Title, Status, Date, Context, Decision, Consequences) with additions: alternatives considered and migration paths.
 **Rationale:** ADRs are a portfolio signal for thoughtful engineering. Each ADR is grounded in actual implementation details (DPU costs, error codes, Terraform config) rather than generic trade-off lists, demonstrating that the decisions were made deliberately.
+
+## Session 10A Decisions (2026-04-10)
+
+### D74: Comprehensive README rewrite for portfolio readiness
+
+**Context:** The README was written for the original single-source (Frankfurter-only) version of the pipeline. After 9 sessions of extension (multi-source, quality framework, backfill, CI/CD, ADRs), it was severely outdated — missing 2 of 3 data sources, no mention of DynamoDB, quality checks, backfill, CI/CD, or ADRs.
+**Decision:** Full rewrite of README.md covering: updated repo structure tree, multi-source architecture description, data sources table, data quality framework with check matrix, CI/CD section with required GitHub secrets, backfill instructions, ADR links. Updated cloud-architecture.py diagram to show all 3 sources, parallel ingestion, DynamoDB, quarantine bucket, and labelled data flow edges.
+**Rationale:** The README is the primary entry point for anyone evaluating this project. A portfolio project with outdated documentation undermines the engineering quality it's meant to demonstrate. The diagram and README now match the actual deployed architecture.

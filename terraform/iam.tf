@@ -194,7 +194,7 @@ resource "aws_iam_role_policy" "sfn_policy" {
           "lambda:InvokeFunction"
         ],
         Resource = [
-          aws_lambda_function.api_ingest.arn,
+          aws_lambda_function.fx_ingest.arn,
           module.ecb_ingest.function_arn,
           module.fred_ingest.function_arn,
           aws_lambda_function.check_query_results.arn

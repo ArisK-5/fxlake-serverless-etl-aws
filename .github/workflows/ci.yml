@@ -46,7 +46,7 @@ jobs:
         # filebase64sha256() evaluates at validate time; stubs satisfy the function
         # without running a real package build in CI.
         run: |
-          touch lambda/lambda_ingestion_function.zip
+          touch lambda/lambda_fx_ingestion.zip
           touch lambda/lambda_ecb_ingestion.zip
           touch lambda/lambda_fred_ingestion.zip
           touch lambda/lambda_validation_function.zip
