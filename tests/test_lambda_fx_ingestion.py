@@ -3,12 +3,12 @@ import json
 from datetime import date
 from unittest.mock import MagicMock
 
-import lambda_ingestion_function as ingestion
+import lambda_fx_ingestion as ingestion
 import pytest
 import requests
 import responses
 from botocore.exceptions import ClientError
-from lambda_ingestion_function import FrankfurterHandler
+from lambda_fx_ingestion import FrankfurterHandler
 
 # Must match TEST_STATE_TABLE in conftest.py — both reference the same moto table name.
 TEST_STATE_TABLE = "test-state-table"

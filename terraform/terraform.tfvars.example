@@ -8,7 +8,7 @@ cloudtrail_logs_bucket_name = "fxlake-cloudtrail-logs-unique"
 quarantine_bucket_name      = "fxlake-quarantine-unique"
 
 # Lambda and Glue job names
-lambda_ingestion_name = "fxlake-api-ingest-lambda"
+lambda_fx_ingestion_name = "fxlake-fx-ingest-lambda"
 lambda_validation_name     = "fxlake-check-query-results"
 glue_job_name       = "fxlake-glue-transform-job"
 

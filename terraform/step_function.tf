@@ -18,7 +18,7 @@ resource "aws_sfn_state_machine" "etl" {
                 Type     = "Task",
                 Resource = "arn:aws:states:::lambda:invoke",
                 Parameters = {
-                  FunctionName = aws_lambda_function.api_ingest.arn,
+                  FunctionName = aws_lambda_function.fx_ingest.arn,
                   "Payload.$"  = "$"
                 },
                 TimeoutSeconds = 90,
@@ -169,7 +169,7 @@ resource "aws_sfn_state_machine" "etl" {
         Type     = "Task",
         Resource = "arn:aws:states:::lambda:invoke",
         Parameters = {
-          FunctionName = aws_lambda_function.api_ingest.arn,
+          FunctionName = aws_lambda_function.fx_ingest.arn,
           Payload = {
             "action"     = "update_state",
             "end_date.$" = "$.parallel_results.fx.Payload.end_date"

@@ -30,7 +30,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 
   dimensions = {
-    FunctionName = aws_lambda_function.api_ingest.function_name
+    FunctionName = aws_lambda_function.fx_ingest.function_name
   }
 }
 
@@ -247,11 +247,11 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.api_ingest.function_name]
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.fx_ingest.function_name]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Lambda Errors (API Ingestion)"
+          title  = "Lambda Errors (FX Ingestion)"
           period = 60
           stat   = "Sum"
         }

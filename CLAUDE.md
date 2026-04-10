@@ -59,7 +59,7 @@ The pipeline is orchestrated by **Step Functions** and triggered daily by **Even
 1. **Parallel (Parallel-Ingestion)** — runs Frankfurter, ECB, and FRED ingestion concurrently (3 branches). Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx`, `$.parallel_results.ecb`, and `$.parallel_results.fred`. **Does not update DynamoDB** — deferred to steps 4–6.
 2. **Choice (Check-New-Data)** — routes to `Pipeline-Already-Up-To-Date` only if **all three** sources returned `no_new_data`; otherwise continues to Glue.
 3. **Glue Job (Python Shell)** — reads raw JSON from S3, routes by filename prefix: `fred_*` → `economic_indicators/` domain, all others → `fx_rates/` domain. Runs data quality checks (via `glue/quality.py`): CRITICAL failures → quarantine to dedicated S3 bucket + raise; WARNING failures → log + CloudWatch metric. Writes quality report JSON for every file. Writes Parquet/CSV partitioned by date.
-4. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB **only after Glue succeeds**. Calls the `api_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
+4. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB **only after Glue succeeds**. Calls the `fx_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
 5. **Lambda (Update-ECB-State)** — commits ECB `last_processed_date` to DynamoDB after FX state is committed. Calls the `ecb_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.ecb.Payload.end_date"}`.
 6. **Lambda (Update-FRED-State)** — commits FRED `last_processed_date` to DynamoDB after ECB state is committed. Calls the `fred_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fred.Payload.end_date"}`.
 7. **Athena** — runs a data freshness query (`SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates`) via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
@@ -71,7 +71,7 @@ All ingestion Lambdas share a common base class (`lambda/common/base.py`):
 
 | Lambda | Source | Handler class | File naming |
 |--------|--------|---------------|-------------|
-| `lambda_ingestion_function.py` | Frankfurter API | `FrankfurterHandler` | `exchange_rates_{BASE}_{START}_to_{END}.json` |
+| `lambda_fx_ingestion.py` | Frankfurter API | `FrankfurterHandler` | `exchange_rates_{BASE}_{START}_to_{END}.json` |
 | `lambda_ecb_ingestion.py` | ECB SDW SDMX-JSON API | `ECBHandler` | `ecb_rates_{START}_to_{END}.json` |
 | `lambda_fred_ingestion.py` | FRED (Federal Reserve Economic Data) | `FREDHandler` | `fred_{series}_{START}_to_{END}.json` |
 
@@ -208,7 +208,7 @@ Tests live in `tests/` and use pytest + moto v5 + responses. 247 tests (215 unit
 make test                # Run unit tests only (ignores tests/integration/)
 make test-integration    # Run integration tests only (-m integration)
 make test-all            # Run all tests with coverage
-uv run pytest tests/test_lambda_ingestion.py -v      # Single file
+uv run pytest tests/test_lambda_fx_ingestion.py -v    # Single file
 ```
 
 ### Test Setup (conftest.py)
@@ -225,7 +225,7 @@ uv run pytest tests/test_lambda_ingestion.py -v      # Single file
 |------|----------|
 | `lambda/common/logging.py` | 95% |
 | `lambda/common/base.py` | 96% |
-| `lambda/lambda_ingestion_function.py` | 100% |
+| `lambda/lambda_fx_ingestion.py` | 100% |
 | `lambda/lambda_ecb_ingestion.py` | 100% |
 | `lambda/lambda_fred_ingestion.py` | 100% |
 | `lambda/lambda_validation_function.py` | 98% |
@@ -254,7 +254,7 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 | File | What it covers |
 |------|---------------|
 | `test_base_handler.py` | `BaseIngestionHandler` — save_to_s3, DynamoDB state, orchestration, saga pattern, backfill validation, _perform_ingest (55 tests) |
-| `test_lambda_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
+| `test_lambda_fx_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
 | `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (20 tests) |
 | `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |
 | `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain, quality integration (35 tests) |

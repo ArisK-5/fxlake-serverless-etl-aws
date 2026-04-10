@@ -50,7 +50,7 @@ Terraform · S3 · Lambda · Glue · Athena · Step Functions · EventBridge · 
 │   ├── common/
 │   │   ├── base.py                    # BaseIngestionHandler (shared logic)
 │   │   └── logging.py                 # Structured JSON logging + Timer
-│   ├── lambda_ingestion_function.py   # Frankfurter API handler
+│   ├── lambda_fx_ingestion.py         # Frankfurter API handler
 │   ├── lambda_ecb_ingestion.py        # ECB SDW API handler
 │   ├── lambda_fred_ingestion.py       # FRED API handler
 │   ├── lambda_validation_function.py  # Athena result validation
@@ -217,7 +217,7 @@ This starts a Step Functions execution with `mode: "backfill"` input. The pipeli
 
 | Source | Lambda | Data | API |
 |--------|--------|------|-----|
-| **Frankfurter** | `lambda_ingestion_function.py` | Daily FX rates (EUR base) | [frankfurter.dev](https://frankfurter.dev) |
+| **Frankfurter** | `lambda_fx_ingestion.py` | Daily FX rates (EUR base) | [frankfurter.dev](https://frankfurter.dev) |
 | **ECB** | `lambda_ecb_ingestion.py` | ECB official exchange rates (SDMX-JSON) | [data.ecb.europa.eu](https://data.ecb.europa.eu) |
 | **FRED** | `lambda_fred_ingestion.py` | US economic indicators (default: unemployment rate) | [fred.stlouisfed.org](https://fred.stlouisfed.org) |
 

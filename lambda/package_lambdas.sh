@@ -2,23 +2,23 @@
 set -e
 
 #############################################
-# Build: lambda_ingestion_function.py
+# Build: lambda_fx_ingestion.py
 #############################################
 
-echo "📦 Building Lambda: Ingestion Function..."
+echo "📦 Building Lambda: FX Ingestion Function..."
 
-rm -rf package lambda_ingestion_function.zip
+rm -rf package lambda_fx_ingestion.zip
 mkdir -p package
 
 if [ -f "requirements.txt" ]; then
   pip3 install --target ./package -r requirements.txt
 fi
 
-cp lambda_ingestion_function.py package/
+cp lambda_fx_ingestion.py package/
 cp -r common package/
 
 cd package
-zip -r ../lambda_ingestion_function.zip .
+zip -r ../lambda_fx_ingestion.zip .
 cd ..
 
 rm -rf package
@@ -90,4 +90,4 @@ cd ..
 rm -rf package
 
 echo "✅ Lambda packaging complete."
-echo "Created: lambda_ingestion_function.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip"
+echo "Created: lambda_fx_ingestion.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip"
