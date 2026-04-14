@@ -1,13 +1,13 @@
 name: Deploy
 
-# Runs on every push to main or fxlake-v2-production. Plan always executes;
+# Runs on every push to main. Plan always executes;
 # Apply requires manual approval via the "production" GitHub environment
 # (configure in repo Settings -> Environments -> production -> Required reviewers).
 # Apply downloads the tfplan artifact from the Plan job and applies it exactly —
 # it does not re-run plan, so the approved plan is what gets deployed.
 on:
   push:
-    branches: [main, fxlake-v2-production]
+    branches: [main]
 
 env:
   AWS_REGION: us-east-1

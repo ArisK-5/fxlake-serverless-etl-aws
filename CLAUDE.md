@@ -283,8 +283,8 @@ Two GitHub Actions workflows in `.github/workflows/`:
 
 | Workflow | Trigger | Jobs |
 |----------|---------|------|
-| `ci.yml` | PR → `main` or `fxlake-v2-production` | `python-lint-test` (ruff + pytest), `lambda-package` (runs `package_lambdas.sh` + verifies non-empty zips), `terraform-validate` (init + validate + fmt check, depends on `lambda-package`) |
-| `deploy.yml` | Push → `main` or `fxlake-v2-production` | `terraform-plan` (always, uploads `tfplan` artifact with 1-day retention), `terraform-apply` (downloads artifact, manual approval via `production` environment — applies the exact plan from the plan job, not a fresh plan) |
+| `ci.yml` | PR → `main` | `python-lint-test` (ruff + pytest), `lambda-package` (runs `package_lambdas.sh` + verifies non-empty zips), `terraform-validate` (init + validate + fmt check, depends on `lambda-package`) |
+| `deploy.yml` | Push → `main` | `terraform-plan` (always, uploads `tfplan` artifact with 1-day retention), `terraform-apply` (downloads artifact, manual approval via `production` environment — applies the exact plan from the plan job, not a fresh plan) |
 
 ### AWS Authentication (OIDC)
 
