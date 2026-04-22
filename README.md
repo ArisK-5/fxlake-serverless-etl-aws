@@ -110,6 +110,10 @@ Diagrams are generated with [Diagrams](https://diagrams.mingrammer.com) — see 
 
 ![FXLake — Cloud Architecture](/assets/diagrams/cloud-architecture.png "cloud architecture diagram")
 
+### Step Function DAG
+
+![FXLake — Step Function DAG](/assets/diagrams/step-function-dag.png "step function diagram")
+
 ### Development Workflow
 
 ![FXLake — Development Workflow](/assets/diagrams/dev-workflow.png "development workflow diagram")
