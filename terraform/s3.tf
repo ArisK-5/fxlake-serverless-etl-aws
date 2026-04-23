@@ -1,26 +1,51 @@
 resource "aws_s3_bucket" "raw" {
   bucket        = var.raw_bucket_name
   force_destroy = true
+
+  tags = {
+    component = "storage"
+    layer     = "raw"
+  }
 }
 
 resource "aws_s3_bucket" "processed" {
   bucket        = var.processed_bucket_name
   force_destroy = true
+
+  tags = {
+    component = "storage"
+    layer     = "processed"
+  }
 }
 
 resource "aws_s3_bucket" "athena_results" {
   bucket        = var.athena_results_bucket_name
   force_destroy = true
+
+  tags = {
+    component = "storage"
+    layer     = "query-results"
+  }
 }
 
 resource "aws_s3_bucket" "cloudtrail_logs" {
   bucket        = var.cloudtrail_logs_bucket_name
   force_destroy = true
+
+  tags = {
+    component = "storage"
+    layer     = "audit"
+  }
 }
 
 resource "aws_s3_bucket" "quarantine" {
   bucket        = var.quarantine_bucket_name
   force_destroy = true
+
+  tags = {
+    component = "storage"
+    layer     = "quarantine"
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "quarantine" {

@@ -54,3 +54,9 @@ variable "tracing_mode" {
   type        = string
   default     = "Active"
 }
+
+variable "tags" {
+  description = "Additional tags to apply to the Lambda function"
+  type        = map(string)
+  default     = {}
+}

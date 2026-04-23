@@ -144,6 +144,10 @@ resource "aws_glue_catalog_table" "economic_indicators" {
 resource "aws_athena_workgroup" "fxlake" {
   name = "fxlake"
 
+  tags = {
+    component = "query"
+  }
+
   configuration {
     enforce_workgroup_configuration    = true
     publish_cloudwatch_metrics_enabled = true

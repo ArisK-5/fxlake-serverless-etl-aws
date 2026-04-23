@@ -14,6 +14,10 @@ resource "aws_glue_job" "transform" {
 
   max_retries = 0
 
+  tags = {
+    component = "transform"
+  }
+
   default_arguments = {
     "--RAW_BUCKET"                       = aws_s3_bucket.raw.bucket
     "--PROCESSED_BUCKET"                 = aws_s3_bucket.processed.bucket

@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FXLake is a serverless ETL pipeline on AWS that fetches daily financial data from three independent sources (Frankfurter API, ECB Statistics Data Warehouse, FRED), transforms it with Polars, enforces data quality checks, and makes it queryable via Athena. Infrastructure is managed entirely with Terraform.
 
+### v3 Roadmap
+
+FXLake v3 is a 20-day phased enhancement (see `docs/planning/implementation_plan_v3.md`). Key changes:
+- **Apache Iceberg** replaces plain Parquet for ACID transactions, schema evolution, and time travel
+- **Athena CTAS/INSERT** replaces Glue Python Shell as the Iceberg write path
+- **dbt Core** replaces monolithic `glue_transform.py` with modular SQL models and built-in lineage
+- **Step Functions** orchestration is preserved
+- **Branch strategy:** all v3 work develops on the `v3` branch (and feature branches off it); `main` continues running v2 unaffected; merge to `main` is the cutover
+
+Architectural decisions are documented in `docs/planning/decision_log_v3.md`.
+
 ## Commands
 
 ### Dependency Management
@@ -150,14 +161,16 @@ Every state has Retry and Catch blocks:
 | `glue.tf` | Glue Python Shell job (Polars, pyarrow deps) + quality.py S3 upload via `--extra-py-files` |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |
-| `monitoring.tf` | 11 CloudWatch alarms (incl. quality, quarantine, stale data) + dashboard with quality metrics row |
+| `monitoring.tf` | 11 CloudWatch alarms (incl. quality, quarantine, stale data) + dashboard + SNS topic policy for Budgets |
 | `s3.tf` | 5 S3 buckets (raw, processed, athena_results, cloudtrail_logs, quarantine) + quarantine public access block + Athena results 1-day lifecycle |
 | `security.tf` | S3 AES-256 encryption + CloudTrail multi-region trail |
 | `variables.tf` | All configurable inputs (region, bucket names, date range, currency, output format) |
 | `versions.tf` | Pinned Terraform version (`>= 1.5, < 2.0`) and AWS provider version (`~> 5.0`) |
+| `providers.tf` | AWS provider with `default_tags` (project, environment, managed_by) |
+| `budget.tf` | AWS Budgets ($10/month, 80% forecasted + 100% actual alerts via SNS) |
 | `backend.tf` | Remote state backend config (S3 + DynamoDB locking) — commented out until bootstrap is run |
 | `bootstrap/main.tf` | Standalone config to create state bucket (versioned, KMS-encrypted) + lock table — run once before migrating |
-| `modules/lambda_function/` | Reusable module: Lambda function + dedicated IAM role + CloudWatch log group. Used by ECB and FRED Lambdas |
+| `modules/lambda_function/` | Reusable module: Lambda function + dedicated IAM role + CloudWatch log group + optional `tags`. Used by ECB and FRED Lambdas |
 
 ### Runtime Environments
 
@@ -202,6 +215,28 @@ fields @timestamp, service, message, records
 ```
 
 **X-Ray tracing** — all Lambda functions have `tracing_config { mode = "Active" }` in Terraform. The `aws-xray-sdk` (`patch_all()`) instruments boto3 and requests calls. Activation is gated on `AWS_XRAY_DAEMON_ADDRESS` (present in Lambda runtime, absent locally/in tests). IAM: `AWSXRayDaemonWriteAccess` managed policy on all Lambda roles.
+
+### Resource Tagging
+
+All resources receive **default tags** via the AWS provider (`providers.tf`):
+- `project = "fxlake"`, `environment = "production"`, `managed_by = "terraform"`
+
+**Component-specific tags** are added per resource:
+
+| Component value | Resources | Extra dimensions |
+|---|---|---|
+| `ingestion` | Lambda (FX, ECB, FRED) | `source` = frankfurter/ecb/fred |
+| `validation` | Validation Lambda | — |
+| `transform` | Glue job | — |
+| `orchestration` | Step Functions, EventBridge rule | — |
+| `state` | DynamoDB | — |
+| `storage` | S3 buckets | `layer` = raw/processed/query-results/audit/quarantine |
+| `monitoring` | SNS topic, CloudWatch log groups | — |
+| `security` | CloudTrail | — |
+| `query` | Athena workgroup | — |
+| `cost-management` | AWS Budget | — |
+
+When adding new resources, always include a `component` tag. Add `source` or `layer` dimensions where applicable. Cost attribution in AWS Cost Explorer uses the `project` tag filter.
 
 ## Error Handling Patterns
 
@@ -310,7 +345,7 @@ uv run ruff check . --fix  # auto-fix
 
 ## Architecture Decision Records
 
-ADRs live in `docs/adr/` and document the key architectural choices with full context, consequences, and alternatives considered:
+v2 ADRs live in `docs/adr/` and document foundational choices:
 
 | ADR | Decision | Key trade-off |
 |-----|----------|---------------|
@@ -319,7 +354,11 @@ ADRs live in `docs/adr/` and document the key architectural choices with full co
 | [ADR-003](docs/adr/ADR-003-parallel-ingestion-step-functions.md) | Parallel ingestion via Step Functions | 3x faster ingestion vs all-or-nothing failure mode |
 | [ADR-004](docs/adr/ADR-004-data-quality-in-glue.md) | Data quality checks in Glue | Single-pass efficiency vs coupled deployment |
 
+**Note:** ADR-001 (Polars) and ADR-004 (quality in Glue) will be superseded by v3 decisions (Athena CTAS write path, dbt models). See `docs/planning/decision_log_v3.md` for the full v3 decision log.
+
 ## Planning
 
-- `docs/planning/revised_plan.md` — 10-day extension plan with session prompts
-- `docs/planning/decision_log.md` — architectural decisions and trade-offs
+v3 planning documents in `docs/planning/`:
+- `implementation_plan_v3.md` — 20-day phased implementation plan with session prompts
+- `decision_log_v3.md` — 7 architectural decisions (Iceberg, Athena CTAS, dbt Core, preserve Step Functions, branch-based migration, CloudWatch composite alarms, resource tags)
+- `analysis_summary_v3.md` — scalability analysis, production gaps, Iceberg evaluation, target architecture

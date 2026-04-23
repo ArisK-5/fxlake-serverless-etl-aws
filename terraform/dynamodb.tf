@@ -15,7 +15,6 @@ resource "aws_dynamodb_table" "pipeline_state" {
   }
 
   tags = {
-    Project   = "fxlake"
-    ManagedBy = "terraform"
+    component = "state"
   }
 }
