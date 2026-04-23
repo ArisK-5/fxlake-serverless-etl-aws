@@ -88,5 +88,7 @@ resource "aws_lambda_function" "this" {
     variables = var.env_vars
   }
 
+  tags = var.tags
+
   depends_on = [aws_cloudwatch_log_group.lambda]
 }

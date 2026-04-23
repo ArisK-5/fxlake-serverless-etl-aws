@@ -21,6 +21,11 @@ resource "aws_lambda_function" "fx_ingest" {
       STATE_TABLE   = aws_dynamodb_table.pipeline_state.name
     }
   }
+
+  tags = {
+    component = "ingestion"
+    source    = "frankfurter"
+  }
 }
 
 # ECB and FRED Lambdas use the reusable module (dedicated IAM role per function)
@@ -57,6 +62,11 @@ module "ecb_ingest" {
 
   s3_bucket_arns         = [aws_s3_bucket.raw.arn]
   additional_policy_json = local.dynamodb_policy_json
+
+  tags = {
+    component = "ingestion"
+    source    = "ecb"
+  }
 }
 
 module "fred_ingest" {
@@ -79,6 +89,11 @@ module "fred_ingest" {
 
   s3_bucket_arns         = [aws_s3_bucket.raw.arn]
   additional_policy_json = local.dynamodb_policy_json
+
+  tags = {
+    component = "ingestion"
+    source    = "fred"
+  }
 }
 
 resource "aws_lambda_function" "check_query_results" {
@@ -100,6 +115,10 @@ resource "aws_lambda_function" "check_query_results" {
       PIPELINE         = var.pipeline
     }
   }
+
+  tags = {
+    component = "validation"
+  }
 }
 
 # EventBridge (CloudWatch Events) scheduled rule — triggers the full pipeline daily
@@ -107,6 +126,10 @@ resource "aws_cloudwatch_event_rule" "daily" {
   name                = "fxlake-daily-ingest"
   description         = "Daily trigger for FXLake ETL Step Functions pipeline"
   schedule_expression = "rate(1 day)"
+
+  tags = {
+    component = "orchestration"
+  }
 }
 
 resource "aws_cloudwatch_event_target" "invoke_step_function" {

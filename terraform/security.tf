@@ -43,11 +43,19 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "quarantine" {
 resource "aws_cloudwatch_log_group" "cloudtrail_logs" {
   name              = "/aws/cloudtrail/fxlake"
   retention_in_days = 90
+
+  tags = {
+    component = "monitoring"
+  }
 }
 
 resource "aws_cloudwatch_log_group" "stepfunctions_logs" {
   name              = "/aws/stepfunctions/fxlake"
   retention_in_days = 30
+
+  tags = {
+    component = "monitoring"
+  }
 }
 
 resource "aws_cloudtrail" "fxlake" {
@@ -58,6 +66,10 @@ resource "aws_cloudtrail" "fxlake" {
   enable_log_file_validation    = true
   cloud_watch_logs_group_arn    = "${aws_cloudwatch_log_group.cloudtrail_logs.arn}:*"
   cloud_watch_logs_role_arn     = aws_iam_role.cloudtrail_role.arn
+
+  tags = {
+    component = "security"
+  }
 
   depends_on = [
     aws_cloudwatch_log_group.cloudtrail_logs,

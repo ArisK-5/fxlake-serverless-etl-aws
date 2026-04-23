@@ -360,6 +360,10 @@ resource "aws_sfn_state_machine" "etl" {
     }
   })
 
+  tags = {
+    component = "orchestration"
+  }
+
   logging_configuration {
     include_execution_data = true
     level                  = "ALL"
