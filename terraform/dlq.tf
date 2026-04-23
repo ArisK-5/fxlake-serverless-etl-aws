@@ -5,7 +5,7 @@
 # SQS queue for failed executions
 resource "aws_sqs_queue" "pipeline_dlq" {
   name                       = "fxlake-pipeline-dlq"
-  message_retention_seconds  = 1209600  # 14 days
+  message_retention_seconds  = 1209600 # 14 days
   visibility_timeout_seconds = 30
 
   tags = {
