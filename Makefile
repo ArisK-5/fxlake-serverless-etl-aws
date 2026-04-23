@@ -31,6 +31,7 @@ help:
 	@echo "  make test-integration - Run integration tests"
 	@echo "  make test-all      - Run all tests with coverage"
 	@echo "  make backfill START=YYYY-MM-DD END=YYYY-MM-DD - Run historical backfill"
+	@echo "  make replay-dlq    - Replay failed executions from DLQ"
 	@echo "  make clean        - Remove Lambda zip and Terraform cache"
 	@echo ""
 
@@ -106,6 +107,21 @@ endif
 		--name "backfill-$(START)-to-$(END)-$$(date +%s)" \
 	|| (echo "$(RED)ERROR: Failed to start backfill execution.$(NC)" && exit 1)
 	@echo "$(GREEN)Backfill execution started.$(NC)"
+
+# -----------------------------------
+# DLQ Replay
+# -----------------------------------
+replay-dlq:
+	@echo "$(YELLOW)Replaying messages from DLQ...$(NC)"
+	$(eval QUEUE_URL := $(shell cd $(TF_DIR) && terraform output -raw dlq_url 2>/dev/null))
+	$(eval SFN_ARN := $(shell cd $(TF_DIR) && terraform output -raw step_function_arn 2>/dev/null))
+	@if [ -z "$(QUEUE_URL)" ] || [ -z "$(SFN_ARN)" ]; then \
+		echo "$(RED)ERROR: Run 'make deploy' first to provision DLQ.$(NC)"; exit 1; \
+	fi
+	uv run scripts/replay_dlq.py \
+		--queue-url "$(QUEUE_URL)" \
+		--state-machine-arn "$(SFN_ARN)"
+	@echo "$(GREEN)DLQ replay complete.$(NC)"
 
 # -----------------------------------
 # Utility Commands

@@ -599,6 +599,36 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
           period = 86400
           stat   = "Average"
         }
+      },
+
+      ###################################
+      # Row 6 — DLQ & Recovery (y=35)
+      ###################################
+
+      # DLQ depth — failed executions pending replay
+      {
+        type   = "metric"
+        x      = 0
+        y      = 35
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.pipeline_dlq.name, { label = "Failed Executions" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "DLQ Depth (Failed Executions Pending Replay)"
+          period  = 300
+          stat    = "Maximum"
+          yAxis   = { left = { min = 0 } }
+          annotations = {
+            horizontal = [
+              { label = "Alert threshold", value = 1, color = "#ff6961" }
+            ]
+          }
+        }
       }
     ]
   })
