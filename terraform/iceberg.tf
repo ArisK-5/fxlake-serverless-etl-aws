@@ -6,10 +6,6 @@ resource "aws_glue_catalog_table" "fx_rates_iceberg" {
   database_name = aws_glue_catalog_database.fxlake.name
   table_type    = "EXTERNAL_TABLE"
 
-  parameters = {
-    "table_type" = "ICEBERG"
-  }
-
   open_table_format_input {
     iceberg_input {
       metadata_operation = "CREATE"
@@ -47,10 +43,6 @@ resource "aws_glue_catalog_table" "economic_indicators_iceberg" {
   name          = "economic_indicators"
   database_name = aws_glue_catalog_database.fxlake.name
   table_type    = "EXTERNAL_TABLE"
-
-  parameters = {
-    "table_type" = "ICEBERG"
-  }
 
   open_table_format_input {
     iceberg_input {
