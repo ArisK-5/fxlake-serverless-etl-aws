@@ -8,6 +8,7 @@ from common.logging import Timer, configure_logger, inject_request_id
 
 NAMESPACE = os.environ["METRIC_NAMESPACE"]
 PIPELINE = os.environ["PIPELINE"]
+SLA_NAMESPACE = os.environ["SLA_NAMESPACE"]
 FRESHNESS_THRESHOLD_DAYS = 2
 
 athena = boto3.client("athena")
@@ -44,6 +45,39 @@ def publish_custom_metric(metric_name: str, value: int, workgroup: str) -> None:
                 "metric": metric_name,
                 "namespace": NAMESPACE,
                 "workgroup": workgroup,
+                "value": value,
+                "error_type": type(e).__name__,
+                "error": str(e),
+            },
+            exc_info=True,
+        )
+
+
+def publish_sla_metric(is_compliant: bool) -> None:
+    value = 1.0 if is_compliant else 0.0
+    try:
+        cloudwatch.put_metric_data(
+            Namespace=SLA_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": "PipelineSLACompliance",
+                    "Dimensions": [
+                        {"Name": "Environment", "Value": "production"},
+                    ],
+                    "Value": value,
+                    "Unit": "None",
+                }
+            ],
+        )
+        logger.info(
+            "Published SLA metric",
+            extra={"compliant": is_compliant, "value": value, "namespace": SLA_NAMESPACE},
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to publish SLA metric",
+            extra={
+                "namespace": SLA_NAMESPACE,
                 "value": value,
                 "error_type": type(e).__name__,
                 "error": str(e),
@@ -125,6 +159,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
 
         publish_custom_metric("EmptyQueryResults", 1 if is_empty else 0, workgroup)
         publish_custom_metric("StaleFXData", 0 if is_fresh else 1, workgroup)
+        publish_sla_metric(is_compliant=is_fresh and not is_empty)
 
     logger.info(
         "Validation complete",
