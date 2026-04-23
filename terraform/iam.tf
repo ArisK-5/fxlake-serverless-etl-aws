@@ -280,6 +280,83 @@ resource "aws_iam_role_policy" "sfn_policy" {
   })
 }
 
+# Athena service role & policies (for Iceberg query execution)
+resource "aws_iam_role" "athena_service_role" {
+  name = "fxlake_athena_service_role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action    = "sts:AssumeRole",
+      Effect    = "Allow",
+      Principal = { Service = "athena.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_policy" "athena_s3_policy" {
+  name = "fxlake-athena-s3"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ],
+        Effect = "Allow",
+        Resource = [
+          aws_s3_bucket.processed.arn,
+          "${aws_s3_bucket.processed.arn}/*",
+          aws_s3_bucket.athena_results.arn,
+          "${aws_s3_bucket.athena_results.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "athena_s3" {
+  role       = aws_iam_role.athena_service_role.name
+  policy_arn = aws_iam_policy.athena_s3_policy.arn
+}
+
+resource "aws_iam_policy" "athena_glue_policy" {
+  name = "fxlake-athena-glue"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:GetTable",
+          "glue:GetTables",
+          "glue:GetPartition",
+          "glue:GetPartitions",
+          "glue:CreateTable",
+          "glue:UpdateTable",
+          "glue:DeleteTable",
+          "glue:BatchGetPartition"
+        ],
+        Effect = "Allow",
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "athena_glue" {
+  role       = aws_iam_role.athena_service_role.name
+  policy_arn = aws_iam_policy.athena_glue_policy.arn
+}
+
 # EventBridge role to invoke Step Functions
 resource "aws_iam_role" "eventbridge_sfn_invoke_role" {
   name = "fxlake-eventbridge-sfn-invoke-role"
