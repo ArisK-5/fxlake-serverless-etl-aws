@@ -259,230 +259,278 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
   dashboard_body = jsonencode({
     widgets = [
 
-      # Lambda Errors
+      ###################################
+      # Row 1 — Pipeline Health (y=0)
+      ###################################
+
+      # Step Function execution duration (p50, p90, p99) — 30-day time series
       {
         type   = "metric"
         x      = 0
         y      = 0
-        width  = 6
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.fx_ingest.function_name]
+            ["AWS/States", "ExecutionTime", "StateMachineArn", aws_sfn_state_machine.etl.arn, { stat = "p50", label = "p50" }],
+            ["...", { stat = "p90", label = "p90" }],
+            ["...", { stat = "p99", label = "p99" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Lambda Errors (FX Ingestion)"
-          period = 60
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Pipeline Execution Duration"
+          period  = 86400
+          yAxis   = { left = { label = "ms" } }
         }
       },
 
-      # Glue Job Failed Tasks
+      # Lambda invocation count by function — 30-day time series
       {
         type   = "metric"
-        x      = 6
+        x      = 8
         y      = 0
-        width  = 6
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            ["AWS/Glue", "glue.driver.aggregate.numFailedTasks", "JobName", aws_glue_job.transform.name]
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.fx_ingest.function_name, { label = "FX" }],
+            ["...", module.ecb_ingest.function_name, { label = "ECB" }],
+            ["...", module.fred_ingest.function_name, { label = "FRED" }],
+            ["...", aws_lambda_function.check_query_results.function_name, { label = "Validation" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Glue Job Failed Tasks"
-          period = 60
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Lambda Invocations by Function"
+          period  = 86400
+          stat    = "Sum"
         }
       },
 
-      # Athena Query Failures
+      # Pipeline execution results — stat (succeeded, failed, throttled)
       {
         type   = "metric"
-        x      = 12
+        x      = 16
         y      = 0
-        width  = 6
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            [local.athena_namespace, "QueryFailed", "WorkGroup", aws_athena_workgroup.fxlake.name]
+            ["AWS/States", "ExecutionsSucceeded", "StateMachineArn", aws_sfn_state_machine.etl.arn, { label = "Succeeded" }],
+            ["AWS/States", "ExecutionsFailed", "StateMachineArn", aws_sfn_state_machine.etl.arn, { label = "Failed" }],
+            ["AWS/States", "ExecutionThrottled", "StateMachineArn", aws_sfn_state_machine.etl.arn, { label = "Throttled" }]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Athena Query Failures"
-          period = 60
+          title  = "Pipeline Status (Last 24h)"
+          period = 86400
           stat   = "Sum"
         }
       },
 
-      # Athena Empty Results
-      {
-        type   = "metric"
-        x      = 18
-        y      = 0
-        width  = 6
-        height = 6
-        properties = {
-          metrics = [
-            [local.athena_namespace, "EmptyQueryResults"]
-          ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Athena Empty Query Results"
-          period = 60
-          stat   = "Sum"
-        }
-      },
+      ###################################
+      # Row 2 — Data Quality (y=7)
+      ###################################
 
-      # Step Function Execution Failures
+      # Quality check failures by domain — 30-day time series
       {
         type   = "metric"
         x      = 0
-        y      = 6
-        width  = 6
+        y      = 7
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            ["AWS/States", "ExecutionsFailed", "StateMachineArn", aws_sfn_state_machine.etl.arn]
+            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "fx_rates", { label = "FX Rates" }],
+            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "economic_indicators", { label = "Economic" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Step Function Executions Failed"
-          period = 60
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Quality Check Failures by Domain"
+          period  = 86400
+          stat    = "Sum"
         }
       },
 
-      # Step Function Throttles
+      # Records quarantined — last 24h stat
       {
         type   = "metric"
-        x      = 6
-        y      = 6
-        width  = 6
+        x      = 8
+        y      = 7
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            ["AWS/States", "ExecutionThrottled", "StateMachineArn", aws_sfn_state_machine.etl.arn]
+            [local.quality_namespace, "RecordsQuarantined", { label = "Quarantined" }]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Step Function Execution Throttled"
-          period = 60
+          title  = "Records Quarantined (Last 24h)"
+          period = 86400
           stat   = "Sum"
         }
       },
 
-      # CloudTrail Unauthorized API Calls
+      # Quality failures — time series showing quarantine trend
       {
         type   = "metric"
-        x      = 12
-        y      = 6
-        width  = 6
+        x      = 16
+        y      = 7
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            ["CloudTrailMetrics", "UnauthorizedAPICallCount"]
+            [local.quality_namespace, "RecordsQuarantined", { label = "Quarantined" }],
+            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "fx_rates", { label = "FX Failures" }],
+            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "economic_indicators", { label = "Econ Failures" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Unauthorized API Calls (CloudTrail)"
-          period = 60
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = true
+          region  = var.aws_region
+          title   = "Quality Events (30-day trend)"
+          period  = 86400
+          stat    = "Sum"
         }
       },
 
-      # SNS Notifications Delivered
-      {
-        type   = "metric"
-        x      = 18
-        y      = 6
-        width  = 6
-        height = 6
-        properties = {
-          metrics = [
-            ["AWS/SNS", "NumberOfNotificationsDelivered", "TopicName", aws_sns_topic.alerts.name]
-          ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "SNS Notifications Delivered"
-          period = 60
-          stat   = "Sum"
-        }
-      },
+      ###################################
+      # Row 3 — Data Freshness (y=14)
+      ###################################
 
-      # Data Quality — Checks Failed (FX Rates)
+      # Stale FX data — 30-day time series
       {
         type   = "metric"
         x      = 0
-        y      = 12
-        width  = 6
+        y      = 14
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "fx_rates"]
+            [local.athena_namespace, "StaleFXData", { label = "Stale Data Events" }],
+            [local.athena_namespace, "EmptyQueryResults", { label = "Empty Results" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Data Freshness Issues"
+          period  = 86400
+          stat    = "Sum"
+        }
+      },
+
+      # Ingestion latency per source (Lambda duration as proxy) — 30-day time series
+      {
+        type   = "metric"
+        x      = 8
+        y      = 14
+        width  = 8
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.fx_ingest.function_name, { label = "FX", stat = "p90" }],
+            ["...", module.ecb_ingest.function_name, { label = "ECB", stat = "p90" }],
+            ["...", module.fred_ingest.function_name, { label = "FRED", stat = "p90" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Ingestion Latency per Source (p90)"
+          period  = 86400
+          yAxis   = { left = { label = "ms" } }
+        }
+      },
+
+      # Current freshness stats
+      {
+        type   = "metric"
+        x      = 16
+        y      = 14
+        width  = 8
+        height = 6
+        properties = {
+          metrics = [
+            [local.athena_namespace, "StaleFXData", { label = "Stale FX" }],
+            [local.athena_namespace, "EmptyQueryResults", { label = "Empty Results" }],
+            [local.athena_namespace, "QueryFailed", "WorkGroup", aws_athena_workgroup.fxlake.name, { label = "Query Failures" }]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Quality Checks Failed (FX)"
-          period = 300
+          title  = "Current Freshness & Query Status"
+          period = 86400
           stat   = "Sum"
         }
       },
 
-      # Data Quality — Checks Failed (Economic)
+      ###################################
+      # Row 4 — Cost & Operations (y=21)
+      ###################################
+
+      # Lambda duration by function — 30-day time series
       {
         type   = "metric"
-        x      = 6
-        y      = 12
-        width  = 6
+        x      = 0
+        y      = 21
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "economic_indicators"]
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.fx_ingest.function_name, { label = "FX Ingest" }],
+            ["...", module.ecb_ingest.function_name, { label = "ECB Ingest" }],
+            ["...", module.fred_ingest.function_name, { label = "FRED Ingest" }],
+            ["...", aws_lambda_function.check_query_results.function_name, { label = "Validation" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Quality Checks Failed (Econ)"
-          period = 300
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Lambda Duration by Function (p50)"
+          period  = 86400
+          stat    = "p50"
+          yAxis   = { left = { label = "ms" } }
         }
       },
 
-      # Data Quality — Records Quarantined
+      # Glue job metrics — time series
       {
         type   = "metric"
-        x      = 12
-        y      = 12
-        width  = 6
+        x      = 8
+        y      = 21
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            [local.quality_namespace, "RecordsQuarantined"]
+            ["AWS/Glue", "glue.driver.aggregate.elapsedTime", "JobName", aws_glue_job.transform.name, { label = "Elapsed Time" }],
+            ["AWS/Glue", "glue.driver.aggregate.numFailedTasks", "JobName", aws_glue_job.transform.name, { label = "Failed Tasks" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Records Quarantined"
-          period = 300
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Glue Job Performance"
+          period  = 86400
+          stat    = "Sum"
         }
       },
 
-      # Data Freshness — Stale FX Data
+      # Operational stats — errors, SNS, unauthorized
       {
         type   = "metric"
-        x      = 18
-        y      = 12
-        width  = 6
+        x      = 16
+        y      = 21
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            [local.athena_namespace, "StaleFXData"]
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.fx_ingest.function_name, { label = "FX Errors" }],
+            ["...", module.ecb_ingest.function_name, { label = "ECB Errors" }],
+            ["...", module.fred_ingest.function_name, { label = "FRED Errors" }],
+            ["AWS/SNS", "NumberOfNotificationsDelivered", "TopicName", aws_sns_topic.alerts.name, { label = "SNS Delivered" }],
+            ["CloudTrailMetrics", "UnauthorizedAPICallCount", { label = "Unauth API Calls" }]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Stale FX Data (>2 days)"
-          period = 300
+          title  = "Errors & Alerts"
+          period = 86400
           stat   = "Sum"
         }
       }
