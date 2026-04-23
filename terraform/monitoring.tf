@@ -245,12 +245,30 @@ resource "aws_cloudwatch_metric_alarm" "unauthorized_api_alarm" {
 }
 
 #######################################
+# Composite Alarm — Pipeline SLA
+#######################################
+
+resource "aws_cloudwatch_composite_alarm" "pipeline_sla" {
+  alarm_name        = "fxlake-pipeline-sla"
+  alarm_description = "Pipeline SLA breach: triggers when execution fails, data goes stale, or CRITICAL quality checks fail"
+
+  alarm_rule = "ALARM(${aws_cloudwatch_metric_alarm.step_function_execution_failed.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.stale_fx_data.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.data_quality_checks_failed.alarm_name})"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+
+  tags = {
+    component = "monitoring"
+  }
+}
+
+#######################################
 # CloudWatch Dashboard
 #######################################
 
 locals {
   athena_namespace  = "${var.metric_namespace_prefix}/Athena"
   quality_namespace = "${var.metric_namespace_prefix}/Quality"
+  sla_namespace     = "${var.metric_namespace_prefix}/SLA"
 }
 
 resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
@@ -532,6 +550,54 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
           title  = "Errors & Alerts"
           period = 86400
           stat   = "Sum"
+        }
+      },
+
+      ###################################
+      # Row 5 — SLA Compliance (y=28)
+      ###################################
+
+      # SLA compliance — 30-day time series with 99.5% target
+      {
+        type   = "metric"
+        x      = 0
+        y      = 28
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            [local.sla_namespace, "PipelineSLACompliance", "Environment", "production", { label = "SLA Compliance", stat = "Average" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Pipeline SLA Compliance (target: 99.5%)"
+          period  = 86400
+          yAxis   = { left = { min = 0, max = 1, label = "Compliance" } }
+          annotations = {
+            horizontal = [
+              { label = "SLA Target (99.5%)", value = 0.995, color = "#d62728" }
+            ]
+          }
+        }
+      },
+
+      # SLA composite alarm status
+      {
+        type   = "metric"
+        x      = 12
+        y      = 28
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            [local.sla_namespace, "PipelineSLACompliance", "Environment", "production", { label = "Current SLA" }]
+          ]
+          view   = "singleValue"
+          region = var.aws_region
+          title  = "Current SLA Status"
+          period = 86400
+          stat   = "Average"
         }
       }
     ]

@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary
 
-FXLake v2 is a well-engineered serverless ETL pipeline that achieves 97% test coverage across 249 tests, handles 3 independent data sources with parallel ingestion, and costs effectively nothing at current scale. The architecture makes excellent use of Polars on Glue Python Shell (32x cheaper than Spark), DynamoDB-backed incremental watermarks with a saga pattern, and a pure-function data quality framework.
+FXLake v2 is a well-engineered serverless ETL pipeline that achieves 97% test coverage across 253 tests, handles 3 independent data sources with parallel ingestion, and costs effectively nothing at current scale. The architecture makes excellent use of Polars on Glue Python Shell (32x cheaper than Spark), DynamoDB-backed incremental watermarks with a saga pattern, and a pure-function data quality framework.
 
 However, v2 was designed for a portfolio demonstration, not production operations at scale. This analysis identifies five categories of gaps: **storage layer limitations** (no ACID, no schema evolution, no time travel), **transformation rigidity** (imperative Python, no lineage, no modularity), **operational blind spots** (no SLA tracking, no dead letter queues, no cost attribution), **governance absence** (no schema registry, no data contracts, no PII detection), and **scalability ceilings** (Glue Python Shell single-node memory limit, monolithic transform job).
 

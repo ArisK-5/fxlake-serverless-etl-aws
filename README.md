@@ -128,7 +128,7 @@ Diagrams are generated with [Diagrams](https://diagrams.mingrammer.com) — see 
 - **Saga Pattern:** DynamoDB state is only committed after Glue succeeds, preventing data corruption on partial failures.
 - **Structured Observability:** JSON logging across all Lambdas, X-Ray tracing, 11 CloudWatch alarms, and a monitoring dashboard.
 - **CI/CD:** GitHub Actions with OIDC authentication — lint + test on PRs, plan + apply on merge.
-- **97% Test Coverage:** 249 tests (217 unit + 32 integration) using pytest, moto, and responses.
+- **97% Test Coverage:** 253 tests (221 unit + 32 integration) using pytest, moto, and responses.
 
 ### Skills Demonstrated
 

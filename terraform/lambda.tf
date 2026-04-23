@@ -113,6 +113,7 @@ resource "aws_lambda_function" "check_query_results" {
     variables = {
       METRIC_NAMESPACE = "${var.metric_namespace_prefix}/Athena"
       PIPELINE         = var.pipeline
+      SLA_NAMESPACE    = "${var.metric_namespace_prefix}/SLA"
     }
   }
 

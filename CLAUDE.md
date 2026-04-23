@@ -250,7 +250,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 249 tests (217 unit + 32 integration), 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 253 tests (221 unit + 32 integration), 97% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
