@@ -1,16 +1,26 @@
 """Tests for DLQ replay mechanism."""
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
 import pytest
+
+_ACCOUNT = "123456789012"
+_REGION = "us-east-1"
+_SM_NAME = "fxlake-etl-state-machine"
+_SM_ARN = f"arn:aws:states:{_REGION}:{_ACCOUNT}:stateMachine:{_SM_NAME}"
+_EXEC_ARN = f"arn:aws:states:{_REGION}:{_ACCOUNT}:execution:{_SM_NAME}"
+_QUEUE_URL = (
+    f"https://sqs.{_REGION}.amazonaws.com/{_ACCOUNT}/fxlake-pipeline-dlq"
+)
 
 
 def _make_sfn_event(
-    execution_arn: str = "arn:aws:states:us-east-1:123456789012:execution:fxlake-etl-state-machine:abc123",
+    execution_arn: str = f"{_EXEC_ARN}:abc123",
     status: str = "FAILED",
     input_data: dict | None = None,
 ) -> dict:
-    """Create a mock EventBridge SQS message for a failed Step Functions execution."""
+    """Create a mock EventBridge SQS message for a failed SFN execution."""
     if input_data is None:
         input_data = {"mode": "incremental", "start_date": "2024-01-01"}
 
@@ -20,15 +30,15 @@ def _make_sfn_event(
         "body": json.dumps({
             "detail": {
                 "executionArn": execution_arn,
-                "stateMachineArn": "arn:aws:states:us-east-1:123456789012:stateMachine:fxlake-etl-state-machine",
+                "stateMachineArn": _SM_ARN,
                 "status": status,
                 "input": json.dumps(input_data),
                 "startDate": 1704067200,
                 "stopDate": 1704067300,
                 "error": "States.Runtime",
-                "cause": "An error occurred during execution"
+                "cause": "An error occurred during execution",
             }
-        })
+        }),
     }
 
 
@@ -91,33 +101,43 @@ class TestReplayExecution:
         from scripts.replay_dlq import replay_execution
 
         mock_sfn.start_execution.return_value = {
-            "executionArn": "arn:aws:states:us-east-1:123456789012:execution:fxlake-etl-state-machine:xyz789"
+            "executionArn": f"{_EXEC_ARN}:xyz789",
         }
 
-        state_machine_arn = "arn:aws:states:us-east-1:123456789012:stateMachine:fxlake-etl-state-machine"
         input_data = {"mode": "incremental"}
 
-        result = replay_execution(sfn_client=mock_sfn, state_machine_arn=state_machine_arn, input_data=input_data)
+        result = replay_execution(
+            sfn_client=mock_sfn,
+            state_machine_arn=_SM_ARN,
+            input_data=input_data,
+        )
 
-        assert result == "arn:aws:states:us-east-1:123456789012:execution:fxlake-etl-state-machine:xyz789"
+        assert result == f"{_EXEC_ARN}:xyz789"
         mock_sfn.start_execution.assert_called_once()
         call_args = mock_sfn.start_execution.call_args
-        assert call_args.kwargs["stateMachineArn"] == state_machine_arn
+        assert call_args.kwargs["stateMachineArn"] == _SM_ARN
         assert json.loads(call_args.kwargs["input"]) == input_data
 
     @patch("scripts.replay_dlq.sfn_client")
     def test_replay_execution_sfn_error(self, mock_sfn):
         """Should raise error if Step Functions call fails."""
-        from scripts.replay_dlq import replay_execution
         from botocore.exceptions import ClientError
 
-        error_response = {"Error": {"Code": "InvalidExecutionArn", "Message": "Invalid ARN"}}
-        mock_sfn.start_execution.side_effect = ClientError(error_response, "StartExecution")
+        from scripts.replay_dlq import replay_execution
 
-        state_machine_arn = "arn:aws:states:us-east-1:123456789012:stateMachine:fxlake-etl-state-machine"
+        error_response = {
+            "Error": {"Code": "InvalidExecutionArn", "Message": "Invalid ARN"},
+        }
+        mock_sfn.start_execution.side_effect = ClientError(
+            error_response, "StartExecution",
+        )
 
         with pytest.raises(ClientError, match="InvalidExecutionArn"):
-            replay_execution(sfn_client=mock_sfn, state_machine_arn=state_machine_arn, input_data={})
+            replay_execution(
+                sfn_client=mock_sfn,
+                state_machine_arn=_SM_ARN,
+                input_data={},
+            )
 
 
 class TestDeleteMessage:
@@ -128,27 +148,35 @@ class TestDeleteMessage:
         """Should call delete_message with queue URL and receipt handle."""
         from scripts.replay_dlq import delete_message
 
-        queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/fxlake-pipeline-dlq"
         receipt_handle = "receipt-12345"
 
-        delete_message(sqs_client=mock_sqs, queue_url=queue_url, receipt_handle=receipt_handle)
+        delete_message(
+            sqs_client=mock_sqs,
+            queue_url=_QUEUE_URL,
+            receipt_handle=receipt_handle,
+        )
 
         mock_sqs.delete_message.assert_called_once_with(
-            QueueUrl=queue_url,
-            ReceiptHandle=receipt_handle
+            QueueUrl=_QUEUE_URL,
+            ReceiptHandle=receipt_handle,
         )
 
     @patch("scripts.replay_dlq.sqs_client")
     def test_delete_message_sqs_error(self, mock_sqs):
         """Should raise error if deletion fails."""
-        from scripts.replay_dlq import delete_message
         from botocore.exceptions import ClientError
 
-        error_response = {"Error": {"Code": "InvalidHandle", "Message": "Invalid handle"}}
-        mock_sqs.delete_message.side_effect = ClientError(error_response, "DeleteMessage")
+        from scripts.replay_dlq import delete_message
+
+        error_response = {
+            "Error": {"Code": "InvalidHandle", "Message": "Invalid handle"},
+        }
+        mock_sqs.delete_message.side_effect = ClientError(
+            error_response, "DeleteMessage",
+        )
 
         with pytest.raises(ClientError, match="InvalidHandle"):
-            delete_message(mock_sqs, "https://sqs.us-east-1.amazonaws.com/123456789012/queue", "bad-handle")
+            delete_message(mock_sqs, _QUEUE_URL, "bad-handle")
 
 
 class TestReadDlqMessages:
@@ -159,21 +187,22 @@ class TestReadDlqMessages:
         """Should receive up to max_messages from SQS."""
         from scripts.replay_dlq import read_dlq_messages
 
-        msg1 = _make_sfn_event(execution_arn="arn:aws:states:us-east-1:123456789012:execution:fxlake-etl-state-machine:exec1")
-        msg2 = _make_sfn_event(execution_arn="arn:aws:states:us-east-1:123456789012:execution:fxlake-etl-state-machine:exec2")
+        msg1 = _make_sfn_event(execution_arn=f"{_EXEC_ARN}:exec1")
+        msg2 = _make_sfn_event(execution_arn=f"{_EXEC_ARN}:exec2")
 
         mock_sqs.receive_message.return_value = {
-            "Messages": [msg1, msg2]
+            "Messages": [msg1, msg2],
         }
 
-        queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/fxlake-pipeline-dlq"
-        messages = read_dlq_messages(sqs_client=mock_sqs, queue_url=queue_url, max_messages=10)
+        messages = read_dlq_messages(
+            sqs_client=mock_sqs, queue_url=_QUEUE_URL, max_messages=10,
+        )
 
         assert len(messages) == 2
         mock_sqs.receive_message.assert_called_once_with(
-            QueueUrl=queue_url,
+            QueueUrl=_QUEUE_URL,
             MaxNumberOfMessages=10,
-            WaitTimeSeconds=5
+            WaitTimeSeconds=5,
         )
 
     @patch("scripts.replay_dlq.sqs_client")
@@ -183,8 +212,9 @@ class TestReadDlqMessages:
 
         mock_sqs.receive_message.return_value = {}  # No 'Messages' key
 
-        queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/fxlake-pipeline-dlq"
-        messages = read_dlq_messages(sqs_client=mock_sqs, queue_url=queue_url, max_messages=10)
+        messages = read_dlq_messages(
+            sqs_client=mock_sqs, queue_url=_QUEUE_URL, max_messages=10,
+        )
 
         assert messages == []
 
@@ -195,8 +225,9 @@ class TestReadDlqMessages:
 
         mock_sqs.receive_message.return_value = {"Messages": []}
 
-        queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/fxlake-pipeline-dlq"
-        read_dlq_messages(sqs_client=mock_sqs, queue_url=queue_url, max_messages=5)
+        read_dlq_messages(
+            sqs_client=mock_sqs, queue_url=_QUEUE_URL, max_messages=5,
+        )
 
         call_args = mock_sqs.receive_message.call_args
         assert call_args.kwargs["MaxNumberOfMessages"] == 5
@@ -214,16 +245,13 @@ class TestMainFunction:
         msg = _make_sfn_event()
         mock_sqs.receive_message.return_value = {"Messages": [msg]}
 
-        queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/fxlake-pipeline-dlq"
-        state_machine_arn = "arn:aws:states:us-east-1:123456789012:stateMachine:fxlake-etl-state-machine"
-
         replayed, errors = main(
             sqs_client=mock_sqs,
             sfn_client=mock_sfn,
-            queue_url=queue_url,
-            state_machine_arn=state_machine_arn,
+            queue_url=_QUEUE_URL,
+            state_machine_arn=_SM_ARN,
             max_messages=10,
-            dry_run=True
+            dry_run=True,
         )
 
         assert replayed == 1  # Dry run still counts as processed
@@ -240,19 +268,16 @@ class TestMainFunction:
         msg = _make_sfn_event()
         mock_sqs.receive_message.return_value = {"Messages": [msg]}
         mock_sfn.start_execution.return_value = {
-            "executionArn": "arn:aws:states:us-east-1:123456789012:execution:fxlake-etl-state-machine:new-exec"
+            "executionArn": f"{_EXEC_ARN}:new-exec",
         }
-
-        queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/fxlake-pipeline-dlq"
-        state_machine_arn = "arn:aws:states:us-east-1:123456789012:stateMachine:fxlake-etl-state-machine"
 
         replayed, errors = main(
             sqs_client=mock_sqs,
             sfn_client=mock_sfn,
-            queue_url=queue_url,
-            state_machine_arn=state_machine_arn,
+            queue_url=_QUEUE_URL,
+            state_machine_arn=_SM_ARN,
             max_messages=10,
-            dry_run=False
+            dry_run=False,
         )
 
         assert replayed == 1
@@ -264,33 +289,36 @@ class TestMainFunction:
     @patch("scripts.replay_dlq.sfn_client")
     def test_main_replay_with_errors(self, mock_sfn, mock_sqs):
         """Should count errors for failed messages and not delete them."""
-        from scripts.replay_dlq import main
         from botocore.exceptions import ClientError
 
-        msg1 = _make_sfn_event(execution_arn="arn:aws:states:us-east-1:123456789012:execution:fxlake-etl-state-machine:exec1")
-        msg2 = _make_sfn_event(execution_arn="arn:aws:states:us-east-1:123456789012:execution:fxlake-etl-state-machine:exec2")
+        from scripts.replay_dlq import main
 
-        mock_sqs.receive_message.return_value = {"Messages": [msg1, msg2]}
+        msg1 = _make_sfn_event(execution_arn=f"{_EXEC_ARN}:exec1")
+        msg2 = _make_sfn_event(execution_arn=f"{_EXEC_ARN}:exec2")
+
+        mock_sqs.receive_message.return_value = {
+            "Messages": [msg1, msg2],
+        }
 
         # First call succeeds, second fails
-        error_response = {"Error": {"Code": "InvalidExecutionArn", "Message": "Invalid"}}
+        error_response = {
+            "Error": {"Code": "InvalidExecutionArn", "Message": "Invalid"},
+        }
         mock_sfn.start_execution.side_effect = [
-            {"executionArn": "arn:aws:states:us-east-1:123456789012:execution:fxlake-etl-state-machine:new1"},
-            ClientError(error_response, "StartExecution")
+            {"executionArn": f"{_EXEC_ARN}:new1"},
+            ClientError(error_response, "StartExecution"),
         ]
-
-        queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/fxlake-pipeline-dlq"
-        state_machine_arn = "arn:aws:states:us-east-1:123456789012:stateMachine:fxlake-etl-state-machine"
 
         replayed, errors = main(
             sqs_client=mock_sqs,
             sfn_client=mock_sfn,
-            queue_url=queue_url,
-            state_machine_arn=state_machine_arn,
+            queue_url=_QUEUE_URL,
+            state_machine_arn=_SM_ARN,
             max_messages=10,
-            dry_run=False
+            dry_run=False,
         )
 
         assert replayed == 1
         assert errors == 1
-        assert mock_sqs.delete_message.call_count == 1  # Only successful message deleted
+        # Only successful message deleted
+        assert mock_sqs.delete_message.call_count == 1
