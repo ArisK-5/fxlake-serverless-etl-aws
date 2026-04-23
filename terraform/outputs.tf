@@ -21,3 +21,13 @@ output "glue_job_name" {
 output "step_function_arn" {
   value = aws_sfn_state_machine.etl.arn
 }
+
+output "dlq_url" {
+  description = "URL of the DLQ SQS queue"
+  value       = aws_sqs_queue.pipeline_dlq.url
+}
+
+output "dlq_arn" {
+  description = "ARN of the DLQ SQS queue"
+  value       = aws_sqs_queue.pipeline_dlq.arn
+}
