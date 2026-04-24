@@ -7,19 +7,24 @@ re-executes the pipeline.
 """
 
 import argparse
+import hashlib
 import json
-import logging
 import sys
 from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
 
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "lambda"))
+from common.logging import configure_logger  # noqa: E402
+
+SFN_INPUT_MAX_BYTES = 262_144
+
 # Module-level clients (for testing, these are patched)
 sqs_client = boto3.client("sqs")
 sfn_client = boto3.client("stepfunctions")
 
-logger = logging.getLogger(__name__)
+logger = configure_logger("replay-dlq")
 
 
 def extract_execution_input(message: dict) -> dict[str, Any]:
@@ -58,6 +63,7 @@ def replay_execution(
     sfn_client: Any,
     state_machine_arn: str,
     input_data: dict[str, Any],
+    original_execution_arn: str | None = None,
 ) -> str:
     """Start a new execution of the Step Function.
 
@@ -65,17 +71,32 @@ def replay_execution(
         sfn_client: boto3 Step Functions client.
         state_machine_arn: ARN of the state machine to execute.
         input_data: Input dict for the execution.
+        original_execution_arn: ARN of the failed execution (used for replay name).
 
     Returns:
         ARN of the newly created execution.
 
     Raises:
+        ValueError: If serialised input exceeds Step Functions 256KB limit.
         ClientError: If Step Functions call fails.
     """
-    response = sfn_client.start_execution(
-        stateMachineArn=state_machine_arn,
-        input=json.dumps(input_data),
-    )
+    input_json = json.dumps(input_data)
+    if len(input_json.encode()) > SFN_INPUT_MAX_BYTES:
+        raise ValueError(
+            f"Input payload ({len(input_json.encode())} bytes) exceeds "
+            f"Step Functions limit ({SFN_INPUT_MAX_BYTES} bytes)"
+        )
+
+    kwargs: dict[str, Any] = {
+        "stateMachineArn": state_machine_arn,
+        "input": input_json,
+    }
+    if original_execution_arn:
+        suffix = original_execution_arn.rsplit(":", 1)[-1]
+        digest = hashlib.sha256(suffix.encode()).hexdigest()[:8]
+        kwargs["name"] = f"replay-{suffix[:54]}-{digest}"
+
+    response = sfn_client.start_execution(**kwargs)
     return response["executionArn"]
 
 
@@ -144,7 +165,12 @@ def main(
     replayed = 0
     errors = 0
 
-    messages = read_dlq_messages(sqs_client, queue_url, max_messages)
+    try:
+        messages = read_dlq_messages(sqs_client, queue_url, max_messages)
+    except ClientError:
+        logger.error("Failed to read messages from DLQ", extra={"queue_url": queue_url})
+        raise
+
     logger.info(
         "Retrieved messages from DLQ",
         extra={"count": len(messages), "dry_run": dry_run},
@@ -152,39 +178,70 @@ def main(
 
     for message in messages:
         try:
+            message_id = message["messageId"]
+            receipt_handle = message["receiptHandle"]
+        except KeyError:
+            errors += 1
+            logger.error(
+                "Malformed SQS message — missing messageId or receiptHandle",
+                extra={"available_keys": list(message.keys())},
+            )
+            continue
+
+        try:
             input_data = extract_execution_input(message)
             logger.info(
                 "Extracted execution input",
-                extra={"execution_arn_from_message": message.get("messageId")},
+                extra={"message_id": message_id},
             )
-
-            if dry_run:
-                logger.info(
-                    "DRY RUN: Would re-execute Step Function",
-                    extra={"input": input_data},
-                )
-                replayed += 1
-            else:
-                execution_arn = replay_execution(sfn_client, state_machine_arn, input_data)
-                logger.info(
-                    "Re-executed Step Function",
-                    extra={"new_execution_arn": execution_arn},
-                )
-
-                delete_message(sqs_client, queue_url, message["receiptHandle"])
-                logger.info(
-                    "Deleted message from DLQ",
-                    extra={"message_id": message["messageId"]},
-                )
-
-                replayed += 1
-
-        except (ValueError, ClientError) as e:
+        except ValueError:
             errors += 1
             logger.error(
-                f"Failed to replay message: {e}",
-                extra={"message_id": message.get("messageId")},
+                "Failed to parse execution input",
+                extra={"message_id": message_id},
             )
+            continue
+
+        if dry_run:
+            logger.info(
+                "DRY RUN: Would re-execute Step Function",
+                extra={"input": input_data},
+            )
+            replayed += 1
+            continue
+
+        body = json.loads(message["body"])
+        original_arn = body.get("detail", {}).get("executionArn")
+
+        try:
+            execution_arn = replay_execution(
+                sfn_client, state_machine_arn, input_data, original_arn,
+            )
+            logger.info(
+                "Re-executed Step Function",
+                extra={"new_execution_arn": execution_arn},
+            )
+        except (ValueError, ClientError):
+            errors += 1
+            logger.error(
+                "Failed to start execution",
+                extra={"message_id": message_id},
+            )
+            continue
+
+        try:
+            delete_message(sqs_client, queue_url, receipt_handle)
+            logger.info(
+                "Deleted message from DLQ",
+                extra={"message_id": message_id},
+            )
+        except ClientError:
+            logger.warning(
+                "Execution started but failed to delete SQS message — may cause duplicate replay",
+                extra={"message_id": message_id, "execution_arn": execution_arn},
+            )
+
+        replayed += 1
 
     logger.info(
         "DLQ replay complete",
@@ -220,12 +277,6 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-
-    # Configure structured logging (consistent with lambda/common/logging.py pattern)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(message)s",
-    )
 
     replayed, errors = main(
         sqs_client=sqs_client,

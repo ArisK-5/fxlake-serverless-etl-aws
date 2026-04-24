@@ -281,7 +281,7 @@ resource "aws_iam_role_policy" "sfn_policy" {
   })
 }
 
-# Athena service role & policies (for Iceberg query execution)
+# Athena service role & policies (for Iceberg query execution via workgroup)
 resource "aws_iam_role" "athena_service_role" {
   name = "fxlake_athena_service_role"
   assume_role_policy = jsonencode({
@@ -304,13 +304,24 @@ resource "aws_iam_policy" "athena_s3_policy" {
           "s3:GetBucketLocation",
           "s3:ListBucket",
           "s3:GetObject",
+          "s3:PutObject"
+        ],
+        Effect = "Allow",
+        Resource = [
+          aws_s3_bucket.processed.arn,
+          "${aws_s3_bucket.processed.arn}/*"
+        ]
+      },
+      {
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket",
+          "s3:GetObject",
           "s3:PutObject",
           "s3:DeleteObject"
         ],
         Effect = "Allow",
         Resource = [
-          aws_s3_bucket.processed.arn,
-          "${aws_s3_bucket.processed.arn}/*",
           aws_s3_bucket.athena_results.arn,
           "${aws_s3_bucket.athena_results.arn}/*"
         ]
@@ -337,9 +348,7 @@ resource "aws_iam_policy" "athena_glue_policy" {
           "glue:GetTables",
           "glue:GetPartition",
           "glue:GetPartitions",
-          "glue:CreateTable",
           "glue:UpdateTable",
-          "glue:DeleteTable",
           "glue:BatchGetPartition"
         ],
         Effect = "Allow",

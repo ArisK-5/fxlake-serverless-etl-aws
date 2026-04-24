@@ -16,6 +16,10 @@ resource "aws_glue_catalog_table" "fx_rates_iceberg" {
   storage_descriptor {
     location = "s3://${aws_s3_bucket.processed.bucket}/iceberg/fx_rates/"
 
+    ser_de_info {
+      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
+    }
+
     columns {
       name = "date"
       type = "string"
@@ -53,6 +57,10 @@ resource "aws_glue_catalog_table" "economic_indicators_iceberg" {
 
   storage_descriptor {
     location = "s3://${aws_s3_bucket.processed.bucket}/iceberg/economic_indicators/"
+
+    ser_de_info {
+      serialization_library = "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
+    }
 
     columns {
       name = "date"

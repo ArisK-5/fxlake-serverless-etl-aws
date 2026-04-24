@@ -322,3 +322,111 @@ class TestMainFunction:
         assert errors == 1
         # Only successful message deleted
         assert mock_sqs.delete_message.call_count == 1
+
+    @patch("scripts.replay_dlq.sqs_client")
+    @patch("scripts.replay_dlq.sfn_client")
+    def test_main_execute_succeeds_delete_fails(self, mock_sfn, mock_sqs):
+        """Execution success + delete failure should still count as replayed and warn."""
+        from botocore.exceptions import ClientError
+
+        from scripts.replay_dlq import main
+
+        msg = _make_sfn_event()
+        mock_sqs.receive_message.return_value = {"Messages": [msg]}
+        mock_sfn.start_execution.return_value = {
+            "executionArn": f"{_EXEC_ARN}:new-exec",
+        }
+        mock_sqs.delete_message.side_effect = ClientError(
+            {"Error": {"Code": "ReceiptHandleIsInvalid", "Message": "Expired"}},
+            "DeleteMessage",
+        )
+
+        replayed, errors = main(
+            sqs_client=mock_sqs,
+            sfn_client=mock_sfn,
+            queue_url=_QUEUE_URL,
+            state_machine_arn=_SM_ARN,
+        )
+
+        assert replayed == 1
+        assert errors == 0
+        mock_sfn.start_execution.assert_called_once()
+        mock_sqs.delete_message.assert_called_once()
+
+    @patch("scripts.replay_dlq.sqs_client")
+    @patch("scripts.replay_dlq.sfn_client")
+    def test_main_malformed_message_skipped(self, mock_sfn, mock_sqs):
+        """Messages missing messageId or receiptHandle should be counted as errors."""
+        from scripts.replay_dlq import main
+
+        bad_msg = {"body": "{}"}
+        mock_sqs.receive_message.return_value = {"Messages": [bad_msg]}
+
+        replayed, errors = main(
+            sqs_client=mock_sqs,
+            sfn_client=mock_sfn,
+            queue_url=_QUEUE_URL,
+            state_machine_arn=_SM_ARN,
+        )
+
+        assert replayed == 0
+        assert errors == 1
+        mock_sfn.start_execution.assert_not_called()
+
+    @patch("scripts.replay_dlq.sqs_client")
+    @patch("scripts.replay_dlq.sfn_client")
+    def test_main_read_dlq_failure_raises(self, mock_sfn, mock_sqs):
+        """ClientError from read_dlq_messages should propagate."""
+        from botocore.exceptions import ClientError
+
+        from scripts.replay_dlq import main
+
+        mock_sqs.receive_message.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Denied"}},
+            "ReceiveMessage",
+        )
+
+        with pytest.raises(ClientError, match="AccessDenied"):
+            main(
+                sqs_client=mock_sqs,
+                sfn_client=mock_sfn,
+                queue_url=_QUEUE_URL,
+                state_machine_arn=_SM_ARN,
+            )
+
+
+class TestReplayExecutionExtended:
+    """Test replay_execution with size validation and naming."""
+
+    @patch("scripts.replay_dlq.sfn_client")
+    def test_replay_with_execution_name(self, mock_sfn):
+        """Should set deterministic name from original execution ARN."""
+        from scripts.replay_dlq import replay_execution
+
+        mock_sfn.start_execution.return_value = {
+            "executionArn": f"{_EXEC_ARN}:replay-abc123",
+        }
+
+        replay_execution(
+            sfn_client=mock_sfn,
+            state_machine_arn=_SM_ARN,
+            input_data={"mode": "incremental"},
+            original_execution_arn=f"{_EXEC_ARN}:abc123",
+        )
+
+        call_kwargs = mock_sfn.start_execution.call_args.kwargs
+        assert call_kwargs["name"].startswith("replay-abc123-")
+
+    @patch("scripts.replay_dlq.sfn_client")
+    def test_replay_oversized_input_raises(self, mock_sfn):
+        """Should raise ValueError when input exceeds 256KB."""
+        from scripts.replay_dlq import replay_execution
+
+        large_input = {"data": "x" * 300_000}
+
+        with pytest.raises(ValueError, match="exceeds Step Functions limit"):
+            replay_execution(
+                sfn_client=mock_sfn,
+                state_machine_arn=_SM_ARN,
+                input_data=large_input,
+            )
