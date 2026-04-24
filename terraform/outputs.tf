@@ -26,6 +26,10 @@ output "lambda_iceberg_writer_name" {
   value = module.iceberg_writer.function_name
 }
 
+output "data_validator_function_name" {
+  value = module.data_validator.function_name
+}
+
 output "dlq_url" {
   description = "URL of the DLQ SQS queue"
   value       = aws_sqs_queue.pipeline_dlq.url

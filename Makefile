@@ -31,6 +31,7 @@ help:
 	@echo "  make test-integration - Run integration tests"
 	@echo "  make test-all      - Run all tests with coverage"
 	@echo "  make backfill START=YYYY-MM-DD END=YYYY-MM-DD - Run historical backfill"
+	@echo "  make validate-iceberg - Validate Iceberg table data integrity"
 	@echo "  make replay-dlq    - Replay failed executions from DLQ"
 	@echo "  make clean        - Remove Lambda zip and Terraform cache"
 	@echo ""
@@ -109,6 +110,22 @@ endif
 	@echo "$(GREEN)Backfill execution started.$(NC)"
 
 # -----------------------------------
+# Iceberg Validation
+# -----------------------------------
+validate-iceberg:
+	@echo "$(YELLOW)Running Iceberg data validation...$(NC)"
+	$(eval VALIDATOR_NAME := $(shell cd $(TF_DIR) && terraform output -raw data_validator_function_name 2>/dev/null))
+	@if [ -z "$(VALIDATOR_NAME)" ]; then \
+		echo "$(RED)ERROR: Run 'make deploy' first to provision the data validator Lambda.$(NC)"; exit 1; \
+	fi
+	aws lambda invoke \
+		--function-name "$(VALIDATOR_NAME)" \
+		--payload '{}' \
+		--cli-binary-format raw-in-base64-out \
+		/dev/stdout 2>/dev/null | python3 -m json.tool
+	@echo "$(GREEN)Iceberg validation complete.$(NC)"
+
+# -----------------------------------
 # DLQ Replay
 # -----------------------------------
 replay-dlq:
@@ -128,6 +145,6 @@ replay-dlq:
 # -----------------------------------
 clean:
 	@echo "$(YELLOW)Cleaning up...$(NC)"
-	rm -f $(LAMBDA_DIR)/lambda_fx_ingestion.zip $(LAMBDA_DIR)/lambda_ecb_ingestion.zip $(LAMBDA_DIR)/lambda_fred_ingestion.zip $(LAMBDA_DIR)/lambda_validation_function.zip
+	rm -f $(LAMBDA_DIR)/lambda_fx_ingestion.zip $(LAMBDA_DIR)/lambda_ecb_ingestion.zip $(LAMBDA_DIR)/lambda_fred_ingestion.zip $(LAMBDA_DIR)/lambda_validation_function.zip $(LAMBDA_DIR)/lambda_data_validator.zip
 	cd $(TF_DIR) && rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup
 	@echo "$(GREEN)Local cleanup complete.$(NC)"

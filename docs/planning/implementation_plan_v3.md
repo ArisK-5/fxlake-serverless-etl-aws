@@ -332,7 +332,7 @@ Since v3 is developed on its own branch (no dual-write), validation is done by
 running a backfill for a known date range and verifying the Iceberg tables
 contain the expected data.
 
-1. Deploy the v3 branch to a test environment (or use `terraform apply` on the v3 branch):
+1. Use `terraform apply` on the v3 branch:
    - Ensure Iceberg tables are created
    - Ensure the Iceberg writer Lambda is deployed
 
