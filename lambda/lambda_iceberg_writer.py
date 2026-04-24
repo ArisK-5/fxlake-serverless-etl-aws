@@ -5,8 +5,30 @@ import time
 from typing import Any
 
 import boto3
+import polars as pl
 from botocore.exceptions import ClientError
 from common.logging import Timer, configure_logger, inject_request_id
+
+try:
+    from quality import (
+        QualityResult,
+        build_quality_report,
+        has_critical_failures,
+        run_economic_checks,
+        run_fx_checks,
+    )
+except ImportError:
+    import sys as _sys
+    _GLUE_DIR = str(__import__("pathlib").Path(__file__).resolve().parent.parent / "glue")
+    if _GLUE_DIR not in _sys.path:
+        _sys.path.insert(0, _GLUE_DIR)
+    from quality import (  # noqa: E402
+        QualityResult,
+        build_quality_report,
+        has_critical_failures,
+        run_economic_checks,
+        run_fx_checks,
+    )
 
 if os.getenv("AWS_XRAY_DAEMON_ADDRESS"):
     try:
@@ -22,20 +44,22 @@ DATABASE_NAME = os.environ.get("DATABASE_NAME", "fxlake")
 ATHENA_RESULTS_BUCKET = os.environ.get("ATHENA_RESULTS_BUCKET", "")
 WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "fxlake")
 RAW_BUCKET = os.environ.get("RAW_BUCKET", "")
+PROCESSED_BUCKET = os.environ.get("PROCESSED_BUCKET", "")
+QUARANTINE_BUCKET = os.environ.get("QUARANTINE_BUCKET", "")
+METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "FXLake/Quality")
 
 POLL_INTERVAL_SECONDS = 2
 MAX_POLL_ATTEMPTS = 90
 _VALID_TABLE_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
+VALID_DOMAINS = frozenset({"fx_rates", "economic_indicators"})
+
+_FX_COLUMNS = ("date", "source", "base_currency", "target_currency", "rate")
+_ECON_COLUMNS = ("date", "source", "series_id", "value")
+
 
 def _parse_fx_rates(raw_data: dict) -> list[dict[str, Any]]:
-    """Extract flat FX rate rows from Frankfurter/ECB raw JSON.
-
-    Frankfurter format: {"base": "EUR", "rates": {"2024-01-02": {"USD": 1.1, ...}, ...}}
-    ECB format: same structure after normalisation in the ECB handler.
-
-    Returns a list of dicts with keys: date, source, base_currency, target_currency, rate.
-    """
+    """Extract flat FX rate rows from Frankfurter/ECB raw JSON."""
     source = raw_data.get("source", "frankfurter")
     base_currency = raw_data.get("base", "EUR")
     rates_by_date = raw_data.get("rates", {})
@@ -53,31 +77,63 @@ def _parse_fx_rates(raw_data: dict) -> list[dict[str, Any]]:
     return rows
 
 
-def _build_insert_query(table_name: str, rows: list[dict[str, Any]]) -> str:
-    """Build an Athena INSERT INTO ... VALUES query for the Iceberg table.
+def _parse_economic_indicators(raw_data: dict) -> list[dict[str, Any]]:
+    """Extract flat economic indicator rows from FRED raw JSON."""
+    source = raw_data.get("source", "fred")
+    series_id = raw_data.get("series_id", "")
+    observations = raw_data.get("observations", [])
 
-    Athena Iceberg INSERT INTO supports standard SQL VALUES syntax.
-    String values are single-quoted and escaped; doubles are unquoted.
-    """
+    rows: list[dict[str, Any]] = []
+    for obs in observations:
+        rows.append({
+            "date": obs["date"],
+            "source": source,
+            "series_id": series_id,
+            "value": float(obs["value"]),
+        })
+    return rows
+
+
+def _build_insert_query(
+    table_name: str,
+    rows: list[dict[str, Any]],
+    domain: str = "fx_rates",
+) -> str:
+    """Build an Athena INSERT INTO ... VALUES query for the Iceberg table."""
     if not _VALID_TABLE_NAME.match(table_name):
         raise ValueError(f"Invalid table name: {table_name!r}")
     if not rows:
         raise ValueError("No rows to insert — cannot build INSERT query")
 
+    if domain == "economic_indicators":
+        columns = _ECON_COLUMNS
+    else:
+        columns = _FX_COLUMNS
+
     value_tuples: list[str] = []
     for row in rows:
-        escaped_date = row["date"].replace("'", "''")
-        escaped_source = row["source"].replace("'", "''")
-        escaped_base = row["base_currency"].replace("'", "''")
-        escaped_target = row["target_currency"].replace("'", "''")
-        value_tuples.append(
-            f"('{escaped_date}', '{escaped_source}', '{escaped_base}', "
-            f"'{escaped_target}', {row['rate']})"
-        )
+        if domain == "economic_indicators":
+            escaped_date = row["date"].replace("'", "''")
+            escaped_source = row["source"].replace("'", "''")
+            escaped_series = row["series_id"].replace("'", "''")
+            value_tuples.append(
+                f"('{escaped_date}', '{escaped_source}', "
+                f"'{escaped_series}', {row['value']})"
+            )
+        else:
+            escaped_date = row["date"].replace("'", "''")
+            escaped_source = row["source"].replace("'", "''")
+            escaped_base = row["base_currency"].replace("'", "''")
+            escaped_target = row["target_currency"].replace("'", "''")
+            value_tuples.append(
+                f"('{escaped_date}', '{escaped_source}', '{escaped_base}', "
+                f"'{escaped_target}', {row['rate']})"
+            )
 
+    columns_clause = ", ".join(columns)
     values_clause = ",\n".join(value_tuples)
     return (
-        f"INSERT INTO {table_name} (date, source, base_currency, target_currency, rate)\n"
+        f"INSERT INTO {table_name} ({columns_clause})\n"
         f"VALUES\n{values_clause}"
     )
 
@@ -151,11 +207,7 @@ def _poll_query_completion(
     poll_interval: int = POLL_INTERVAL_SECONDS,
     max_attempts: int = MAX_POLL_ATTEMPTS,
 ) -> dict:
-    """Poll Athena until the query reaches a terminal state.
-
-    Returns the final GetQueryExecution response.
-    Raises TimeoutError if max_attempts exceeded, RuntimeError on FAILED/CANCELLED.
-    """
+    """Poll Athena until the query reaches a terminal state."""
     for attempt in range(1, max_attempts + 1):
         response = athena_client.get_query_execution(
             QueryExecutionId=query_execution_id
@@ -196,45 +248,184 @@ def _poll_query_completion(
     )
 
 
-def _validate_event(event: dict) -> tuple[str, str, str, str, str]:
+def _rows_to_dataframe(rows: list[dict[str, Any]], domain: str) -> pl.DataFrame:
+    """Convert parsed rows to a Polars DataFrame for quality checks."""
+    if domain == "economic_indicators":
+        schema = {"date": pl.Utf8, "source": pl.Utf8, "series_id": pl.Utf8, "value": pl.Float64}
+    else:
+        schema = {
+            "date": pl.Utf8, "source": pl.Utf8, "base_currency": pl.Utf8,
+            "target_currency": pl.Utf8, "rate": pl.Float64,
+        }
+    return pl.DataFrame(rows, schema=schema)
+
+
+def _run_quality_checks(
+    rows: list[dict[str, Any]],
+    domain: str,
+    raw_key: str,
+    s3_client: Any,
+) -> list[QualityResult]:
+    """Run quality checks on parsed rows. Write report to S3. Quarantine + raise on CRITICAL."""
+    df = _rows_to_dataframe(rows, domain)
+
+    if domain == "economic_indicators":
+        results = run_economic_checks(df)
+    else:
+        results = run_fx_checks(df)
+
+    report = build_quality_report(results, raw_key, domain)
+    _write_quality_report(s3_client, report, raw_key, domain)
+
+    failed = [r for r in results if not r.passed]
+    if not failed:
+        logger.info("All quality checks passed", extra={"raw_key": raw_key, "domain": domain})
+        return results
+
+    for r in failed:
+        logger.warning(
+            "Quality check failed",
+            extra={
+                "check_name": r.check_name,
+                "level": r.level.value,
+                "detail": r.message,
+                "domain": domain,
+            },
+        )
+
+    _publish_quality_metric(s3_client, "DataQualityChecksFailed", float(len(failed)), domain)
+
+    if has_critical_failures(results):
+        _quarantine_records(s3_client, rows, raw_key, domain)
+        _publish_quality_metric(s3_client, "RecordsQuarantined", float(len(rows)), domain)
+        raise ValueError(
+            f"CRITICAL quality check(s) failed for {raw_key}: "
+            + "; ".join(r.message for r in failed if r.level.value == "CRITICAL")
+        )
+
+    return results
+
+
+def _write_quality_report(
+    s3_client: Any,
+    report: dict,
+    raw_key: str,
+    domain: str,
+) -> str:
+    """Write quality report JSON to the processed bucket."""
+    stem = raw_key.split("/")[-1].replace(".json", "")
+    report_key = f"{domain}/quality_reports/{stem}_quality.json"
+    body = json.dumps(report, indent=2).encode()
+    s3_client.put_object(
+        Bucket=PROCESSED_BUCKET, Key=report_key, Body=body, ContentType="application/json"
+    )
+    logger.info(
+        "Quality report written",
+        extra={"bucket": PROCESSED_BUCKET, "key": report_key},
+    )
+    return report_key
+
+
+def _quarantine_records(
+    s3_client: Any,
+    rows: list[dict[str, Any]],
+    raw_key: str,
+    domain: str,
+) -> str:
+    """Write failing records to the quarantine bucket."""
+    stem = raw_key.split("/")[-1].replace(".json", "")
+    q_key = f"{domain}/quarantine/{stem}.json"
+    body = json.dumps(rows).encode()
+    s3_client.put_object(
+        Bucket=QUARANTINE_BUCKET, Key=q_key, Body=body, ContentType="application/json"
+    )
+    logger.warning(
+        "Quarantined records",
+        extra={"bucket": QUARANTINE_BUCKET, "key": q_key, "record_count": len(rows)},
+    )
+    return q_key
+
+
+def _publish_quality_metric(
+    s3_client: Any,
+    metric_name: str,
+    value: float,
+    domain: str,
+) -> None:
+    """Publish a quality metric to CloudWatch. Swallows errors to avoid aborting pipeline."""
+    try:
+        cloudwatch = boto3.client("cloudwatch")
+        cloudwatch.put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": metric_name,
+                    "Value": value,
+                    "Unit": "Count",
+                    "Dimensions": [{"Name": "Domain", "Value": domain}],
+                }
+            ],
+        )
+    except ClientError as e:
+        logger.error(
+            "Failed to publish quality metric",
+            extra={
+                "metric_name": metric_name,
+                "error_code": e.response["Error"]["Code"],
+            },
+        )
+
+
+def _validate_event(event: dict) -> tuple[str, str, str, str, str, str]:
     """Extract and validate required parameters from the Lambda event."""
     raw_bucket = event.get("raw_bucket", RAW_BUCKET)
     raw_key = event.get("raw_key", "")
-    target_table = event.get("target_table", "fx_rates")
+    domain = event.get("domain", "fx_rates")
     database = event.get("database_name", DATABASE_NAME)
     output_location = f"s3://{ATHENA_RESULTS_BUCKET}/results/"
 
+    if domain not in VALID_DOMAINS:
+        raise ValueError(f"Invalid domain: {domain!r} — must be one of {sorted(VALID_DOMAINS)}")
     if not raw_key:
         raise ValueError("Missing required 'raw_key' in event")
     if not raw_bucket:
         raise ValueError("Missing raw_bucket — set RAW_BUCKET env var or pass in event")
 
-    return raw_bucket, raw_key, target_table, database, output_location
+    target_table = event.get("target_table", domain)
+
+    return raw_bucket, raw_key, target_table, database, output_location, domain
 
 
 def lambda_handler(event: dict, context: Any) -> dict:
     inject_request_id(logger, context)
-    raw_bucket, raw_key, target_table, database, output_location = _validate_event(event)
+    raw_bucket, raw_key, target_table, database, output_location, domain = _validate_event(event)
 
     s3_client = boto3.client("s3")
     athena_client = boto3.client("athena")
 
     with Timer() as timer:
         raw_data = _read_raw_json(s3_client, raw_bucket, raw_key)
-        rows = _parse_fx_rates(raw_data)
+
+        if domain == "economic_indicators":
+            rows = _parse_economic_indicators(raw_data)
+        else:
+            rows = _parse_fx_rates(raw_data)
 
         if not rows:
             logger.warning(
-                "No FX rate rows parsed from raw data — skipping Iceberg write",
-                extra={"bucket": raw_bucket, "key": raw_key},
+                "No rows parsed from raw data — skipping Iceberg write",
+                extra={"bucket": raw_bucket, "key": raw_key, "domain": domain},
             )
             return {
                 "status": "no_data",
                 "raw_key": raw_key,
+                "domain": domain,
                 "rows_parsed": 0,
             }
 
-        query = _build_insert_query(target_table, rows)
+        _run_quality_checks(rows, domain, raw_key, s3_client)
+
+        query = _build_insert_query(target_table, rows, domain)
         query_execution_id = _execute_athena_query(
             athena_client, query, database, output_location, WORKGROUP
         )
@@ -245,6 +436,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
         extra={
             "raw_key": raw_key,
             "target_table": target_table,
+            "domain": domain,
             "rows_inserted": len(rows),
             "query_execution_id": query_execution_id,
             "duration_ms": timer.duration_ms,
@@ -255,6 +447,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
         "status": "ok",
         "raw_key": raw_key,
         "target_table": target_table,
+        "domain": domain,
         "rows_inserted": len(rows),
         "query_execution_id": query_execution_id,
     }

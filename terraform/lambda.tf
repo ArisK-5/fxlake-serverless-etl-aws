@@ -100,7 +100,7 @@ module "iceberg_writer" {
   source = "./modules/lambda_function"
 
   function_name = var.lambda_iceberg_writer_name
-  description   = "Writes transformed FX rates data to the Iceberg table via Athena INSERT INTO"
+  description   = "Writes transformed data to Iceberg tables via Athena INSERT INTO with quality gates"
   handler       = "lambda_iceberg_writer.lambda_handler"
   filename      = "../lambda/lambda_iceberg_writer.zip"
   timeout       = 300
@@ -110,12 +110,16 @@ module "iceberg_writer" {
     ATHENA_RESULTS_BUCKET = aws_s3_bucket.athena_results.bucket
     ATHENA_WORKGROUP      = aws_athena_workgroup.fxlake.name
     RAW_BUCKET            = aws_s3_bucket.raw.bucket
+    PROCESSED_BUCKET      = aws_s3_bucket.processed.bucket
+    QUARANTINE_BUCKET     = aws_s3_bucket.quarantine.bucket
+    METRIC_NAMESPACE      = "${var.metric_namespace_prefix}/Quality"
   }
 
   s3_bucket_arns = [
     aws_s3_bucket.raw.arn,
     aws_s3_bucket.athena_results.arn,
     aws_s3_bucket.processed.arn,
+    aws_s3_bucket.quarantine.arn,
   ]
 
   additional_policy_json = jsonencode({
@@ -142,6 +146,16 @@ module "iceberg_writer" {
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.metric_namespace_prefix}/Quality"
+          }
+        }
       }
     ]
   })

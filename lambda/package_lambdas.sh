@@ -74,8 +74,17 @@ build_lambda lambda_fx_ingestion.py       lambda_fx_ingestion.zip
 build_lambda lambda_ecb_ingestion.py      lambda_ecb_ingestion.zip
 build_lambda lambda_fred_ingestion.py     lambda_fred_ingestion.zip
 build_lambda lambda_validation_function.py lambda_validation_function.zip requirements_validation.txt
-build_lambda lambda_iceberg_writer.py     lambda_iceberg_writer.zip
+build_lambda lambda_iceberg_writer.py     lambda_iceberg_writer.zip requirements_iceberg_writer.txt
+
+echo "  📚 Adding quality.py to iceberg writer package..."
+mkdir -p _iceberg_patch
+cd _iceberg_patch
+unzip -q "../lambda_iceberg_writer.zip"
+cp "../../glue/quality.py" .
+zip -q -r "../lambda_iceberg_writer.zip" quality.py
+cd ..
+rm -rf _iceberg_patch
 
 echo ""
 echo "✅ Lambda packaging complete."
-echo "Created: lambda_fx_ingestion.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip, lambda_iceberg_writer.zip"
+echo "Created: lambda_fx_ingestion.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip, lambda_iceberg_writer.zip (with quality.py)"
