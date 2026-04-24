@@ -147,6 +147,37 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
+        Next = "Write-FX-Iceberg"
+      },
+      Write-FX-Iceberg = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = module.iceberg_writer.function_arn,
+          Payload = {
+            "raw_bucket"    = aws_s3_bucket.raw.bucket,
+            "raw_key.$"     = "$.parallel_results.fx.Payload.key",
+            "target_table"  = "fx_rates",
+            "database_name" = aws_glue_catalog_database.fxlake.name
+          }
+        },
+        ResultPath     = "$.iceberg_write",
+        TimeoutSeconds = 330,
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 5,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Write-FX-Iceberg-Failed",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
         Next = "Check-Backfill-Mode"
       },
       # Backfill runs must NOT update DynamoDB state — skip straight to Athena.
@@ -328,6 +359,11 @@ resource "aws_sfn_state_machine" "etl" {
         CausePath = "$.errorInfo.Cause"
       },
       Transform-Failed = {
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
+      },
+      Write-FX-Iceberg-Failed = {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"

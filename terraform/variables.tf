@@ -88,6 +88,11 @@ variable "lambda_validation_name" {
   default = "fxlake-results-check-lambda"
 }
 
+variable "lambda_iceberg_writer_name" {
+  type    = string
+  default = "fxlake-iceberg-writer-lambda"
+}
+
 variable "glue_job_name" {
   type    = string
   default = "fxlake-glue-transform-job"

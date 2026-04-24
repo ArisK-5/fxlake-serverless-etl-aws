@@ -96,6 +96,62 @@ module "fred_ingest" {
   }
 }
 
+module "iceberg_writer" {
+  source = "./modules/lambda_function"
+
+  function_name = var.lambda_iceberg_writer_name
+  description   = "Writes transformed FX rates data to the Iceberg table via Athena INSERT INTO"
+  handler       = "lambda_iceberg_writer.lambda_handler"
+  filename      = "../lambda/lambda_iceberg_writer.zip"
+  timeout       = 300
+
+  env_vars = {
+    DATABASE_NAME         = aws_glue_catalog_database.fxlake.name
+    ATHENA_RESULTS_BUCKET = aws_s3_bucket.athena_results.bucket
+    ATHENA_WORKGROUP      = aws_athena_workgroup.fxlake.name
+    RAW_BUCKET            = aws_s3_bucket.raw.bucket
+  }
+
+  s3_bucket_arns = [
+    aws_s3_bucket.raw.arn,
+    aws_s3_bucket.athena_results.arn,
+    aws_s3_bucket.processed.arn,
+  ]
+
+  additional_policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution"
+        ]
+        Resource = aws_athena_workgroup.fxlake.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetTable",
+          "glue:GetPartitions",
+          "glue:UpdateTable"
+        ]
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
+        ]
+      }
+    ]
+  })
+
+  tags = {
+    component = "transform"
+    source    = "iceberg"
+  }
+}
+
 resource "aws_lambda_function" "check_query_results" {
   function_name    = var.lambda_validation_name
   description      = "Checks Athena query results and publishes custom CloudWatch metric"

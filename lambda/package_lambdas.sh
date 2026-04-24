@@ -9,6 +9,7 @@ REQUIRED_FILES=(
   lambda_ecb_ingestion.py
   lambda_fred_ingestion.py
   lambda_validation_function.py
+  lambda_iceberg_writer.py
 )
 
 echo "🔍 Validating Lambda source files..."
@@ -73,7 +74,8 @@ build_lambda lambda_fx_ingestion.py       lambda_fx_ingestion.zip
 build_lambda lambda_ecb_ingestion.py      lambda_ecb_ingestion.zip
 build_lambda lambda_fred_ingestion.py     lambda_fred_ingestion.zip
 build_lambda lambda_validation_function.py lambda_validation_function.zip requirements_validation.txt
+build_lambda lambda_iceberg_writer.py     lambda_iceberg_writer.zip
 
 echo ""
 echo "✅ Lambda packaging complete."
-echo "Created: lambda_fx_ingestion.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip"
+echo "Created: lambda_fx_ingestion.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip, lambda_iceberg_writer.zip"

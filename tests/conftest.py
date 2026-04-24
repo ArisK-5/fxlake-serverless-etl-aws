@@ -18,6 +18,9 @@ os.environ.setdefault("ECB_BASE_URL", "https://data-api.ecb.europa.eu/service/da
 os.environ.setdefault("FRED_BASE_URL", "https://api.stlouisfed.org/fred")
 os.environ.setdefault("FRED_API_KEY", "test_fred_api_key")
 os.environ.setdefault("FRED_SERIES", "UNRATE")
+os.environ.setdefault("DATABASE_NAME", "fxlake")
+os.environ.setdefault("ATHENA_RESULTS_BUCKET", "test-athena-results")
+os.environ.setdefault("ATHENA_WORKGROUP", "fxlake")
 
 # Fake AWS credentials for moto
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
