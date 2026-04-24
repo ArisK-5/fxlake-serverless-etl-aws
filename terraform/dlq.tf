@@ -6,7 +6,8 @@
 resource "aws_sqs_queue" "pipeline_dlq" {
   name                       = "fxlake-pipeline-dlq"
   message_retention_seconds  = 1209600 # 14 days
-  visibility_timeout_seconds = 30
+  visibility_timeout_seconds = 300
+  sqs_managed_sse_enabled    = true
 
   tags = {
     component = "monitoring"
