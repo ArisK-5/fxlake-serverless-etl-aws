@@ -194,11 +194,11 @@ def main(
                 "Extracted execution input",
                 extra={"message_id": message_id},
             )
-        except ValueError:
+        except ValueError as e:
             errors += 1
             logger.error(
                 "Failed to parse execution input",
-                extra={"message_id": message_id},
+                extra={"message_id": message_id, "reason": str(e)},
             )
             continue
 
@@ -221,11 +221,22 @@ def main(
                 "Re-executed Step Function",
                 extra={"new_execution_arn": execution_arn},
             )
-        except (ValueError, ClientError):
+        except ValueError as e:
             errors += 1
             logger.error(
-                "Failed to start execution",
-                extra={"message_id": message_id},
+                "Invalid execution input",
+                extra={"message_id": message_id, "reason": str(e)},
+            )
+            continue
+        except ClientError as e:
+            errors += 1
+            logger.error(
+                "Failed to start Step Functions execution",
+                extra={
+                    "message_id": message_id,
+                    "error_code": e.response["Error"]["Code"],
+                    "error_message": e.response["Error"]["Message"],
+                },
             )
             continue
 

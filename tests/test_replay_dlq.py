@@ -91,6 +91,24 @@ class TestExtractExecutionInput:
         with pytest.raises(ValueError, match="Failed to parse input JSON"):
             extract_execution_input(msg)
 
+    def test_extract_input_missing_body_key(self):
+        """Should raise ValueError if 'body' key is missing from message."""
+        from scripts.replay_dlq import extract_execution_input
+
+        msg = {"messageId": "msg-1", "receiptHandle": "receipt-1"}
+
+        with pytest.raises(ValueError, match="Missing 'body' in message"):
+            extract_execution_input(msg)
+
+    def test_extract_input_malformed_body_json(self):
+        """Should raise ValueError if message body is not valid JSON."""
+        from scripts.replay_dlq import extract_execution_input
+
+        msg = {"messageId": "msg-1", "receiptHandle": "receipt-1", "body": "{ broken"}
+
+        with pytest.raises(ValueError, match="Failed to parse message body JSON"):
+            extract_execution_input(msg)
+
 
 class TestReplayExecution:
     """Test re-execution of failed Step Functions."""
@@ -361,6 +379,50 @@ class TestMainFunction:
 
         bad_msg = {"body": "{}"}
         mock_sqs.receive_message.return_value = {"Messages": [bad_msg]}
+
+        replayed, errors = main(
+            sqs_client=mock_sqs,
+            sfn_client=mock_sfn,
+            queue_url=_QUEUE_URL,
+            state_machine_arn=_SM_ARN,
+        )
+
+        assert replayed == 0
+        assert errors == 1
+        mock_sfn.start_execution.assert_not_called()
+
+    @patch("scripts.replay_dlq.sqs_client")
+    @patch("scripts.replay_dlq.sfn_client")
+    def test_main_extract_input_failure_counts_error(self, mock_sfn, mock_sqs):
+        """Messages with valid structure but unparseable detail should count as errors."""
+        from scripts.replay_dlq import main
+
+        msg = {
+            "messageId": "msg-1",
+            "receiptHandle": "receipt-1",
+            "body": json.dumps({}),
+        }
+        mock_sqs.receive_message.return_value = {"Messages": [msg]}
+
+        replayed, errors = main(
+            sqs_client=mock_sqs,
+            sfn_client=mock_sfn,
+            queue_url=_QUEUE_URL,
+            state_machine_arn=_SM_ARN,
+        )
+
+        assert replayed == 0
+        assert errors == 1
+        mock_sfn.start_execution.assert_not_called()
+
+    @patch("scripts.replay_dlq.sqs_client")
+    @patch("scripts.replay_dlq.sfn_client")
+    def test_main_oversized_payload_counted_as_error(self, mock_sfn, mock_sqs):
+        """Oversized input should be caught in main() and counted as error."""
+        from scripts.replay_dlq import main
+
+        msg = _make_sfn_event(input_data={"data": "x" * 300_000})
+        mock_sqs.receive_message.return_value = {"Messages": [msg]}
 
         replayed, errors = main(
             sqs_client=mock_sqs,
