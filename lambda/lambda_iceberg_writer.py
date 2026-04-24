@@ -8,27 +8,13 @@ import boto3
 import polars as pl
 from botocore.exceptions import ClientError
 from common.logging import Timer, configure_logger, inject_request_id
-
-try:
-    from quality import (
-        QualityResult,
-        build_quality_report,
-        has_critical_failures,
-        run_economic_checks,
-        run_fx_checks,
-    )
-except ImportError:
-    import sys as _sys
-    _GLUE_DIR = str(__import__("pathlib").Path(__file__).resolve().parent.parent / "glue")
-    if _GLUE_DIR not in _sys.path:
-        _sys.path.insert(0, _GLUE_DIR)
-    from quality import (  # noqa: E402
-        QualityResult,
-        build_quality_report,
-        has_critical_failures,
-        run_economic_checks,
-        run_fx_checks,
-    )
+from quality import (
+    QualityResult,
+    build_quality_report,
+    has_critical_failures,
+    run_economic_checks,
+    run_fx_checks,
+)
 
 if os.getenv("AWS_XRAY_DAEMON_ADDRESS"):
     try:
@@ -44,8 +30,8 @@ DATABASE_NAME = os.environ.get("DATABASE_NAME", "fxlake")
 ATHENA_RESULTS_BUCKET = os.environ.get("ATHENA_RESULTS_BUCKET", "")
 WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "fxlake")
 RAW_BUCKET = os.environ.get("RAW_BUCKET", "")
-PROCESSED_BUCKET = os.environ.get("PROCESSED_BUCKET", "")
-QUARANTINE_BUCKET = os.environ.get("QUARANTINE_BUCKET", "")
+PROCESSED_BUCKET = os.environ["PROCESSED_BUCKET"]
+QUARANTINE_BUCKET = os.environ["QUARANTINE_BUCKET"]
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "FXLake/Quality")
 
 POLL_INTERVAL_SECONDS = 2
@@ -293,11 +279,11 @@ def _run_quality_checks(
             },
         )
 
-    _publish_quality_metric(s3_client, "DataQualityChecksFailed", float(len(failed)), domain)
+    _publish_quality_metric("DataQualityChecksFailed", float(len(failed)), domain)
 
     if has_critical_failures(results):
         _quarantine_records(s3_client, rows, raw_key, domain)
-        _publish_quality_metric(s3_client, "RecordsQuarantined", float(len(rows)), domain)
+        _publish_quality_metric("RecordsQuarantined", float(len(rows)), domain)
         raise ValueError(
             f"CRITICAL quality check(s) failed for {raw_key}: "
             + "; ".join(r.message for r in failed if r.level.value == "CRITICAL")
@@ -316,9 +302,21 @@ def _write_quality_report(
     stem = raw_key.split("/")[-1].replace(".json", "")
     report_key = f"{domain}/quality_reports/{stem}_quality.json"
     body = json.dumps(report, indent=2).encode()
-    s3_client.put_object(
-        Bucket=PROCESSED_BUCKET, Key=report_key, Body=body, ContentType="application/json"
-    )
+    try:
+        s3_client.put_object(
+            Bucket=PROCESSED_BUCKET, Key=report_key, Body=body, ContentType="application/json"
+        )
+    except ClientError as e:
+        logger.error(
+            "Failed to write quality report",
+            extra={
+                "bucket": PROCESSED_BUCKET,
+                "key": report_key,
+                "error_code": e.response["Error"]["Code"],
+            },
+            exc_info=True,
+        )
+        raise
     logger.info(
         "Quality report written",
         extra={"bucket": PROCESSED_BUCKET, "key": report_key},
@@ -336,9 +334,22 @@ def _quarantine_records(
     stem = raw_key.split("/")[-1].replace(".json", "")
     q_key = f"{domain}/quarantine/{stem}.json"
     body = json.dumps(rows).encode()
-    s3_client.put_object(
-        Bucket=QUARANTINE_BUCKET, Key=q_key, Body=body, ContentType="application/json"
-    )
+    try:
+        s3_client.put_object(
+            Bucket=QUARANTINE_BUCKET, Key=q_key, Body=body, ContentType="application/json"
+        )
+    except ClientError as e:
+        logger.error(
+            "Failed to quarantine records",
+            extra={
+                "bucket": QUARANTINE_BUCKET,
+                "key": q_key,
+                "record_count": len(rows),
+                "error_code": e.response["Error"]["Code"],
+            },
+            exc_info=True,
+        )
+        raise
     logger.warning(
         "Quarantined records",
         extra={"bucket": QUARANTINE_BUCKET, "key": q_key, "record_count": len(rows)},
@@ -347,7 +358,6 @@ def _quarantine_records(
 
 
 def _publish_quality_metric(
-    s3_client: Any,
     metric_name: str,
     value: float,
     domain: str,

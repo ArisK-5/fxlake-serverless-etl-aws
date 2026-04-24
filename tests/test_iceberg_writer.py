@@ -18,6 +18,8 @@ from lambda_iceberg_writer import (
     _parse_economic_indicators,
     _parse_fx_rates,
     _poll_query_completion,
+    _publish_quality_metric,
+    _quarantine_records,
     _read_raw_json,
     _rows_to_dataframe,
     _run_quality_checks,
@@ -929,3 +931,76 @@ class TestLambdaHandler:
         }
         result = lambda_handler(event, mock_context)
         assert result["domain"] == "fx_rates"
+
+
+# ---------------------------------------------------------------------------
+# _quarantine_records
+# ---------------------------------------------------------------------------
+
+
+class TestQuarantineRecords:
+    def test_writes_to_correct_path(self, s3_with_fx_json):
+        rows = [{"date": "2024-01-02", "source": "test", "base_currency": "EUR",
+                 "target_currency": "USD", "rate": -1.0}]
+        key = _quarantine_records(s3_with_fx_json, rows, "bad_rates.json", "fx_rates")
+        assert key == "fx_rates/quarantine/bad_rates.json"
+
+        obj = s3_with_fx_json.get_object(Bucket="test-quarantine-bucket", Key=key)
+        data = json.loads(obj["Body"].read())
+        assert len(data) == 1
+
+    def test_s3_write_failure_raises(self):
+        mock_s3 = MagicMock()
+        mock_s3.put_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+            "PutObject",
+        )
+        rows = [{"date": "2024-01-02", "value": 1.0}]
+        with pytest.raises(ClientError):
+            _quarantine_records(mock_s3, rows, "test.json", "fx_rates")
+
+
+# ---------------------------------------------------------------------------
+# _write_quality_report — error paths
+# ---------------------------------------------------------------------------
+
+
+class TestWriteQualityReportErrors:
+    def test_s3_write_failure_raises(self):
+        mock_s3 = MagicMock()
+        mock_s3.put_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+            "PutObject",
+        )
+        with pytest.raises(ClientError):
+            _write_quality_report(mock_s3, {"checks": []}, "test.json", "fx_rates")
+
+
+# ---------------------------------------------------------------------------
+# _publish_quality_metric
+# ---------------------------------------------------------------------------
+
+
+class TestPublishQualityMetric:
+    @patch("lambda_iceberg_writer.boto3")
+    def test_publishes_metric(self, mock_boto3):
+        mock_cw = MagicMock()
+        mock_boto3.client.return_value = mock_cw
+
+        _publish_quality_metric("DataQualityChecksFailed", 2.0, "fx_rates")
+
+        mock_cw.put_metric_data.assert_called_once()
+        call_kwargs = mock_cw.put_metric_data.call_args[1]
+        assert call_kwargs["MetricData"][0]["MetricName"] == "DataQualityChecksFailed"
+        assert call_kwargs["MetricData"][0]["Value"] == 2.0
+
+    @patch("lambda_iceberg_writer.boto3")
+    def test_swallows_client_error(self, mock_boto3):
+        mock_cw = MagicMock()
+        mock_cw.put_metric_data.side_effect = ClientError(
+            {"Error": {"Code": "InternalError", "Message": "oops"}},
+            "PutMetricData",
+        )
+        mock_boto3.client.return_value = mock_cw
+
+        _publish_quality_metric("TestMetric", 1.0, "fx_rates")
