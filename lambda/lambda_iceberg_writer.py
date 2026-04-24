@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -24,6 +25,7 @@ RAW_BUCKET = os.environ.get("RAW_BUCKET", "")
 
 POLL_INTERVAL_SECONDS = 2
 MAX_POLL_ATTEMPTS = 90
+_VALID_TABLE_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 def _parse_fx_rates(raw_data: dict) -> list[dict[str, Any]]:
@@ -57,6 +59,8 @@ def _build_insert_query(table_name: str, rows: list[dict[str, Any]]) -> str:
     Athena Iceberg INSERT INTO supports standard SQL VALUES syntax.
     String values are single-quoted and escaped; doubles are unquoted.
     """
+    if not _VALID_TABLE_NAME.match(table_name):
+        raise ValueError(f"Invalid table name: {table_name!r}")
     if not rows:
         raise ValueError("No rows to insert — cannot build INSERT query")
 
@@ -192,17 +196,8 @@ def _poll_query_completion(
     )
 
 
-def lambda_handler(event: dict, context: Any) -> dict:
-    """Write FX rates data to the Iceberg table via Athena INSERT INTO.
-
-    Expected event keys:
-        raw_bucket (str): S3 bucket containing the raw JSON (overrides RAW_BUCKET env)
-        raw_key (str): S3 key of the raw JSON file
-        target_table (str): Iceberg table name (default: "fx_rates")
-        database_name (str): Glue catalog database (default: DATABASE_NAME env)
-    """
-    inject_request_id(logger, context)
-
+def _validate_event(event: dict) -> tuple[str, str, str, str, str]:
+    """Extract and validate required parameters from the Lambda event."""
     raw_bucket = event.get("raw_bucket", RAW_BUCKET)
     raw_key = event.get("raw_key", "")
     target_table = event.get("target_table", "fx_rates")
@@ -213,6 +208,13 @@ def lambda_handler(event: dict, context: Any) -> dict:
         raise ValueError("Missing required 'raw_key' in event")
     if not raw_bucket:
         raise ValueError("Missing raw_bucket — set RAW_BUCKET env var or pass in event")
+
+    return raw_bucket, raw_key, target_table, database, output_location
+
+
+def lambda_handler(event: dict, context: Any) -> dict:
+    inject_request_id(logger, context)
+    raw_bucket, raw_key, target_table, database, output_location = _validate_event(event)
 
     s3_client = boto3.client("s3")
     athena_client = boto3.client("athena")

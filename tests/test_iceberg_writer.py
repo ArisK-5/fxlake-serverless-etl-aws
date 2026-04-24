@@ -158,6 +158,31 @@ class TestBuildInsertQuery:
         query = _build_insert_query("fx_rates", rows)
         assert "(date, source, base_currency, target_currency, rate)" in query
 
+    @pytest.mark.parametrize("bad_name", [
+        "fx_rates; DROP TABLE users",
+        "table--name",
+        "123starts_with_digit",
+        "",
+        "has space",
+        "has.dot",
+    ])
+    def test_rejects_invalid_table_names(self, bad_name):
+        rows = [
+            {"date": "2024-01-02", "source": "ecb", "base_currency": "EUR",
+             "target_currency": "CHF", "rate": 0.931},
+        ]
+        with pytest.raises(ValueError, match="Invalid table name"):
+            _build_insert_query(bad_name, rows)
+
+    def test_accepts_valid_table_names(self):
+        rows = [
+            {"date": "2024-01-02", "source": "ecb", "base_currency": "EUR",
+             "target_currency": "CHF", "rate": 0.931},
+        ]
+        for name in ["fx_rates", "_private", "Table1", "a"]:
+            query = _build_insert_query(name, rows)
+            assert f"INSERT INTO {name}" in query
+
 
 # ---------------------------------------------------------------------------
 # _read_raw_json

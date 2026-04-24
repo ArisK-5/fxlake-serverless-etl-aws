@@ -155,8 +155,8 @@ resource "aws_sfn_state_machine" "etl" {
         Parameters = {
           FunctionName = module.iceberg_writer.function_arn,
           Payload = {
-            "raw_bucket.$"  = "$.parallel_results.fx.Payload.bucket",
-            "raw_key.$"     = "$.parallel_results.fx.Payload.raw_key",
+            "raw_bucket"    = aws_s3_bucket.raw.bucket,
+            "raw_key.$"     = "$.parallel_results.fx.Payload.key",
             "target_table"  = "fx_rates",
             "database_name" = aws_glue_catalog_database.fxlake.name
           }
