@@ -158,10 +158,11 @@ resource "aws_sfn_state_machine" "etl" {
             "raw_bucket"    = aws_s3_bucket.raw.bucket,
             "raw_key.$"     = "$.parallel_results.fx.Payload.key",
             "target_table"  = "fx_rates",
+            "domain"        = "fx_rates",
             "database_name" = aws_glue_catalog_database.fxlake.name
           }
         },
-        ResultPath     = "$.iceberg_write",
+        ResultPath     = "$.iceberg_fx_write",
         TimeoutSeconds = 330,
         Retry = [
           {
@@ -175,6 +176,38 @@ resource "aws_sfn_state_machine" "etl" {
           {
             ErrorEquals = ["States.ALL"],
             Next        = "Write-FX-Iceberg-Failed",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
+        Next = "Write-Economic-Iceberg"
+      },
+      Write-Economic-Iceberg = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = module.iceberg_writer.function_arn,
+          Payload = {
+            "raw_bucket"    = aws_s3_bucket.raw.bucket,
+            "raw_key.$"     = "$.parallel_results.fred.Payload.key",
+            "target_table"  = "economic_indicators",
+            "domain"        = "economic_indicators",
+            "database_name" = aws_glue_catalog_database.fxlake.name
+          }
+        },
+        ResultPath     = "$.iceberg_econ_write",
+        TimeoutSeconds = 330,
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 5,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Write-Economic-Iceberg-Failed",
             ResultPath  = "$.errorInfo"
           }
         ],
@@ -364,6 +397,11 @@ resource "aws_sfn_state_machine" "etl" {
         CausePath = "$.errorInfo.Cause"
       },
       Write-FX-Iceberg-Failed = {
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
+      },
+      Write-Economic-Iceberg-Failed = {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"

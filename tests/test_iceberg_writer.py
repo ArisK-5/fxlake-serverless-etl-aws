@@ -1,7 +1,9 @@
 """Tests for the Iceberg writer Lambda (lambda_iceberg_writer.py).
 
-Covers: FX rate JSON parsing, INSERT query building, Athena execution + polling,
-S3 read errors, empty data handling, and end-to-end lambda_handler flow.
+Covers: FX rate + economic indicator JSON parsing, INSERT query building,
+Athena execution + polling, S3 read errors, empty data handling, quality
+checks integration (pass/warning/critical), quarantine, and end-to-end
+lambda_handler flow for both domains.
 """
 
 import json
@@ -13,9 +15,15 @@ from botocore.exceptions import ClientError
 from lambda_iceberg_writer import (
     _build_insert_query,
     _execute_athena_query,
+    _parse_economic_indicators,
     _parse_fx_rates,
     _poll_query_completion,
+    _publish_quality_metric,
+    _quarantine_records,
     _read_raw_json,
+    _rows_to_dataframe,
+    _run_quality_checks,
+    _write_quality_report,
     lambda_handler,
 )
 from moto import mock_aws
@@ -41,6 +49,15 @@ SAMPLE_ECB_JSON = {
     },
 }
 
+SAMPLE_FRED_JSON = {
+    "source": "fred",
+    "series_id": "UNRATE",
+    "observations": [
+        {"date": "2024-01-01", "value": "3.7"},
+        {"date": "2024-02-01", "value": "3.9"},
+    ],
+}
+
 
 @pytest.fixture()
 def s3_with_fx_json():
@@ -48,10 +65,29 @@ def s3_with_fx_json():
     with mock_aws():
         client = boto3.client("s3", region_name="us-east-1")
         client.create_bucket(Bucket="test-raw-bucket")
+        client.create_bucket(Bucket="test-processed-bucket")
+        client.create_bucket(Bucket="test-quarantine-bucket")
         client.put_object(
             Bucket="test-raw-bucket",
             Key="exchange_rates_EUR_2024-01-02_to_2024-01-03.json",
             Body=json.dumps(SAMPLE_FX_JSON),
+            ContentType="application/json",
+        )
+        yield client
+
+
+@pytest.fixture()
+def s3_with_fred_json():
+    """Moto S3 with a sample FRED JSON file uploaded."""
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        client.create_bucket(Bucket="test-raw-bucket")
+        client.create_bucket(Bucket="test-processed-bucket")
+        client.create_bucket(Bucket="test-quarantine-bucket")
+        client.put_object(
+            Bucket="test-raw-bucket",
+            Key="fred_UNRATE_2024-01-01_to_2024-02-01.json",
+            Body=json.dumps(SAMPLE_FRED_JSON),
             ContentType="application/json",
         )
         yield client
@@ -113,12 +149,51 @@ class TestParseFxRates:
 
 
 # ---------------------------------------------------------------------------
+# _parse_economic_indicators
+# ---------------------------------------------------------------------------
+
+
+class TestParseEconomicIndicators:
+    def test_parses_fred_json(self):
+        rows = _parse_economic_indicators(SAMPLE_FRED_JSON)
+        assert len(rows) == 2
+        assert all(r["source"] == "fred" for r in rows)
+        assert all(r["series_id"] == "UNRATE" for r in rows)
+
+    def test_correct_row_structure(self):
+        rows = _parse_economic_indicators(SAMPLE_FRED_JSON)
+        row = rows[0]
+        assert set(row.keys()) == {"date", "source", "series_id", "value"}
+        assert isinstance(row["value"], float)
+
+    def test_empty_observations(self):
+        data = {"source": "fred", "series_id": "UNRATE", "observations": []}
+        rows = _parse_economic_indicators(data)
+        assert rows == []
+
+    def test_defaults_source_to_fred(self):
+        data = {"series_id": "GDP", "observations": [{"date": "2024-01-01", "value": "100.5"}]}
+        rows = _parse_economic_indicators(data)
+        assert rows[0]["source"] == "fred"
+
+    def test_value_cast_to_float(self):
+        data = {
+            "source": "fred",
+            "series_id": "X",
+            "observations": [{"date": "2024-01-01", "value": "42"}],
+        }
+        rows = _parse_economic_indicators(data)
+        assert rows[0]["value"] == 42.0
+        assert isinstance(rows[0]["value"], float)
+
+
+# ---------------------------------------------------------------------------
 # _build_insert_query
 # ---------------------------------------------------------------------------
 
 
 class TestBuildInsertQuery:
-    def test_generates_valid_insert(self):
+    def test_generates_valid_fx_insert(self):
         rows = [
             {"date": "2024-01-02", "source": "frankfurter", "base_currency": "EUR",
              "target_currency": "USD", "rate": 1.1023},
@@ -129,6 +204,16 @@ class TestBuildInsertQuery:
         assert "'2024-01-02'" in query
         assert "'frankfurter'" in query
         assert "1.1023" in query
+
+    def test_generates_valid_econ_insert(self):
+        rows = [
+            {"date": "2024-01-01", "source": "fred", "series_id": "UNRATE", "value": 3.7},
+        ]
+        query = _build_insert_query("economic_indicators", rows, domain="economic_indicators")
+        assert query.startswith("INSERT INTO economic_indicators")
+        assert "(date, source, series_id, value)" in query
+        assert "'UNRATE'" in query
+        assert "3.7" in query
 
     def test_multiple_rows(self):
         rows = _parse_fx_rates(SAMPLE_FX_JSON)
@@ -150,13 +235,28 @@ class TestBuildInsertQuery:
         assert "EU''R" in query
         assert "US''D" in query
 
-    def test_includes_all_columns(self):
+    def test_escapes_single_quotes_econ(self):
+        rows = [
+            {"date": "2024-01-01", "source": "fre'd", "series_id": "UN'RATE", "value": 3.7},
+        ]
+        query = _build_insert_query("economic_indicators", rows, domain="economic_indicators")
+        assert "fre''d" in query
+        assert "UN''RATE" in query
+
+    def test_includes_all_fx_columns(self):
         rows = [
             {"date": "2024-01-02", "source": "ecb", "base_currency": "EUR",
              "target_currency": "CHF", "rate": 0.931},
         ]
         query = _build_insert_query("fx_rates", rows)
         assert "(date, source, base_currency, target_currency, rate)" in query
+
+    def test_includes_all_econ_columns(self):
+        rows = [
+            {"date": "2024-01-01", "source": "fred", "series_id": "UNRATE", "value": 3.7},
+        ]
+        query = _build_insert_query("t", rows, domain="economic_indicators")
+        assert "(date, source, series_id, value)" in query
 
     @pytest.mark.parametrize("bad_name", [
         "fx_rates; DROP TABLE users",
@@ -322,6 +422,125 @@ class TestPollQueryCompletion:
 
 
 # ---------------------------------------------------------------------------
+# _rows_to_dataframe
+# ---------------------------------------------------------------------------
+
+
+class TestRowsToDataframe:
+    def test_fx_schema(self):
+        rows = _parse_fx_rates(SAMPLE_FX_JSON)
+        df = _rows_to_dataframe(rows, "fx_rates")
+        assert set(df.columns) == {"date", "source", "base_currency", "target_currency", "rate"}
+        assert len(df) == 4
+
+    def test_econ_schema(self):
+        rows = _parse_economic_indicators(SAMPLE_FRED_JSON)
+        df = _rows_to_dataframe(rows, "economic_indicators")
+        assert set(df.columns) == {"date", "source", "series_id", "value"}
+        assert len(df) == 2
+
+
+# ---------------------------------------------------------------------------
+# _run_quality_checks
+# ---------------------------------------------------------------------------
+
+
+class TestRunQualityChecks:
+    def test_fx_quality_passes(self, s3_with_fx_json):
+        rows = _parse_fx_rates(SAMPLE_FX_JSON)
+        results = _run_quality_checks(rows, "fx_rates", "test.json", s3_with_fx_json)
+        assert all(r.passed for r in results if r.level.value == "CRITICAL")
+
+    def test_econ_quality_passes(self, s3_with_fred_json):
+        rows = _parse_economic_indicators(SAMPLE_FRED_JSON)
+        results = _run_quality_checks(
+            rows, "economic_indicators", "test.json", s3_with_fred_json
+        )
+        assert all(r.passed for r in results if r.level.value == "CRITICAL")
+
+    def test_writes_quality_report_to_s3(self, s3_with_fx_json):
+        rows = _parse_fx_rates(SAMPLE_FX_JSON)
+        _run_quality_checks(rows, "fx_rates", "exchange_rates.json", s3_with_fx_json)
+
+        report_obj = s3_with_fx_json.get_object(
+            Bucket="test-processed-bucket",
+            Key="fx_rates/quality_reports/exchange_rates_quality.json",
+        )
+        report = json.loads(report_obj["Body"].read())
+        assert report["domain"] == "fx_rates"
+        assert "checks" in report
+
+    def test_critical_failure_raises_and_quarantines(self, s3_with_fx_json):
+        rows = [
+            {"date": "2024-01-02", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "USD", "rate": -1.0},
+        ]
+        with pytest.raises(ValueError, match="CRITICAL"):
+            _run_quality_checks(rows, "fx_rates", "bad_rates.json", s3_with_fx_json)
+
+        quarantine_obj = s3_with_fx_json.get_object(
+            Bucket="test-quarantine-bucket",
+            Key="fx_rates/quarantine/bad_rates.json",
+        )
+        quarantined = json.loads(quarantine_obj["Body"].read())
+        assert len(quarantined) == 1
+
+    def test_warning_does_not_raise(self, s3_with_fx_json):
+        rows = [
+            {"date": "2024-01-02", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "USD", "rate": 1.1},
+            {"date": "2024-01-02", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "USD", "rate": 1.1},
+        ]
+        results = _run_quality_checks(rows, "fx_rates", "dup.json", s3_with_fx_json)
+        warnings = [r for r in results if not r.passed]
+        assert len(warnings) > 0
+        assert all(r.level.value == "WARNING" for r in warnings)
+
+    def test_econ_critical_failure_quarantines(self, s3_with_fred_json):
+        rows = [
+            {"date": None, "source": "fred", "series_id": "UNRATE", "value": 3.7},
+        ]
+        with pytest.raises(ValueError, match="CRITICAL"):
+            _run_quality_checks(
+                rows, "economic_indicators", "fred_bad.json", s3_with_fred_json
+            )
+
+        quarantine_obj = s3_with_fred_json.get_object(
+            Bucket="test-quarantine-bucket",
+            Key="economic_indicators/quarantine/fred_bad.json",
+        )
+        quarantined = json.loads(quarantine_obj["Body"].read())
+        assert len(quarantined) == 1
+
+
+# ---------------------------------------------------------------------------
+# _write_quality_report
+# ---------------------------------------------------------------------------
+
+
+class TestWriteQualityReport:
+    def test_writes_to_correct_path(self, s3_with_fx_json):
+        report = {"domain": "fx_rates", "checks": []}
+        key = _write_quality_report(
+            s3_with_fx_json, report, "exchange_rates_EUR_2024.json", "fx_rates"
+        )
+        assert key == "fx_rates/quality_reports/exchange_rates_EUR_2024_quality.json"
+
+        obj = s3_with_fx_json.get_object(
+            Bucket="test-processed-bucket", Key=key
+        )
+        assert json.loads(obj["Body"].read()) == report
+
+    def test_econ_report_path(self, s3_with_fred_json):
+        report = {"domain": "economic_indicators", "checks": []}
+        key = _write_quality_report(
+            s3_with_fred_json, report, "fred_UNRATE_2024.json", "economic_indicators"
+        )
+        assert key == "economic_indicators/quality_reports/fred_UNRATE_2024_quality.json"
+
+
+# ---------------------------------------------------------------------------
 # lambda_handler (end-to-end with mocked Athena)
 # ---------------------------------------------------------------------------
 
@@ -329,7 +548,7 @@ class TestPollQueryCompletion:
 class TestLambdaHandler:
     @patch("lambda_iceberg_writer._poll_query_completion")
     @patch("lambda_iceberg_writer._execute_athena_query")
-    def test_successful_write(
+    def test_successful_fx_write(
         self, mock_execute, mock_poll, s3_with_fx_json, mock_context
     ):
         mock_execute.return_value = "qid-e2e-1"
@@ -341,6 +560,7 @@ class TestLambdaHandler:
             "raw_bucket": "test-raw-bucket",
             "raw_key": "exchange_rates_EUR_2024-01-02_to_2024-01-03.json",
             "target_table": "fx_rates",
+            "domain": "fx_rates",
             "database_name": "fxlake",
         }
         result = lambda_handler(event, mock_context)
@@ -349,8 +569,35 @@ class TestLambdaHandler:
         assert result["rows_inserted"] == 4
         assert result["query_execution_id"] == "qid-e2e-1"
         assert result["target_table"] == "fx_rates"
+        assert result["domain"] == "fx_rates"
         mock_execute.assert_called_once()
         mock_poll.assert_called_once()
+
+    @patch("lambda_iceberg_writer._poll_query_completion")
+    @patch("lambda_iceberg_writer._execute_athena_query")
+    def test_successful_econ_write(
+        self, mock_execute, mock_poll, s3_with_fred_json, mock_context
+    ):
+        mock_execute.return_value = "qid-econ-1"
+        mock_poll.return_value = {
+            "QueryExecution": {"Status": {"State": "SUCCEEDED"}}
+        }
+
+        event = {
+            "raw_bucket": "test-raw-bucket",
+            "raw_key": "fred_UNRATE_2024-01-01_to_2024-02-01.json",
+            "target_table": "economic_indicators",
+            "domain": "economic_indicators",
+            "database_name": "fxlake",
+        }
+        result = lambda_handler(event, mock_context)
+
+        assert result["status"] == "ok"
+        assert result["rows_inserted"] == 2
+        assert result["domain"] == "economic_indicators"
+        query = mock_execute.call_args[0][1]
+        assert "INSERT INTO economic_indicators" in query
+        assert "'UNRATE'" in query
 
     @patch("lambda_iceberg_writer._poll_query_completion")
     @patch("lambda_iceberg_writer._execute_athena_query")
@@ -363,6 +610,8 @@ class TestLambdaHandler:
         with mock_aws():
             s3 = boto3.client("s3", region_name="us-east-1")
             s3.create_bucket(Bucket="test-raw-bucket")
+            s3.create_bucket(Bucket="test-processed-bucket")
+            s3.create_bucket(Bucket="test-quarantine-bucket")
             s3.put_object(
                 Bucket="test-raw-bucket",
                 Key="ecb_rates_2024-01-02_to_2024-01-02.json",
@@ -373,6 +622,7 @@ class TestLambdaHandler:
                 "raw_bucket": "test-raw-bucket",
                 "raw_key": "ecb_rates_2024-01-02_to_2024-01-02.json",
                 "target_table": "fx_rates",
+                "domain": "fx_rates",
             }
             result = lambda_handler(event, mock_context)
 
@@ -387,6 +637,8 @@ class TestLambdaHandler:
         with mock_aws():
             s3 = boto3.client("s3", region_name="us-east-1")
             s3.create_bucket(Bucket="test-raw-bucket")
+            s3.create_bucket(Bucket="test-processed-bucket")
+            s3.create_bucket(Bucket="test-quarantine-bucket")
             s3.put_object(
                 Bucket="test-raw-bucket",
                 Key="empty.json",
@@ -404,6 +656,37 @@ class TestLambdaHandler:
         mock_execute.assert_not_called()
         mock_poll.assert_not_called()
 
+    @patch("lambda_iceberg_writer._poll_query_completion")
+    @patch("lambda_iceberg_writer._execute_athena_query")
+    def test_empty_econ_returns_no_data(
+        self, mock_execute, mock_poll, mock_context
+    ):
+        with mock_aws():
+            s3 = boto3.client("s3", region_name="us-east-1")
+            s3.create_bucket(Bucket="test-raw-bucket")
+            s3.create_bucket(Bucket="test-processed-bucket")
+            s3.create_bucket(Bucket="test-quarantine-bucket")
+            s3.put_object(
+                Bucket="test-raw-bucket",
+                Key="fred_empty.json",
+                Body=json.dumps({
+                    "source": "fred",
+                    "series_id": "UNRATE",
+                    "observations": [],
+                }),
+            )
+
+            event = {
+                "raw_bucket": "test-raw-bucket",
+                "raw_key": "fred_empty.json",
+                "domain": "economic_indicators",
+            }
+            result = lambda_handler(event, mock_context)
+
+        assert result["status"] == "no_data"
+        assert result["domain"] == "economic_indicators"
+        mock_execute.assert_not_called()
+
     def test_missing_raw_key_raises(self, mock_context):
         with pytest.raises(ValueError, match="raw_key"):
             lambda_handler({"raw_bucket": "b"}, mock_context)
@@ -412,6 +695,13 @@ class TestLambdaHandler:
         monkeypatch.setattr("lambda_iceberg_writer.RAW_BUCKET", "")
         with pytest.raises(ValueError, match="raw_bucket"):
             lambda_handler({"raw_key": "k"}, mock_context)
+
+    def test_invalid_domain_raises(self, mock_context):
+        with pytest.raises(ValueError, match="Invalid domain"):
+            lambda_handler(
+                {"raw_bucket": "b", "raw_key": "k", "domain": "bad_domain"},
+                mock_context,
+            )
 
     @patch("lambda_iceberg_writer._poll_query_completion")
     @patch("lambda_iceberg_writer._execute_athena_query")
@@ -503,3 +793,214 @@ class TestLambdaHandler:
         assert result["target_table"] == "fx_rates"
         query = mock_execute.call_args[0][1]
         assert "INSERT INTO fx_rates" in query
+
+    @patch("lambda_iceberg_writer._poll_query_completion")
+    @patch("lambda_iceberg_writer._execute_athena_query")
+    def test_quality_failure_blocks_iceberg_write(
+        self, mock_execute, mock_poll, mock_context
+    ):
+        with mock_aws():
+            s3 = boto3.client("s3", region_name="us-east-1")
+            s3.create_bucket(Bucket="test-raw-bucket")
+            s3.create_bucket(Bucket="test-processed-bucket")
+            s3.create_bucket(Bucket="test-quarantine-bucket")
+            bad_data = {
+                "base": "EUR",
+                "source": "frankfurter",
+                "rates": {"2024-01-02": {"USD": -5.0}},
+            }
+            s3.put_object(
+                Bucket="test-raw-bucket",
+                Key="bad_rates.json",
+                Body=json.dumps(bad_data),
+            )
+
+            event = {
+                "raw_bucket": "test-raw-bucket",
+                "raw_key": "bad_rates.json",
+                "domain": "fx_rates",
+            }
+            with pytest.raises(ValueError, match="CRITICAL"):
+                lambda_handler(event, mock_context)
+
+        mock_execute.assert_not_called()
+        mock_poll.assert_not_called()
+
+    @patch("lambda_iceberg_writer._poll_query_completion")
+    @patch("lambda_iceberg_writer._execute_athena_query")
+    def test_quality_warning_allows_iceberg_write(
+        self, mock_execute, mock_poll, mock_context
+    ):
+        mock_execute.return_value = "qid-warning"
+        mock_poll.return_value = {
+            "QueryExecution": {"Status": {"State": "SUCCEEDED"}}
+        }
+
+        with mock_aws():
+            s3 = boto3.client("s3", region_name="us-east-1")
+            s3.create_bucket(Bucket="test-raw-bucket")
+            s3.create_bucket(Bucket="test-processed-bucket")
+            s3.create_bucket(Bucket="test-quarantine-bucket")
+            dup_data = {
+                "base": "EUR",
+                "source": "frankfurter",
+                "rates": {
+                    "2024-01-02": {"USD": 1.1023},
+                    "2024-01-03": {"USD": 1.0956},
+                },
+            }
+            s3.put_object(
+                Bucket="test-raw-bucket",
+                Key="dup_rates.json",
+                Body=json.dumps(dup_data),
+            )
+
+            event = {
+                "raw_bucket": "test-raw-bucket",
+                "raw_key": "dup_rates.json",
+                "domain": "fx_rates",
+            }
+            result = lambda_handler(event, mock_context)
+
+        assert result["status"] == "ok"
+        mock_execute.assert_called_once()
+
+    @patch("lambda_iceberg_writer._poll_query_completion")
+    @patch("lambda_iceberg_writer._execute_athena_query")
+    def test_writes_quality_report_on_success(
+        self, mock_execute, mock_poll, s3_with_fx_json, mock_context
+    ):
+        mock_execute.return_value = "qid-report"
+        mock_poll.return_value = {
+            "QueryExecution": {"Status": {"State": "SUCCEEDED"}}
+        }
+
+        event = {
+            "raw_bucket": "test-raw-bucket",
+            "raw_key": "exchange_rates_EUR_2024-01-02_to_2024-01-03.json",
+            "domain": "fx_rates",
+        }
+        lambda_handler(event, mock_context)
+
+        report_obj = s3_with_fx_json.get_object(
+            Bucket="test-processed-bucket",
+            Key="fx_rates/quality_reports/exchange_rates_EUR_2024-01-02_to_2024-01-03_quality.json",
+        )
+        report = json.loads(report_obj["Body"].read())
+        assert report["domain"] == "fx_rates"
+        assert report["overall_passed"] is True
+
+    @patch("lambda_iceberg_writer._poll_query_completion")
+    @patch("lambda_iceberg_writer._execute_athena_query")
+    def test_econ_end_to_end_writes_report(
+        self, mock_execute, mock_poll, s3_with_fred_json, mock_context
+    ):
+        mock_execute.return_value = "qid-econ-report"
+        mock_poll.return_value = {
+            "QueryExecution": {"Status": {"State": "SUCCEEDED"}}
+        }
+
+        event = {
+            "raw_bucket": "test-raw-bucket",
+            "raw_key": "fred_UNRATE_2024-01-01_to_2024-02-01.json",
+            "domain": "economic_indicators",
+        }
+        lambda_handler(event, mock_context)
+
+        report_obj = s3_with_fred_json.get_object(
+            Bucket="test-processed-bucket",
+            Key="economic_indicators/quality_reports/fred_UNRATE_2024-01-01_to_2024-02-01_quality.json",
+        )
+        report = json.loads(report_obj["Body"].read())
+        assert report["domain"] == "economic_indicators"
+        assert report["overall_passed"] is True
+
+    @patch("lambda_iceberg_writer._poll_query_completion")
+    @patch("lambda_iceberg_writer._execute_athena_query")
+    def test_domain_defaults_to_fx_rates(
+        self, mock_execute, mock_poll, s3_with_fx_json, mock_context
+    ):
+        mock_execute.return_value = "qid-default-domain"
+        mock_poll.return_value = {
+            "QueryExecution": {"Status": {"State": "SUCCEEDED"}}
+        }
+
+        event = {
+            "raw_bucket": "test-raw-bucket",
+            "raw_key": "exchange_rates_EUR_2024-01-02_to_2024-01-03.json",
+        }
+        result = lambda_handler(event, mock_context)
+        assert result["domain"] == "fx_rates"
+
+
+# ---------------------------------------------------------------------------
+# _quarantine_records
+# ---------------------------------------------------------------------------
+
+
+class TestQuarantineRecords:
+    def test_writes_to_correct_path(self, s3_with_fx_json):
+        rows = [{"date": "2024-01-02", "source": "test", "base_currency": "EUR",
+                 "target_currency": "USD", "rate": -1.0}]
+        key = _quarantine_records(s3_with_fx_json, rows, "bad_rates.json", "fx_rates")
+        assert key == "fx_rates/quarantine/bad_rates.json"
+
+        obj = s3_with_fx_json.get_object(Bucket="test-quarantine-bucket", Key=key)
+        data = json.loads(obj["Body"].read())
+        assert len(data) == 1
+
+    def test_s3_write_failure_raises(self):
+        mock_s3 = MagicMock()
+        mock_s3.put_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+            "PutObject",
+        )
+        rows = [{"date": "2024-01-02", "value": 1.0}]
+        with pytest.raises(ClientError):
+            _quarantine_records(mock_s3, rows, "test.json", "fx_rates")
+
+
+# ---------------------------------------------------------------------------
+# _write_quality_report — error paths
+# ---------------------------------------------------------------------------
+
+
+class TestWriteQualityReportErrors:
+    def test_s3_write_failure_raises(self):
+        mock_s3 = MagicMock()
+        mock_s3.put_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+            "PutObject",
+        )
+        with pytest.raises(ClientError):
+            _write_quality_report(mock_s3, {"checks": []}, "test.json", "fx_rates")
+
+
+# ---------------------------------------------------------------------------
+# _publish_quality_metric
+# ---------------------------------------------------------------------------
+
+
+class TestPublishQualityMetric:
+    @patch("lambda_iceberg_writer.boto3")
+    def test_publishes_metric(self, mock_boto3):
+        mock_cw = MagicMock()
+        mock_boto3.client.return_value = mock_cw
+
+        _publish_quality_metric("DataQualityChecksFailed", 2.0, "fx_rates")
+
+        mock_cw.put_metric_data.assert_called_once()
+        call_kwargs = mock_cw.put_metric_data.call_args[1]
+        assert call_kwargs["MetricData"][0]["MetricName"] == "DataQualityChecksFailed"
+        assert call_kwargs["MetricData"][0]["Value"] == 2.0
+
+    @patch("lambda_iceberg_writer.boto3")
+    def test_swallows_client_error(self, mock_boto3):
+        mock_cw = MagicMock()
+        mock_cw.put_metric_data.side_effect = ClientError(
+            {"Error": {"Code": "InternalError", "Message": "oops"}},
+            "PutMetricData",
+        )
+        mock_boto3.client.return_value = mock_cw
+
+        _publish_quality_metric("TestMetric", 1.0, "fx_rates")

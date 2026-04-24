@@ -21,6 +21,8 @@ os.environ.setdefault("FRED_SERIES", "UNRATE")
 os.environ.setdefault("DATABASE_NAME", "fxlake")
 os.environ.setdefault("ATHENA_RESULTS_BUCKET", "test-athena-results")
 os.environ.setdefault("ATHENA_WORKGROUP", "fxlake")
+os.environ.setdefault("PROCESSED_BUCKET", "test-processed-bucket")
+os.environ.setdefault("QUARANTINE_BUCKET", "test-quarantine-bucket")
 
 # Fake AWS credentials for moto
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
