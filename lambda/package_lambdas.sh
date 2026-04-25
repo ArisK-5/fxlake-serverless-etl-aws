@@ -10,6 +10,7 @@ REQUIRED_FILES=(
   lambda_fred_ingestion.py
   lambda_validation_function.py
   lambda_iceberg_writer.py
+  lambda_data_validator.py
 )
 
 echo "🔍 Validating Lambda source files..."
@@ -76,6 +77,8 @@ build_lambda lambda_fred_ingestion.py     lambda_fred_ingestion.zip
 build_lambda lambda_validation_function.py lambda_validation_function.zip requirements_validation.txt
 build_lambda lambda_iceberg_writer.py     lambda_iceberg_writer.zip requirements_iceberg_writer.txt
 
+build_lambda lambda_data_validator.py     lambda_data_validator.zip
+
 echo "  📚 Adding quality.py to iceberg writer package..."
 mkdir -p _iceberg_patch
 cd _iceberg_patch
@@ -87,4 +90,4 @@ rm -rf _iceberg_patch
 
 echo ""
 echo "✅ Lambda packaging complete."
-echo "Created: lambda_fx_ingestion.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip, lambda_iceberg_writer.zip (with quality.py)"
+echo "Created: lambda_fx_ingestion.zip, lambda_ecb_ingestion.zip, lambda_fred_ingestion.zip, lambda_validation_function.zip, lambda_iceberg_writer.zip (with quality.py), lambda_data_validator.zip"
