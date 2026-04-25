@@ -21,7 +21,7 @@ deduplicated as (
         observation_value,
         row_number() over (
             partition by observation_date, series_id
-            order by observation_date
+            order by data_source
         ) as row_num
     from staged
 
