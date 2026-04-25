@@ -31,6 +31,11 @@ output "data_validator_function_name" {
   value       = module.data_validator.function_name
 }
 
+output "iceberg_maintenance_function_name" {
+  description = "Name of the Iceberg maintenance Lambda function"
+  value       = module.iceberg_maintenance.function_name
+}
+
 output "dlq_url" {
   description = "URL of the DLQ SQS queue"
   value       = aws_sqs_queue.pipeline_dlq.url
