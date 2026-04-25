@@ -1,0 +1,56 @@
+version: 2
+
+models:
+  - name: stg_fx_rates
+    description: >
+      Cleaned and typed foreign exchange rates from the raw Iceberg table.
+      Filters out null dates and null rates.
+    columns:
+      - name: trading_date
+        description: Trading date, cast from string to date.
+        tests:
+          - not_null
+      - name: data_source
+        description: Upstream data provider.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['frankfurter', 'ecb']
+      - name: base_currency
+        description: Base currency code.
+        tests:
+          - not_null
+      - name: target_currency
+        description: Target currency code.
+        tests:
+          - not_null
+      - name: exchange_rate
+        description: Exchange rate value, cast to decimal(18,8).
+        tests:
+          - not_null
+
+  - name: stg_economic_indicators
+    description: >
+      Cleaned and typed economic indicator observations from the raw Iceberg table.
+      Filters out null dates and null values.
+    columns:
+      - name: observation_date
+        description: Observation date, cast from string to date.
+        tests:
+          - not_null
+      - name: data_source
+        description: Upstream data provider.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['fred']
+      - name: series_id
+        description: Indicator series identifier (e.g. UNRATE).
+        tests:
+          - not_null
+      - name: observation_value
+        description: Observation value, cast to decimal(18,4).
+        tests:
+          - not_null

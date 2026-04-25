@@ -484,10 +484,10 @@ Research the dbt-athena-community adapter configuration using Context7.
 ```
 
 **Validation:**
-- [ ] `make dbt-compile` succeeds
-- [ ] `dbt debug` connects to Athena
-- [ ] Models reference existing table structures
-- [ ] schema.yml describes all columns
+- [x] `make dbt-compile` succeeds
+- [x] `dbt debug` connects to Athena
+- [x] Models reference existing table structures
+- [x] schema.yml describes all columns
 
 **Acceptance criteria:** dbt project compiles and connects to Athena. Staging and mart models defined.
 
