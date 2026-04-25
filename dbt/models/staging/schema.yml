@@ -40,7 +40,7 @@ models:
               config:
                 severity: warn
     tests:
-      - dbt_utils.unique_combination_of_columns:  # quality.py: check_duplicates(df, ["date", "target_currency"]) — WARNING level
+      - dbt_utils.unique_combination_of_columns:  # quality.py checks ["date", "target_currency"]; includes data_source for per-source Iceberg uniqueness
           arguments:
             combination_of_columns:
               - trading_date
@@ -76,7 +76,7 @@ models:
           - not_null  # quality.py: check_no_nulls(df, "value")
           - positive_values  # quality.py: (extends coverage — economic values should be positive)
     tests:
-      - dbt_utils.unique_combination_of_columns:  # quality.py: check_duplicates(df, ["date", "series_id"]) — WARNING level
+      - dbt_utils.unique_combination_of_columns:  # quality.py checks ["date", "series_id"]; includes data_source for per-source Iceberg uniqueness
           arguments:
             combination_of_columns:
               - observation_date

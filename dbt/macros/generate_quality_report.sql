@@ -1,23 +1,10 @@
 {% macro generate_quality_report(model_name, domain) %}
 {#
-    Generates a JSON quality report for the given model and writes it to S3.
-    Mirrors quality.py build_quality_report() output format.
+    Logs the mapping between quality.py check names and dbt test names.
 
-    Usage (run-operation):
+    Usage:
       dbt run-operation generate_quality_report --args '{"model_name": "stg_fx_rates", "domain": "fx_rates"}'
 #}
-
-{% set checks = [] %}
-
-{% set test_results_query %}
-    select
-        test_unique_id,
-        test_name,
-        status,
-        failures
-    from {{ ref('test_results') }}
-    where model_name = '{{ model_name }}'
-{% endset %}
 
 {% set quality_checks = {
     'stg_fx_rates': [
@@ -40,13 +27,6 @@
     {{ exceptions.raise_compiler_error("Unknown model: " ~ model_name ~ ". Supported: " ~ quality_checks.keys() | join(', ')) }}
 {% endif %}
 
-{% set report = {
-    'source_key': model_name,
-    'domain': domain,
-    'overall_passed': true,
-    'checks': [],
-} %}
-
 {{ log("Quality report for " ~ model_name ~ " (" ~ domain ~ "):", info=true) }}
 {{ log("  Check mapping (quality.py → dbt test):", info=true) }}
 
@@ -54,6 +34,9 @@
     {{ log("  - " ~ check.check_name ~ " → " ~ check.dbt_test ~ " [" ~ check.level ~ "]", info=true) }}
 {% endfor %}
 
+{{ log("", info=true) }}
 {{ log("  Run 'dbt test --select " ~ model_name ~ "' to execute all quality checks.", info=true) }}
+{{ log("  Note: check_required_columns is enforced upstream by Iceberg schema — columns", info=true) }}
+{{ log("  that don't exist on the source table will cause a compile-time error in dbt.", info=true) }}
 
 {% endmacro %}
