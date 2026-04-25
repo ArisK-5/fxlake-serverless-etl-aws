@@ -27,7 +27,8 @@ output "lambda_iceberg_writer_name" {
 }
 
 output "data_validator_function_name" {
-  value = module.data_validator.function_name
+  description = "Name of the data validator Lambda function"
+  value       = module.data_validator.function_name
 }
 
 output "dlq_url" {

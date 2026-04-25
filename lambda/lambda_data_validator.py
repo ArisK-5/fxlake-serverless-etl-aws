@@ -19,7 +19,7 @@ if os.getenv("AWS_XRAY_DAEMON_ADDRESS"):
 logger = configure_logger("data-validator")
 
 DATABASE_NAME = os.environ.get("DATABASE_NAME", "fxlake")
-ATHENA_RESULTS_BUCKET = os.environ.get("ATHENA_RESULTS_BUCKET", "")
+ATHENA_RESULTS_BUCKET = os.environ["ATHENA_RESULTS_BUCKET"]
 WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "fxlake")
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "FXLake/Validation")
 
@@ -188,16 +188,24 @@ def _run_validation_suite(
         )
         null_count = _parse_null_check_results(nc_result)
 
-        checks.append(ValidationCheck(
-            domain=domain,
-            check_name="null_check",
-            passed=null_count == 0,
-            detail=(
-                "No null values in required columns"
-                if null_count == 0
-                else f"Found {null_count} rows with null values in required columns"
-            ),
-        ))
+        if null_count < 0:
+            checks.append(ValidationCheck(
+                domain=domain,
+                check_name="null_check",
+                passed=False,
+                detail="Could not parse null check results from Athena",
+            ))
+        else:
+            checks.append(ValidationCheck(
+                domain=domain,
+                check_name="null_check",
+                passed=null_count == 0,
+                detail=(
+                    "No null values in required columns"
+                    if null_count == 0
+                    else f"Found {null_count} rows with null values in required columns"
+                ),
+            ))
 
         domain_expected = expected_counts.get(domain, {})
         for src, expected in domain_expected.items():

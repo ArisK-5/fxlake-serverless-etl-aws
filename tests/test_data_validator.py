@@ -267,6 +267,30 @@ class TestRunValidationSuite:
         assert len(failed) == 1
         assert failed[0].check_name == "row_count"
 
+    def test_malformed_null_check_results(self):
+        rc = {
+            "Rows": [
+                {"Data": [{"VarCharValue": "source"}, {"VarCharValue": "rows"},
+                          {"VarCharValue": "min_date"}, {"VarCharValue": "max_date"}]},
+                {"Data": [{"VarCharValue": "frankfurter"}, {"VarCharValue": "620"},
+                          {"VarCharValue": "2024-01-02"}, {"VarCharValue": "2024-01-31"}]},
+            ]
+        }
+        nc = {"Rows": []}
+        athena = self._mock_athena([rc], [nc])
+        checks = _run_validation_suite(
+            athena_client=athena,
+            domains=["fx_rates"],
+            database="fxlake",
+            output_location="s3://bucket/results/",
+            workgroup="fxlake",
+            expected_counts={},
+        )
+        null_checks = [c for c in checks if c.check_name == "null_check"]
+        assert len(null_checks) == 1
+        assert null_checks[0].passed is False
+        assert "Could not parse" in null_checks[0].detail
+
     def test_expected_count_mismatch(self):
         rc = {
             "Rows": [
