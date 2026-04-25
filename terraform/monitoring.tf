@@ -242,6 +242,10 @@ resource "aws_cloudwatch_metric_alarm" "maintenance_job_failed" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  tags = {
+    component = "monitoring"
+  }
 }
 
 #######################################

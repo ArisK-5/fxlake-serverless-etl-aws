@@ -64,7 +64,7 @@ def _execute_statement(
                 .get("StateChangeReason", "Unknown")
             )
             logger.error(
-                "Athena query failed",
+                f"Athena query {state.lower()}",
                 extra={"query_id": query_id, "state": state, "reason": reason},
             )
             return False
