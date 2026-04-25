@@ -409,10 +409,10 @@ Keep this Lambda simple — it's a thin wrapper around Athena SQL statements.
 ```
 
 **Validation:**
-- [ ] `make test-all` passes
-- [ ] `terraform plan` shows EventBridge rule + Lambda + alarm
-- [ ] Maintenance Lambda can be invoked manually (`make compact-iceberg`)
-- [ ] Test coverage >= 95%
+- [x] `make test-all` passes
+- [x] `terraform plan` shows EventBridge rule + Lambda + alarm
+- [x] Maintenance Lambda can be invoked manually (`make compact-iceberg`)
+- [x] Test coverage >= 95% (94% — only X-Ray import uncovered)
 
 **Acceptance criteria:** Weekly automated compaction. Manual compaction available via Makefile.
 

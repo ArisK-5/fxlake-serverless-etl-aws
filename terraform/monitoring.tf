@@ -227,6 +227,24 @@ resource "aws_cloudwatch_metric_alarm" "records_quarantined" {
 }
 
 #######################################
+# Iceberg Maintenance Job Failed Alarm
+#######################################
+
+resource "aws_cloudwatch_metric_alarm" "maintenance_job_failed" {
+  alarm_name          = "fxlake-maintenance-job-failed"
+  alarm_description   = "Triggered when Iceberg maintenance operations fail"
+  namespace           = "${var.metric_namespace_prefix}/Maintenance"
+  metric_name         = "MaintenanceJobFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+#######################################
 # CloudTrail Unauthorized Access Alarm
 #######################################
 
@@ -266,9 +284,10 @@ resource "aws_cloudwatch_composite_alarm" "pipeline_sla" {
 #######################################
 
 locals {
-  athena_namespace  = "${var.metric_namespace_prefix}/Athena"
-  quality_namespace = "${var.metric_namespace_prefix}/Quality"
-  sla_namespace     = "${var.metric_namespace_prefix}/SLA"
+  athena_namespace      = "${var.metric_namespace_prefix}/Athena"
+  quality_namespace     = "${var.metric_namespace_prefix}/Quality"
+  sla_namespace         = "${var.metric_namespace_prefix}/SLA"
+  maintenance_namespace = "${var.metric_namespace_prefix}/Maintenance"
 }
 
 resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
@@ -628,6 +647,31 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
               { label = "Alert threshold", value = 1, color = "#ff6961" }
             ]
           }
+        }
+      },
+
+      ###################################
+      # Row 7 — Iceberg Maintenance (y=41)
+      ###################################
+
+      {
+        type   = "metric"
+        x      = 0
+        y      = 41
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            [local.maintenance_namespace, "MaintenanceJobFailed", { label = "Failed Operations", color = "#ff6961" }],
+            [local.maintenance_namespace, "MaintenanceOperationsTotal", { label = "Total Operations", color = "#2ca02c" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Iceberg Maintenance (Weekly Compaction & Vacuum)"
+          period  = 604800
+          stat    = "Sum"
+          yAxis   = { left = { min = 0 } }
         }
       }
     ]
