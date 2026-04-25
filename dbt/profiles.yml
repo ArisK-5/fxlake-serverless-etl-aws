@@ -1,0 +1,20 @@
+# Template — actual credentials resolved via environment variables.
+# For local development, set AWS_PROFILE or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY.
+# dbt-athena-community reads standard AWS credential chain automatically.
+#
+# Required env vars:
+#   DBT_ATHENA_S3_STAGING_DIR  — e.g. s3://fxlake-athena-results-bucket/dbt-staging/
+#   DBT_ATHENA_REGION          — e.g. us-east-1  (optional, defaults to us-east-1)
+
+fxlake:
+  target: dev
+  outputs:
+    dev:
+      type: athena
+      s3_staging_dir: "{{ env_var('DBT_ATHENA_S3_STAGING_DIR') }}"
+      region_name: "{{ env_var('DBT_ATHENA_REGION', 'us-east-1') }}"
+      database: awsdatacatalog
+      schema: fxlake
+      work_group: fxlake
+      threads: 4
+      poll_interval: 1

@@ -34,6 +34,10 @@ help:
 	@echo "  make validate-iceberg - Validate Iceberg table data integrity"
 	@echo "  make compact-iceberg  - Run Iceberg table compaction and vacuum"
 	@echo "  make replay-dlq    - Replay failed executions from DLQ"
+	@echo "  make dbt-compile   - Compile dbt models"
+	@echo "  make dbt-run       - Run dbt models"
+	@echo "  make dbt-test      - Run dbt tests"
+	@echo "  make dbt-docs      - Generate dbt documentation"
 	@echo "  make clean        - Remove Lambda zip and Terraform cache"
 	@echo ""
 
@@ -119,11 +123,13 @@ validate-iceberg:
 	@if [ -z "$(VALIDATOR_NAME)" ]; then \
 		echo "$(RED)ERROR: Run 'make deploy' first to provision the data validator Lambda.$(NC)"; exit 1; \
 	fi
-	aws lambda invoke \
+	@aws lambda invoke \
 		--function-name "$(VALIDATOR_NAME)" \
 		--payload '{}' \
 		--cli-binary-format raw-in-base64-out \
-		/dev/stdout 2>/dev/null | python3 -m json.tool
+		/tmp/fxlake-validate-result.json > /dev/null 2>&1 \
+	&& python3 -m json.tool /tmp/fxlake-validate-result.json \
+	&& rm -f /tmp/fxlake-validate-result.json
 	@echo "$(GREEN)Iceberg validation complete.$(NC)"
 
 # -----------------------------------
@@ -135,11 +141,13 @@ compact-iceberg:
 	@if [ -z "$(MAINT_NAME)" ]; then \
 		echo "$(RED)ERROR: Run 'make deploy' first to provision the maintenance Lambda.$(NC)"; exit 1; \
 	fi
-	aws lambda invoke \
+	@aws lambda invoke \
 		--function-name "$(MAINT_NAME)" \
 		--payload '{}' \
 		--cli-binary-format raw-in-base64-out \
-		/dev/stdout 2>/dev/null | python3 -m json.tool
+		/tmp/fxlake-maintenance-result.json > /dev/null 2>&1 \
+	&& python3 -m json.tool /tmp/fxlake-maintenance-result.json \
+	&& rm -f /tmp/fxlake-maintenance-result.json
 	@echo "$(GREEN)Iceberg compaction complete.$(NC)"
 
 # -----------------------------------
@@ -156,6 +164,31 @@ replay-dlq:
 		--queue-url "$(QUEUE_URL)" \
 		--state-machine-arn "$(SFN_ARN)"
 	@echo "$(GREEN)DLQ replay complete.$(NC)"
+
+# -----------------------------------
+# dbt
+# -----------------------------------
+DBT_DIR=dbt
+
+dbt-compile:
+	@echo "$(YELLOW)Compiling dbt models...$(NC)"
+	cd $(DBT_DIR) && uv run dbt compile
+	@echo "$(GREEN)dbt compile complete.$(NC)"
+
+dbt-run:
+	@echo "$(YELLOW)Running dbt models...$(NC)"
+	cd $(DBT_DIR) && uv run dbt run
+	@echo "$(GREEN)dbt run complete.$(NC)"
+
+dbt-test:
+	@echo "$(YELLOW)Running dbt tests...$(NC)"
+	cd $(DBT_DIR) && uv run dbt test
+	@echo "$(GREEN)dbt tests complete.$(NC)"
+
+dbt-docs:
+	@echo "$(YELLOW)Generating dbt documentation...$(NC)"
+	cd $(DBT_DIR) && uv run dbt docs generate
+	@echo "$(GREEN)dbt docs generated.$(NC)"
 
 # -----------------------------------
 # Utility Commands

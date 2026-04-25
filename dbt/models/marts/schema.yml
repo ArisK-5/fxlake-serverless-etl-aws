@@ -1,0 +1,55 @@
+version: 2
+
+models:
+  - name: fct_fx_rates
+    description: >
+      Deduplicated foreign exchange rates fact table. When both ECB and
+      Frankfurter provide a rate for the same date and currency pair,
+      ECB is preferred. Adds a currency_pair column (e.g. EUR/USD).
+    columns:
+      - name: trading_date
+        description: Trading date.
+        tests:
+          - not_null
+      - name: data_source
+        description: Winning data provider after deduplication.
+        tests:
+          - not_null
+      - name: base_currency
+        description: Base currency code.
+        tests:
+          - not_null
+      - name: target_currency
+        description: Target currency code.
+        tests:
+          - not_null
+      - name: exchange_rate
+        description: Exchange rate value.
+        tests:
+          - not_null
+      - name: currency_pair
+        description: Formatted currency pair (BASE/TARGET).
+        tests:
+          - not_null
+
+  - name: fct_economic_indicators
+    description: >
+      Deduplicated economic indicator observations fact table.
+      Removes duplicate date+series_id rows.
+    columns:
+      - name: observation_date
+        description: Observation date.
+        tests:
+          - not_null
+      - name: data_source
+        description: Data provider.
+        tests:
+          - not_null
+      - name: series_id
+        description: Indicator series identifier.
+        tests:
+          - not_null
+      - name: observation_value
+        description: Observation value.
+        tests:
+          - not_null

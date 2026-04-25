@@ -18,6 +18,8 @@ dev = [
     "pyarrow>=14.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.8",
+    "dbt-core>=1.8.0",
+    "dbt-athena-community>=1.8.0",
 ]
 
 [tool.pytest.ini_options]
