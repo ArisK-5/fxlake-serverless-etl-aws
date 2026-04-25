@@ -36,6 +36,7 @@ METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "FXLake/Quality")
 
 POLL_INTERVAL_SECONDS = 2
 MAX_POLL_ATTEMPTS = 90
+ATHENA_QUERY_STRING_LIMIT = 262_144
 _VALID_TABLE_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 VALID_DOMAINS = frozenset({"fx_rates", "economic_indicators"})
@@ -64,64 +65,89 @@ def _parse_fx_rates(raw_data: dict) -> list[dict[str, Any]]:
 
 
 def _parse_economic_indicators(raw_data: dict) -> list[dict[str, Any]]:
-    """Extract flat economic indicator rows from FRED raw JSON."""
+    """Extract flat economic indicator rows from FRED raw JSON.
+
+    Handles both formats:
+      - dict: {"2020-01-01": 3.6, ...}  (produced by FRED ingestion Lambda)
+      - list: [{"date": "2020-01-01", "value": 3.6}, ...]
+    """
     source = raw_data.get("source", "fred")
     series_id = raw_data.get("series_id", "")
-    observations = raw_data.get("observations", [])
+    observations = raw_data.get("observations", {})
 
     rows: list[dict[str, Any]] = []
-    for obs in observations:
-        rows.append({
-            "date": obs["date"],
-            "source": source,
-            "series_id": series_id,
-            "value": float(obs["value"]),
-        })
+    if isinstance(observations, dict):
+        for obs_date, obs_value in sorted(observations.items()):
+            rows.append({
+                "date": obs_date,
+                "source": source,
+                "series_id": series_id,
+                "value": float(obs_value),
+            })
+    else:
+        for obs in observations:
+            rows.append({
+                "date": obs["date"],
+                "source": source,
+                "series_id": series_id,
+                "value": float(obs["value"]),
+            })
     return rows
 
 
-def _build_insert_query(
+def _format_value_tuple(row: dict[str, Any], domain: str) -> str:
+    """Format a single row as a SQL VALUES tuple."""
+    if domain == "economic_indicators":
+        escaped_date = row["date"].replace("'", "''")
+        escaped_source = row["source"].replace("'", "''")
+        escaped_series = row["series_id"].replace("'", "''")
+        return (
+            f"('{escaped_date}', '{escaped_source}', "
+            f"'{escaped_series}', {row['value']})"
+        )
+    escaped_date = row["date"].replace("'", "''")
+    escaped_source = row["source"].replace("'", "''")
+    escaped_base = row["base_currency"].replace("'", "''")
+    escaped_target = row["target_currency"].replace("'", "''")
+    return (
+        f"('{escaped_date}', '{escaped_source}', '{escaped_base}', "
+        f"'{escaped_target}', {row['rate']})"
+    )
+
+
+def _build_insert_queries(
     table_name: str,
     rows: list[dict[str, Any]],
     domain: str = "fx_rates",
-) -> str:
-    """Build an Athena INSERT INTO ... VALUES query for the Iceberg table."""
+) -> list[str]:
+    """Build batched Athena INSERT INTO queries that stay within the query string limit."""
     if not _VALID_TABLE_NAME.match(table_name):
         raise ValueError(f"Invalid table name: {table_name!r}")
     if not rows:
         raise ValueError("No rows to insert — cannot build INSERT query")
 
-    if domain == "economic_indicators":
-        columns = _ECON_COLUMNS
-    else:
-        columns = _FX_COLUMNS
-
-    value_tuples: list[str] = []
-    for row in rows:
-        if domain == "economic_indicators":
-            escaped_date = row["date"].replace("'", "''")
-            escaped_source = row["source"].replace("'", "''")
-            escaped_series = row["series_id"].replace("'", "''")
-            value_tuples.append(
-                f"('{escaped_date}', '{escaped_source}', "
-                f"'{escaped_series}', {row['value']})"
-            )
-        else:
-            escaped_date = row["date"].replace("'", "''")
-            escaped_source = row["source"].replace("'", "''")
-            escaped_base = row["base_currency"].replace("'", "''")
-            escaped_target = row["target_currency"].replace("'", "''")
-            value_tuples.append(
-                f"('{escaped_date}', '{escaped_source}', '{escaped_base}', "
-                f"'{escaped_target}', {row['rate']})"
-            )
-
+    columns = _ECON_COLUMNS if domain == "economic_indicators" else _FX_COLUMNS
     columns_clause = ", ".join(columns)
-    values_clause = ",\n".join(value_tuples)
-    return (
-        f"INSERT INTO {table_name} ({columns_clause})\n"
-        f"VALUES\n{values_clause}"
-    )
+    header = f"INSERT INTO {table_name} ({columns_clause})\nVALUES\n"
+
+    queries: list[str] = []
+    current_tuples: list[str] = []
+    current_size = len(header)
+
+    for row in rows:
+        tuple_str = _format_value_tuple(row, domain)
+        separator_len = 2 if current_tuples else 0
+        if current_tuples and current_size + separator_len + len(tuple_str) > ATHENA_QUERY_STRING_LIMIT:
+            queries.append(header + ",\n".join(current_tuples))
+            current_tuples = []
+            current_size = len(header)
+        current_tuples.append(tuple_str)
+        current_size += len(tuple_str) + separator_len
+
+    if current_tuples:
+        queries.append(header + ",\n".join(current_tuples))
+
+    return queries
 
 
 def _read_raw_json(s3_client: Any, bucket: str, key: str) -> dict:
@@ -435,11 +461,18 @@ def lambda_handler(event: dict, context: Any) -> dict:
 
         _run_quality_checks(rows, domain, raw_key, s3_client)
 
-        query = _build_insert_query(target_table, rows, domain)
-        query_execution_id = _execute_athena_query(
-            athena_client, query, database, output_location, WORKGROUP
-        )
-        _poll_query_completion(athena_client, query_execution_id)
+        queries = _build_insert_queries(target_table, rows, domain)
+        query_execution_ids: list[str] = []
+        for i, query in enumerate(queries):
+            logger.info(
+                "Executing INSERT batch",
+                extra={"batch": i + 1, "total_batches": len(queries), "domain": domain},
+            )
+            qid = _execute_athena_query(
+                athena_client, query, database, output_location, WORKGROUP
+            )
+            _poll_query_completion(athena_client, qid)
+            query_execution_ids.append(qid)
 
     logger.info(
         "Iceberg write complete",
@@ -448,7 +481,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
             "target_table": target_table,
             "domain": domain,
             "rows_inserted": len(rows),
-            "query_execution_id": query_execution_id,
+            "batches": len(query_execution_ids),
             "duration_ms": timer.duration_ms,
         },
     )
@@ -459,5 +492,5 @@ def lambda_handler(event: dict, context: Any) -> dict:
         "target_table": target_table,
         "domain": domain,
         "rows_inserted": len(rows),
-        "query_execution_id": query_execution_id,
+        "batches": len(query_execution_ids),
     }

@@ -168,6 +168,9 @@ replay-dlq:
 # -----------------------------------
 # dbt
 # -----------------------------------
+-include .envrc
+export
+
 DBT_DIR=dbt
 
 dbt-compile:

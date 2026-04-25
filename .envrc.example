@@ -1,0 +1,7 @@
+# Copy to .envrc and fill in values, then run: direnv allow
+# Requires direnv: https://direnv.net
+# Note: do not quote values — Make's include directive passes quotes literally.
+
+# dbt-athena-community adapter
+export DBT_ATHENA_S3_STAGING_DIR=s3://<your-athena-results-bucket>/dbt-staging/
+export DBT_ATHENA_REGION=us-east-1

@@ -13,7 +13,7 @@ import boto3
 import pytest
 from botocore.exceptions import ClientError
 from lambda_iceberg_writer import (
-    _build_insert_query,
+    _build_insert_queries,
     _execute_athena_query,
     _parse_economic_indicators,
     _parse_fx_rates,
@@ -52,10 +52,10 @@ SAMPLE_ECB_JSON = {
 SAMPLE_FRED_JSON = {
     "source": "fred",
     "series_id": "UNRATE",
-    "observations": [
-        {"date": "2024-01-01", "value": "3.7"},
-        {"date": "2024-02-01", "value": "3.9"},
-    ],
+    "observations": {
+        "2024-01-01": 3.7,
+        "2024-02-01": 3.9,
+    },
 }
 
 
@@ -188,75 +188,78 @@ class TestParseEconomicIndicators:
 
 
 # ---------------------------------------------------------------------------
-# _build_insert_query
+# _build_insert_queries
 # ---------------------------------------------------------------------------
 
 
-class TestBuildInsertQuery:
+class TestBuildInsertQueries:
     def test_generates_valid_fx_insert(self):
         rows = [
             {"date": "2024-01-02", "source": "frankfurter", "base_currency": "EUR",
              "target_currency": "USD", "rate": 1.1023},
         ]
-        query = _build_insert_query("fx_rates", rows)
-        assert query.startswith("INSERT INTO fx_rates")
-        assert "VALUES" in query
-        assert "'2024-01-02'" in query
-        assert "'frankfurter'" in query
-        assert "1.1023" in query
+        queries = _build_insert_queries("fx_rates", rows)
+        assert len(queries) == 1
+        assert queries[0].startswith("INSERT INTO fx_rates")
+        assert "VALUES" in queries[0]
+        assert "'2024-01-02'" in queries[0]
+        assert "'frankfurter'" in queries[0]
+        assert "1.1023" in queries[0]
 
     def test_generates_valid_econ_insert(self):
         rows = [
             {"date": "2024-01-01", "source": "fred", "series_id": "UNRATE", "value": 3.7},
         ]
-        query = _build_insert_query("economic_indicators", rows, domain="economic_indicators")
-        assert query.startswith("INSERT INTO economic_indicators")
-        assert "(date, source, series_id, value)" in query
-        assert "'UNRATE'" in query
-        assert "3.7" in query
+        queries = _build_insert_queries("economic_indicators", rows, domain="economic_indicators")
+        assert len(queries) == 1
+        assert queries[0].startswith("INSERT INTO economic_indicators")
+        assert "(date, source, series_id, value)" in queries[0]
+        assert "'UNRATE'" in queries[0]
+        assert "3.7" in queries[0]
 
-    def test_multiple_rows(self):
+    def test_multiple_rows_single_batch(self):
         rows = _parse_fx_rates(SAMPLE_FX_JSON)
-        query = _build_insert_query("fx_rates", rows)
-        assert query.count("VALUES") == 1
-        assert query.count("('") == len(rows)
+        queries = _build_insert_queries("fx_rates", rows)
+        assert len(queries) == 1
+        assert queries[0].count("VALUES") == 1
+        assert queries[0].count("('") == len(rows)
 
     def test_empty_rows_raises(self):
         with pytest.raises(ValueError, match="No rows to insert"):
-            _build_insert_query("fx_rates", [])
+            _build_insert_queries("fx_rates", [])
 
     def test_escapes_single_quotes(self):
         rows = [
             {"date": "2024-01-02", "source": "frank'furter", "base_currency": "EU'R",
              "target_currency": "US'D", "rate": 1.0},
         ]
-        query = _build_insert_query("fx_rates", rows)
-        assert "frank''furter" in query
-        assert "EU''R" in query
-        assert "US''D" in query
+        queries = _build_insert_queries("fx_rates", rows)
+        assert "frank''furter" in queries[0]
+        assert "EU''R" in queries[0]
+        assert "US''D" in queries[0]
 
     def test_escapes_single_quotes_econ(self):
         rows = [
             {"date": "2024-01-01", "source": "fre'd", "series_id": "UN'RATE", "value": 3.7},
         ]
-        query = _build_insert_query("economic_indicators", rows, domain="economic_indicators")
-        assert "fre''d" in query
-        assert "UN''RATE" in query
+        queries = _build_insert_queries("economic_indicators", rows, domain="economic_indicators")
+        assert "fre''d" in queries[0]
+        assert "UN''RATE" in queries[0]
 
     def test_includes_all_fx_columns(self):
         rows = [
             {"date": "2024-01-02", "source": "ecb", "base_currency": "EUR",
              "target_currency": "CHF", "rate": 0.931},
         ]
-        query = _build_insert_query("fx_rates", rows)
-        assert "(date, source, base_currency, target_currency, rate)" in query
+        queries = _build_insert_queries("fx_rates", rows)
+        assert "(date, source, base_currency, target_currency, rate)" in queries[0]
 
     def test_includes_all_econ_columns(self):
         rows = [
             {"date": "2024-01-01", "source": "fred", "series_id": "UNRATE", "value": 3.7},
         ]
-        query = _build_insert_query("t", rows, domain="economic_indicators")
-        assert "(date, source, series_id, value)" in query
+        queries = _build_insert_queries("t", rows, domain="economic_indicators")
+        assert "(date, source, series_id, value)" in queries[0]
 
     @pytest.mark.parametrize("bad_name", [
         "fx_rates; DROP TABLE users",
@@ -272,7 +275,7 @@ class TestBuildInsertQuery:
              "target_currency": "CHF", "rate": 0.931},
         ]
         with pytest.raises(ValueError, match="Invalid table name"):
-            _build_insert_query(bad_name, rows)
+            _build_insert_queries(bad_name, rows)
 
     def test_accepts_valid_table_names(self):
         rows = [
@@ -280,8 +283,33 @@ class TestBuildInsertQuery:
              "target_currency": "CHF", "rate": 0.931},
         ]
         for name in ["fx_rates", "_private", "Table1", "a"]:
-            query = _build_insert_query(name, rows)
-            assert f"INSERT INTO {name}" in query
+            queries = _build_insert_queries(name, rows)
+            assert f"INSERT INTO {name}" in queries[0]
+
+    def test_batches_when_exceeding_limit(self, monkeypatch):
+        monkeypatch.setattr("lambda_iceberg_writer.ATHENA_QUERY_STRING_LIMIT", 500)
+        rows = [
+            {"date": f"2024-01-{i:02d}", "source": "ecb", "base_currency": "EUR",
+             "target_currency": "USD", "rate": 1.1}
+            for i in range(1, 20)
+        ]
+        queries = _build_insert_queries("fx_rates", rows)
+        assert len(queries) > 1
+        for q in queries:
+            assert q.startswith("INSERT INTO fx_rates")
+            assert "VALUES" in q
+
+    def test_all_rows_present_across_batches(self, monkeypatch):
+        monkeypatch.setattr("lambda_iceberg_writer.ATHENA_QUERY_STRING_LIMIT", 500)
+        rows = [
+            {"date": f"2024-01-{i:02d}", "source": "ecb", "base_currency": "EUR",
+             "target_currency": "USD", "rate": float(i)}
+            for i in range(1, 20)
+        ]
+        queries = _build_insert_queries("fx_rates", rows)
+        combined = "\n".join(queries)
+        for i in range(1, 20):
+            assert f"2024-01-{i:02d}" in combined
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +595,7 @@ class TestLambdaHandler:
 
         assert result["status"] == "ok"
         assert result["rows_inserted"] == 4
-        assert result["query_execution_id"] == "qid-e2e-1"
+        assert result["batches"] == 1
         assert result["target_table"] == "fx_rates"
         assert result["domain"] == "fx_rates"
         mock_execute.assert_called_once()
