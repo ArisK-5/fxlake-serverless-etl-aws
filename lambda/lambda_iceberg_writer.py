@@ -137,7 +137,8 @@ def _build_insert_queries(
     for row in rows:
         tuple_str = _format_value_tuple(row, domain)
         separator_len = 2 if current_tuples else 0
-        if current_tuples and current_size + separator_len + len(tuple_str) > ATHENA_QUERY_STRING_LIMIT:
+        exceeds_limit = current_size + separator_len + len(tuple_str) > ATHENA_QUERY_STRING_LIMIT
+        if current_tuples and exceeds_limit:
             queries.append(header + ",\n".join(current_tuples))
             current_tuples = []
             current_size = len(header)
