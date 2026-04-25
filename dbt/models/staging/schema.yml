@@ -4,53 +4,83 @@ models:
   - name: stg_fx_rates
     description: >
       Cleaned and typed foreign exchange rates from the raw Iceberg table.
-      Filters out null dates and null rates.
+      Replicates glue_transform.py _process_fx_key: parses nested rates JSON,
+      detects source from metadata or filename prefix, filters null/non-positive rates.
     columns:
       - name: trading_date
         description: Trading date, cast from string to date.
         tests:
-          - not_null
+          - not_null  # quality.py: check_no_nulls(df, "date")
       - name: data_source
-        description: Upstream data provider.
+        description: Upstream data provider (frankfurter or ecb).
         tests:
-          - not_null
-          - accepted_values:
+          - not_null  # quality.py: check_required_columns (implicit not-null)
+          - accepted_values:  # quality.py: check_value_in_set(df, "source", {"frankfurter", "ecb"}) — WARNING level
               arguments:
                 values: ['frankfurter', 'ecb']
+              config:
+                severity: warn
       - name: base_currency
         description: Base currency code.
         tests:
-          - not_null
+          - not_null  # quality.py: check_required_columns
       - name: target_currency
         description: Target currency code.
         tests:
-          - not_null
+          - not_null  # quality.py: check_required_columns
       - name: exchange_rate
         description: Exchange rate value, cast to decimal(18,8).
         tests:
-          - not_null
+          - not_null  # quality.py: check_no_nulls(df, "rate")
+          - positive_values  # quality.py: check_positive_values(df, "rate")
+          - rate_in_range:  # quality.py: check_rate_range(df, "rate", 0.0001, 1000) — WARNING level
+              arguments:
+                min_val: 0.0001
+                max_val: 1000
+              config:
+                severity: warn
+    tests:
+      - dbt_utils.unique_combination_of_columns:  # quality.py: check_duplicates(df, ["date", "target_currency"]) — WARNING level
+          arguments:
+            combination_of_columns:
+              - trading_date
+              - data_source
+              - target_currency
+          config:
+            severity: warn
 
   - name: stg_economic_indicators
     description: >
       Cleaned and typed economic indicator observations from the raw Iceberg table.
-      Filters out null dates and null values.
+      Replicates glue_transform.py _process_economic_key: parses FRED JSON,
+      filters null values and sentinel "." values.
     columns:
       - name: observation_date
         description: Observation date, cast from string to date.
         tests:
-          - not_null
+          - not_null  # quality.py: check_no_nulls(df, "date")
       - name: data_source
         description: Upstream data provider.
         tests:
-          - not_null
-          - accepted_values:
+          - not_null  # quality.py: check_required_columns (implicit not-null)
+          - accepted_values:  # quality.py: (extensibility — validates known sources)
               arguments:
                 values: ['fred']
       - name: series_id
         description: Indicator series identifier (e.g. UNRATE).
         tests:
-          - not_null
+          - not_null  # quality.py: check_required_columns
       - name: observation_value
         description: Observation value, cast to decimal(18,4).
         tests:
-          - not_null
+          - not_null  # quality.py: check_no_nulls(df, "value")
+          - positive_values  # quality.py: (extends coverage — economic values should be positive)
+    tests:
+      - dbt_utils.unique_combination_of_columns:  # quality.py: check_duplicates(df, ["date", "series_id"]) — WARNING level
+          arguments:
+            combination_of_columns:
+              - observation_date
+              - data_source
+              - series_id
+          config:
+            severity: warn
