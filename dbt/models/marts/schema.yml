@@ -5,6 +5,8 @@ models:
     description: >
       Foreign exchange rates fact table with derived currency_pair column (e.g. EUR/USD).
       Deduplication is handled upstream in stg_fx_rates.
+    config:
+      tags: ["marts", "frankfurter", "ecb"]
     columns:
       - name: trading_date
         description: Trading date.
@@ -27,7 +29,8 @@ models:
         tests:
           - not_null
       - name: currency_pair
-        description: Formatted currency pair (BASE/TARGET).
+        description: >
+          {{ doc("fct_fx_rates_currency_pair") }}
         tests:
           - not_null
 
@@ -35,6 +38,8 @@ models:
     description: >
       Economic indicator observations fact table.
       Deduplication is handled upstream in stg_economic_indicators.
+    config:
+      tags: ["marts", "fred"]
     columns:
       - name: observation_date
         description: Observation date.

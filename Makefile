@@ -40,6 +40,7 @@ help:
 	@echo "  make dbt-freshness - Check dbt source freshness"
 	@echo "  make dbt-quality-report MODEL=stg_fx_rates DOMAIN=fx_rates - Show quality check mapping"
 	@echo "  make dbt-docs      - Generate dbt documentation"
+	@echo "  make dbt-lineage   - Generate dbt lineage diagram (assets/diagrams/)"
 	@echo "  make dbt-run-codebuild - Trigger dbt execution via CodeBuild"
 	@echo "  make clean        - Remove Lambda zip and Terraform cache"
 	@echo ""
@@ -204,6 +205,12 @@ dbt-docs:
 	@echo "$(YELLOW)Generating dbt documentation...$(NC)"
 	cd $(DBT_DIR) && uv run dbt docs generate
 	@echo "$(GREEN)dbt docs generated.$(NC)"
+
+dbt-lineage:
+	@echo "$(YELLOW)Generating dbt lineage diagram...$(NC)"
+	cd $(DBT_DIR) && uv run dbt parse --profiles-dir .
+	uv run assets/dbt-lineage.py
+	@echo "$(GREEN)Lineage diagram written to assets/diagrams/dbt-lineage.png$(NC)"
 
 dbt-run-codebuild:
 	@echo "$(YELLOW)Triggering dbt via CodeBuild...$(NC)"
