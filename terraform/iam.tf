@@ -231,9 +231,13 @@ resource "aws_iam_role_policy" "sfn_policy" {
         Action = [
           "events:PutTargets",
           "events:PutRule",
-          "events:DescribeRule"
+          "events:DescribeRule",
+          "events:DeleteRule",
+          "events:RemoveTargets"
         ],
-        Resource = "arn:aws:events:${var.aws_region}:${data.aws_caller_identity.current.account_id}:rule/StepFunctionsGetBuildStatusRule-*"
+        Resource = [
+          "arn:aws:events:${var.aws_region}:${data.aws_caller_identity.current.account_id}:rule/StepFunctionsGetEventForCodeBuildStartBuildRule"
+        ]
       },
 
       # --- Glue Catalog Read Access (for Athena) ---
@@ -530,13 +534,24 @@ resource "aws_iam_role_policy" "codebuild_dbt_policy" {
           "glue:UpdateTable",
           "glue:CreateTable",
           "glue:DeleteTable",
-          "glue:BatchGetPartition"
+          "glue:BatchGetPartition",
+          "glue:GetTableVersions"
         ],
         Resource = [
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
           "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
         ]
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "codebuild:CreateReportGroup",
+          "codebuild:CreateReport",
+          "codebuild:UpdateReport",
+          "codebuild:BatchPutTestCases"
+        ],
+        Resource = "arn:aws:codebuild:${var.aws_region}:${data.aws_caller_identity.current.account_id}:report-group/${aws_codebuild_project.dbt_transform.name}-*"
       }
     ]
   })
