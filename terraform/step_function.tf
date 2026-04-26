@@ -211,6 +211,46 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
+        Next = "dbt-Transform"
+      },
+      # dbt models (staging views + mart Iceberg tables) run via CodeBuild.
+      # Non-blocking during dual-run transition: failures are caught and the
+      # pipeline continues to state updates and validation.
+      dbt-Transform = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::codebuild:startBuild.sync",
+        Parameters = {
+          ProjectName = aws_codebuild_project.dbt_transform.name
+        },
+        ResultPath     = "$.dbt",
+        TimeoutSeconds = 600,
+        Retry = [
+          {
+            ErrorEquals     = ["States.TaskFailed"],
+            IntervalSeconds = 10,
+            MaxAttempts     = 1,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "dbt-Transform-Failed",
+            ResultPath  = "$.dbtError"
+          }
+        ],
+        Next = "Check-Backfill-Mode"
+      },
+      # Non-blocking during dual-run transition: captures dbt error details
+      # in execution history then continues the pipeline.
+      dbt-Transform-Failed = {
+        Type       = "Pass",
+        ResultPath = "$.dbtWarning",
+        Parameters = {
+          "message" = "dbt-Transform failed (non-blocking during transition)",
+          "error.$" = "$.dbtError.Error",
+          "cause.$" = "$.dbtError.Cause"
+        },
         Next = "Check-Backfill-Mode"
       },
       # Backfill runs must NOT update DynamoDB state — skip straight to Athena.

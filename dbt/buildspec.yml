@@ -1,0 +1,25 @@
+version: 0.2
+
+env:
+  variables:
+    DBT_ATHENA_S3_STAGING_DIR: ""
+    DBT_ATHENA_REGION: "us-east-1"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - pip install dbt-core==1.11.8 dbt-athena-community==1.10.0
+
+  build:
+    commands:
+      - dbt deps --profiles-dir .
+      - dbt run --profiles-dir . --target dev
+      - dbt test --profiles-dir . --target dev
+
+reports:
+  dbt-test-results:
+    files:
+      - "target/run_results.json"
+    discard-paths: yes

@@ -40,6 +40,7 @@ help:
 	@echo "  make dbt-freshness - Check dbt source freshness"
 	@echo "  make dbt-quality-report MODEL=stg_fx_rates DOMAIN=fx_rates - Show quality check mapping"
 	@echo "  make dbt-docs      - Generate dbt documentation"
+	@echo "  make dbt-run-codebuild - Trigger dbt execution via CodeBuild"
 	@echo "  make clean        - Remove Lambda zip and Terraform cache"
 	@echo ""
 
@@ -204,11 +205,23 @@ dbt-docs:
 	cd $(DBT_DIR) && uv run dbt docs generate
 	@echo "$(GREEN)dbt docs generated.$(NC)"
 
+dbt-run-codebuild:
+	@echo "$(YELLOW)Triggering dbt via CodeBuild...$(NC)"
+	$(eval CBP_NAME := $(shell cd $(TF_DIR) && terraform output -raw codebuild_dbt_project_name 2>/dev/null))
+	@if [ -z "$(CBP_NAME)" ]; then \
+		echo "$(RED)ERROR: Run 'make deploy' first to provision CodeBuild project.$(NC)"; exit 1; \
+	fi
+	@aws codebuild start-build --project-name "$(CBP_NAME)" > /tmp/fxlake-codebuild-result.json \
+		|| (echo "$(RED)ERROR: Failed to start CodeBuild build.$(NC)" && rm -f /tmp/fxlake-codebuild-result.json && exit 1)
+	@python3 -c "import json; b=json.load(open('/tmp/fxlake-codebuild-result.json'))['build']; print(f\"Build {b['id']} started (logs: {b['logs'].get('deepLink','pending')})\")" \
+		&& rm -f /tmp/fxlake-codebuild-result.json
+	@echo "$(GREEN)CodeBuild dbt execution started.$(NC)"
+
 # -----------------------------------
 # Utility Commands
 # -----------------------------------
 clean:
 	@echo "$(YELLOW)Cleaning up...$(NC)"
-	rm -f $(LAMBDA_DIR)/lambda_fx_ingestion.zip $(LAMBDA_DIR)/lambda_ecb_ingestion.zip $(LAMBDA_DIR)/lambda_fred_ingestion.zip $(LAMBDA_DIR)/lambda_validation_function.zip $(LAMBDA_DIR)/lambda_data_validator.zip $(LAMBDA_DIR)/lambda_iceberg_maintenance.zip
+	rm -f $(LAMBDA_DIR)/lambda_fx_ingestion.zip $(LAMBDA_DIR)/lambda_ecb_ingestion.zip $(LAMBDA_DIR)/lambda_fred_ingestion.zip $(LAMBDA_DIR)/lambda_validation_function.zip $(LAMBDA_DIR)/lambda_data_validator.zip $(LAMBDA_DIR)/lambda_iceberg_maintenance.zip $(LAMBDA_DIR)/dbt-project.zip
 	cd $(TF_DIR) && rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup
 	@echo "$(GREEN)Local cleanup complete.$(NC)"
