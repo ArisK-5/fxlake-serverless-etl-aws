@@ -16,6 +16,7 @@ sources:
     tables:
       - name: fx_rates
         description: Daily foreign exchange rates from Frankfurter and ECB sources.
+        tags: ["frankfurter", "ecb"]
         columns:
           - name: date
             description: Trading date (ISO 8601 string).
@@ -30,6 +31,7 @@ sources:
 
       - name: economic_indicators
         description: Economic indicator observations from FRED.
+        tags: ["fred"]
         columns:
           - name: date
             description: Observation date (ISO 8601 string).
