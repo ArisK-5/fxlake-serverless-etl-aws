@@ -2,7 +2,7 @@ resource "aws_sfn_state_machine" "etl" {
   name     = "fxlake-etl-state-machine"
   role_arn = aws_iam_role.sfn_role.arn
   definition = jsonencode({
-    Comment = "FXLake ETL: Parallel Lambda-Glue-Athena Pipeline",
+    Comment = "FXLake ETL: Parallel Ingestion → Iceberg Write → dbt Transform → Validation",
     StartAt = "Parallel-Ingestion",
     States = {
       # Runs Frankfurter, ECB, and FRED ingestion concurrently.
@@ -96,9 +96,6 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Check-New-Data"
       },
-      # Skip to Succeed only when ALL THREE sources are already up to date.
-      # If any source has new data the pipeline runs Glue → Update-State → Athena.
-      # Choice states cannot have Retry/Catch — error handling is in Parallel-Ingestion above.
       Check-New-Data = {
         Type = "Choice",
         Choices = [
@@ -120,34 +117,10 @@ resource "aws_sfn_state_machine" "etl" {
             Next = "Pipeline-Already-Up-To-Date"
           }
         ],
-        Default = "Glue-JSON-to-Parquet"
+        Default = "Write-FX-Iceberg"
       },
       Pipeline-Already-Up-To-Date = {
         Type = "Succeed"
-      },
-      Glue-JSON-to-Parquet = {
-        Type       = "Task",
-        Resource   = "arn:aws:states:::glue:startJobRun.sync",
-        Parameters = { JobName = aws_glue_job.transform.name },
-        # ResultPath preserves $.parallel_results so Lambda-Update-*-State can read end_date.
-        ResultPath     = "$.glue",
-        TimeoutSeconds = 600,
-        Retry = [
-          {
-            ErrorEquals     = ["Glue.ConcurrentRunsExceededException", "States.HeartbeatTimeout"],
-            IntervalSeconds = 10,
-            MaxAttempts     = 2,
-            BackoffRate     = 2.0
-          }
-        ],
-        Catch = [
-          {
-            ErrorEquals = ["States.ALL"],
-            Next        = "Transform-Failed",
-            ResultPath  = "$.errorInfo"
-          }
-        ],
-        Next = "Write-FX-Iceberg"
       },
       Write-FX-Iceberg = {
         Type     = "Task",
@@ -213,9 +186,6 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "dbt-Transform"
       },
-      # dbt models (staging views + mart Iceberg tables) run via CodeBuild.
-      # Non-blocking during dual-run transition: failures are caught and the
-      # pipeline continues to state updates and validation.
       dbt-Transform = {
         Type     = "Task",
         Resource = "arn:aws:states:::codebuild:startBuild.sync",
@@ -236,22 +206,15 @@ resource "aws_sfn_state_machine" "etl" {
           {
             ErrorEquals = ["States.ALL"],
             Next        = "dbt-Transform-Failed",
-            ResultPath  = "$.dbtError"
+            ResultPath  = "$.errorInfo"
           }
         ],
         Next = "Check-Backfill-Mode"
       },
-      # Non-blocking during dual-run transition: captures dbt error details
-      # in execution history then continues the pipeline.
       dbt-Transform-Failed = {
-        Type       = "Pass",
-        ResultPath = "$.dbtWarning",
-        Parameters = {
-          "message" = "dbt-Transform failed (non-blocking during transition)",
-          "error.$" = "$.dbtError.Error",
-          "cause.$" = "$.dbtError.Cause"
-        },
-        Next = "Check-Backfill-Mode"
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
       },
       # Backfill runs must NOT update DynamoDB state — skip straight to Athena.
       # The "mode" key is only present in backfill payloads (see _perform_ingest).
@@ -267,8 +230,6 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Default = "Lambda-Update-FX-State"
       },
-      # Commit Frankfurter last_processed_date to DynamoDB only after Glue succeeds.
-      # Prevents state corruption if Glue fails after ingestion writes the raw file.
       Lambda-Update-FX-State = {
         Type     = "Task",
         Resource = "arn:aws:states:::lambda:invoke",
@@ -298,7 +259,6 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Lambda-Update-ECB-State"
       },
-      # Commit ECB last_processed_date to DynamoDB after FX state is committed.
       Lambda-Update-ECB-State = {
         Type     = "Task",
         Resource = "arn:aws:states:::lambda:invoke",
@@ -328,7 +288,6 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Lambda-Update-FRED-State"
       },
-      # Commit FRED last_processed_date to DynamoDB after ECB state is committed.
       Lambda-Update-FRED-State = {
         Type     = "Task",
         Resource = "arn:aws:states:::lambda:invoke",
@@ -358,9 +317,6 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Athena-Sample-Query"
       },
-      # Data freshness query: verifies Glue wrote Parquet and checks how recent the data is.
-      # Queries fx_rates only — FX rates are the core product; economic_indicators validated
-      # implicitly by Glue success. Validation Lambda parses latest_date + total_records.
       Athena-Sample-Query = {
         Type     = "Task",
         Resource = "arn:aws:states:::athena:startQueryExecution.sync",
@@ -427,11 +383,6 @@ resource "aws_sfn_state_machine" "etl" {
         End = true
       },
       Ingestion-Failed = {
-        Type      = "Fail",
-        ErrorPath = "$.errorInfo.Error",
-        CausePath = "$.errorInfo.Cause"
-      },
-      Transform-Failed = {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"

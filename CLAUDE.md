@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-FXLake is a serverless ETL pipeline on AWS that fetches daily financial data from three independent sources (Frankfurter API, ECB Statistics Data Warehouse, FRED), transforms it with Polars, enforces data quality checks, and makes it queryable via Athena. Infrastructure is managed entirely with Terraform.
+FXLake is a serverless ETL pipeline on AWS that fetches daily financial data from three independent sources (Frankfurter API, ECB Statistics Data Warehouse, FRED), writes to Apache Iceberg tables via Athena, transforms with dbt Core, enforces data quality checks, and makes it queryable via Athena. Infrastructure is managed entirely with Terraform.
 
 ### v3 Roadmap
 
@@ -81,13 +81,16 @@ uv run assets/dev-workflow.py
 The pipeline is orchestrated by **Step Functions** and triggered daily by **EventBridge**, which invokes the Step Functions state machine directly (not the Lambda):
 
 1. **Parallel (Parallel-Ingestion)** — runs Frankfurter, ECB, and FRED ingestion concurrently (3 branches). Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx`, `$.parallel_results.ecb`, and `$.parallel_results.fred`. **Does not update DynamoDB** — deferred to steps 4–6.
-2. **Choice (Check-New-Data)** — routes to `Pipeline-Already-Up-To-Date` only if **all three** sources returned `no_new_data`; otherwise continues to Glue.
-3. **Glue Job (Python Shell)** — reads raw JSON from S3, routes by filename prefix: `fred_*` → `economic_indicators/` domain, all others → `fx_rates/` domain. Runs data quality checks (via `glue/quality.py`): CRITICAL failures → quarantine to dedicated S3 bucket + raise; WARNING failures → log + CloudWatch metric. Writes quality report JSON for every file. Writes Parquet/CSV partitioned by date.
-4. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB **only after Glue succeeds**. Calls the `fx_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
-5. **Lambda (Update-ECB-State)** — commits ECB `last_processed_date` to DynamoDB after FX state is committed. Calls the `ecb_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.ecb.Payload.end_date"}`.
-6. **Lambda (Update-FRED-State)** — commits FRED `last_processed_date` to DynamoDB after ECB state is committed. Calls the `fred_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fred.Payload.end_date"}`.
-7. **Athena** — runs a data freshness query (`SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates`) via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
-8. **Lambda (Validation)** — parses `latest_date` and `total_records` from Athena results, checks if `latest_date` is within 2 days (freshness threshold), publishes `EmptyQueryResults` and `StaleFXData` CloudWatch metrics
+2. **Choice (Check-New-Data)** — routes to `Pipeline-Already-Up-To-Date` only if **all three** sources returned `no_new_data`; otherwise continues to Iceberg write.
+3. **Lambda (Write-FX-Iceberg)** — reads raw FX JSON from S3, runs quality checks, writes to the `fx_rates` Iceberg table via batched Athena `INSERT INTO` queries.
+4. **Lambda (Write-Economic-Iceberg)** — reads raw FRED JSON from S3, runs quality checks, writes to the `economic_indicators` Iceberg table via batched Athena `INSERT INTO` queries.
+5. **CodeBuild (dbt-Transform)** — runs dbt models via CodeBuild (`.sync` integration — Step Functions blocks until build completes). Staging views deduplicate and prioritize sources; mart tables materialise as Iceberg. Pipeline **fails** if dbt fails.
+6. **Choice (Check-Backfill-Mode)** — skips state updates for backfill executions to protect the incremental watermark.
+7. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB. Calls the `fx_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
+8. **Lambda (Update-ECB-State)** — commits ECB `last_processed_date` to DynamoDB. Calls the `ecb_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.ecb.Payload.end_date"}`.
+9. **Lambda (Update-FRED-State)** — commits FRED `last_processed_date` to DynamoDB. Calls the `fred_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fred.Payload.end_date"}`.
+10. **Athena (Athena-Sample-Query)** — runs a data freshness query (`SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates`) via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
+11. **Lambda (Validation)** — parses `latest_date` and `total_records` from Athena results, checks if `latest_date` is within 2 days (freshness threshold), publishes `EmptyQueryResults` and `StaleFXData` CloudWatch metrics
 
 ### Multi-Source Ingestion
 
@@ -137,7 +140,7 @@ Each handler supports two modes controlled by the `STATE_TABLE` env var. DynamoD
 
 Every state has Retry and Catch blocks:
 - **Lambda states**: retry on `Lambda.ServiceException`, `Lambda.AWSLambdaException`, `Lambda.TooManyRequestsException`
-- **Glue state**: retry on `Glue.ConcurrentRunsExceededException`, `States.HeartbeatTimeout`
+- **CodeBuild (dbt) state**: retry on `CodeBuild.InvalidInputException`; `.sync` integration handles polling
 - **Athena state**: retry on `Athena.InternalServerException`, `Athena.TooManyRequestsException`
 - **All Catch blocks**: `ResultPath = "$.errorInfo"` preserves the actual error; Fail states use `ErrorPath`/`CausePath` to surface the real cause in execution history
 
@@ -183,7 +186,7 @@ dbt/
 **Key patterns:**
 - **Staging = source of truth for dedup.** `stg_fx_rates` and `stg_economic_indicators` own the ROW_NUMBER() dedup logic. Marts are thin selects from staging (no re-dedup). FX rates prioritize ECB > Frankfurter via `CASE` ordering.
 - **Staging = views, marts = Iceberg tables.** Configured in `dbt_project.yml` and per-model `config()` blocks.
-- **Source freshness** uses `loaded_at_field: "cast(date as timestamp)"` — checks MAX(date) from the raw Iceberg table, not table write-time. Will show ERROR STALE until dbt is wired into Step Functions (Day 12-14).
+- **Source freshness** uses `loaded_at_field: "cast(date as timestamp)"` — checks MAX(date) from the raw Iceberg table, not table write-time.
 - **dbt 1.11 `arguments:` syntax.** Generic test parameters require the `arguments:` wrapper key (e.g., `accepted_values` needs `arguments: { values: [...] }`). Without it, dbt raises a deprecation error.
 - **Athena adapter profile** reads `DBT_ATHENA_S3_STAGING_DIR` and `DBT_ATHENA_REGION` from environment. The `.envrc` file at project root sets these; Makefile includes it via `-include .envrc` + `export`.
 
@@ -200,7 +203,7 @@ dbt/
 
 ### Data Quality Framework
 
-`glue/quality.py` — pure check functions (no AWS deps), imported by `glue_transform.py` via `--extra-py-files` and by `lambda_iceberg_writer.py` as `quality` module.
+`glue/quality.py` — pure check functions (no AWS deps), imported by `lambda_iceberg_writer.py` as `quality` module.
 
 **Architecture:**
 - `CheckLevel` enum: `CRITICAL` (quarantine + raise) vs `WARNING` (log + metric)
@@ -213,10 +216,9 @@ dbt/
 - FX rates: required columns, no null date/rate, positive rate, rate range [0.0001, 1000], valid source set, no duplicate date+target_currency (WARNING)
 - Economic indicators: required columns, no null date/value, no duplicate date+series_id (WARNING)
 
-**Integration in `glue_transform.py`:**
-- `_enforce_quality(df, key, domain, run_checks_fn)` — called after DataFrame creation, before partitioning
+**Integration in `lambda_iceberg_writer.py`:**
+- Quality checks run before Athena INSERT — CRITICAL failures quarantine to S3 and raise `ValueError`
 - Always writes quality report JSON to `{domain}/quality_reports/{stem}_quality.json`
-- CRITICAL failure: quarantines full DataFrame to quarantine bucket (`{domain}/quarantine/{stem}.json`), publishes `RecordsQuarantined` + `DataQualityChecksFailed` metrics, raises `ValueError`
 - WARNING failure: publishes `DataQualityChecksFailed` metric, continues processing
 
 **CloudWatch metrics:** `{metric_namespace_prefix}/Quality` namespace, `Domain` dimension.
@@ -225,16 +227,16 @@ dbt/
 
 | File | What it defines |
 |------|----------------|
-| `step_function.tf` | ASL definition for 9-stage orchestration: Parallel-Ingestion (3 branches) → Check-New-Data → Glue → Check-Backfill-Mode → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation, with Retry/Catch + 7 Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. `Check-Backfill-Mode` skips Update-State steps for backfill executions to protect the incremental watermark. |
+| `step_function.tf` | ASL definition for 11-stage orchestration: Parallel-Ingestion (3 branches) → Check-New-Data → Write-FX-Iceberg → Write-Economic-Iceberg → dbt-Transform (CodeBuild .sync) → Check-Backfill-Mode → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation, with Retry/Catch + Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. `Check-Backfill-Mode` skips Update-State steps for backfill executions to protect the incremental watermark. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
-| `lambda.tf` | Frankfurter + validation Lambdas (inline), ECB + FRED Lambdas (via `modules/lambda_function`), EventBridge rule/target (→ Step Functions) |
-| `glue.tf` | Glue Python Shell job (Polars, pyarrow deps) + quality.py S3 upload via `--extra-py-files` |
+| `lambda.tf` | Frankfurter + validation Lambdas (inline), ECB + FRED Lambdas (via `modules/lambda_function`), Iceberg writer + data validator Lambdas, EventBridge rule/target (→ Step Functions) |
+| `codebuild.tf` | CodeBuild project for dbt execution (fxlake-dbt-transform), S3 source from packaged dbt project, buildspec.yml |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |
-| `monitoring.tf` | 11 CloudWatch alarms (incl. quality, quarantine, stale data) + dashboard + SNS topic policy for Budgets |
+| `monitoring.tf` | 11 CloudWatch alarms (incl. dbt/CodeBuild failure, quality, quarantine, stale data) + dashboard + SNS topic policy for Budgets |
 | `s3.tf` | 5 S3 buckets (raw, processed, athena_results, cloudtrail_logs, quarantine) + quarantine public access block + Athena results 1-day lifecycle |
 | `security.tf` | S3 AES-256 encryption + CloudTrail multi-region trail |
-| `variables.tf` | All configurable inputs (region, bucket names, date range, currency, output format) |
+| `variables.tf` | All configurable inputs (region, bucket names, date range, currency) |
 | `versions.tf` | Pinned Terraform version (`>= 1.5, < 2.0`) and AWS provider version (`~> 5.0`) |
 | `providers.tf` | AWS provider with `default_tags` (project, environment, managed_by) |
 | `budget.tf` | AWS Budgets ($10/month, 80% forecasted + 100% actual alerts via SNS) |
@@ -245,8 +247,7 @@ dbt/
 ### Runtime Environments
 
 - Lambda functions: Python 3.12
-- Glue Python Shell job: Python 3.9 (Polars 0.18.8 + pyarrow)
-- dbt Core: 1.11.8 with dbt-athena-community 1.10.0 (runs locally, queries Athena)
+- dbt Core: 1.11.8 with dbt-athena-community 1.10.0 (runs via CodeBuild in production, locally for dev)
 - Local dev / diagrams: Python 3.11 (see `.python-version`)
 
 ### S3 Bucket Layout
@@ -259,7 +260,7 @@ dbt/
 - **Quality reports:** `{domain}/quality_reports/{stem}_quality.json` (in processed bucket)
 - **CloudTrail logs:** `AWSLogs/{account-id}/...`
 
-Glue routes files by filename prefix (`fred_*` → economic domain, all others → FX domain) and writes one Parquet file per date. Athena uses **partition projection** on both catalog tables (`fx_rates` and `economic_indicators`) to resolve partitions without `MSCK REPAIR TABLE`.
+Iceberg writer Lambda routes by `event.domain` (`fx_rates` or `economic_indicators`) and writes via batched Athena `INSERT INTO` queries. Athena uses **partition projection** on both catalog tables (`fx_rates` and `economic_indicators`) to resolve partitions without `MSCK REPAIR TABLE`.
 
 ### Structured Logging & Observability
 
@@ -298,7 +299,7 @@ All resources receive **default tags** via the AWS provider (`providers.tf`):
 |---|---|---|
 | `ingestion` | Lambda (FX, ECB, FRED) | `source` = frankfurter/ecb/fred |
 | `validation` | Validation Lambda | — |
-| `transform` | Glue job | — |
+| `transform` | CodeBuild dbt project | — |
 | `orchestration` | Step Functions, EventBridge rule | — |
 | `state` | DynamoDB | — |
 | `storage` | S3 buckets | `layer` = raw/processed/query-results/audit/quarantine |
@@ -315,7 +316,7 @@ All source files follow these conventions:
 
 - **Module-level config**: `os.environ[]` (not `os.getenv`) for required vars — fails fast at cold start if missing. `os.getenv()` for optional vars (e.g., `STATE_TABLE`)
 - **Exception catches are type-specific**: `ClientError` for AWS SDK errors, `Timeout`/`HTTPError`/`ConnectionError` for HTTP, `json.JSONDecodeError`/`KeyError`/`ValueError` for data parsing
-- **All catches re-raise** after logging — no silent swallowing (except `_publish_quality_metric` in `glue_transform.py` which catches `ClientError` only because CloudWatch metric failure must not abort the pipeline; other exceptions propagate to surface bugs)
+- **All catches re-raise** after logging — no silent swallowing (except `_publish_quality_metric` in `lambda_iceberg_writer.py` which catches `ClientError` only because CloudWatch metric failure must not abort the pipeline; other exceptions propagate to surface bugs)
 - **All error logs include context**: bucket names, filenames, API URLs, query IDs, error codes
 - **Type annotations** on all function signatures
 
@@ -332,7 +333,6 @@ uv run pytest tests/test_lambda_fx_ingestion.py -v    # Single file
 
 ### Test Setup (conftest.py)
 
-- `awsglue.utils` is mocked in `conftest.py` via `sys.modules` before any import of `glue_transform` — required because `getResolvedOptions` runs at module level
 - Module-level env vars (`RAW_BUCKET`, `START_DATE`, etc.) are set via `os.environ.setdefault` before Lambda modules are imported
 - `s3_mock` fixture activates `mock_aws()` and creates both S3 buckets (`test-raw-bucket`, `test-processed-bucket`)
 - `aws_mock` fixture activates `mock_aws()` with S3 buckets + DynamoDB `test-state-table`; used by incremental ingestion tests
@@ -348,7 +348,6 @@ uv run pytest tests/test_lambda_fx_ingestion.py -v    # Single file
 | `lambda/lambda_ecb_ingestion.py` | 100% |
 | `lambda/lambda_fred_ingestion.py` | 100% |
 | `lambda/lambda_validation_function.py` | 98% |
-| `glue/glue_transform.py` | 94% (uncovered: generic `except Exception` fallthrough lines, `if __name__` guard) |
 | `glue/quality.py` | 100% |
 
 **Overall: 97%**
@@ -359,8 +358,8 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 
 | File | What it covers |
 |------|---------------|
-| `test_pipeline_flow.py` | End-to-end: Ingestion → Transform → Validate for each source; DynamoDB state management (incremental + update_state); CloudWatch metrics; saga pattern; CRITICAL quality failure + quarantine; API HTTP 500 propagation; Glue failure saga rollback; validation Athena errors; backfill pipeline (25 tests) |
-| `test_multi_source.py` | All 3 sources ingested in parallel; correct S3 path prefixes; JSON structure per source; S3 metadata tags; Glue routes to correct domains; distinct FX vs economic schemas; quality reports per domain; Hive partition paths (7 tests) |
+| `test_pipeline_flow.py` | End-to-end: Ingestion → Transform → Validate for each source; DynamoDB state management (incremental + update_state); CloudWatch metrics; saga pattern; CRITICAL quality failure + quarantine; API HTTP 500 propagation; validation Athena errors; backfill pipeline (25 tests) |
+| `test_multi_source.py` | All 3 sources ingested in parallel; correct S3 path prefixes; JSON structure per source; S3 metadata tags; distinct FX vs economic schemas; quality reports per domain; Hive partition paths (7 tests) |
 
 **Key patterns:**
 - Each test file has its own `mock_aws()` fixture creating S3 buckets, DynamoDB table, and CloudWatch/Athena clients
@@ -376,12 +375,11 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 | `test_lambda_fx_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
 | `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (20 tests) |
 | `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |
-| `test_glue_transform.py` | Glue hybrid transform — FX routes, ECB source detection, FRED economic domain, quality integration, metric error handling (37 tests) |
 | `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder, invariant validation (29 tests) |
 | `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
 | `test_structured_logging.py` | Structured logging — JSON formatter, request ID filter, configure_logger, inject_request_id, Timer (18 tests) |
-| `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, Glue failure rollback, validation Athena errors, backfill pipeline (25 tests) |
-| `integration/test_multi_source.py` | Multi-source parallel ingestion, Glue schema routing, quality reports (7 tests) |
+| `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, validation Athena errors, backfill pipeline (25 tests) |
+| `integration/test_multi_source.py` | Multi-source parallel ingestion, quality reports (7 tests) |
 
 ## CI/CD
 
@@ -425,7 +423,7 @@ v2 ADRs live in `docs/adr/` and document foundational choices:
 | [ADR-003](docs/adr/ADR-003-parallel-ingestion-step-functions.md) | Parallel ingestion via Step Functions | 3x faster ingestion vs all-or-nothing failure mode |
 | [ADR-004](docs/adr/ADR-004-data-quality-in-glue.md) | Data quality checks in Glue | Single-pass efficiency vs coupled deployment |
 
-**Note:** ADR-001 (Polars) and ADR-004 (quality in Glue) will be superseded by v3 decisions (Athena CTAS write path, dbt models). See `docs/planning/decision_log_v3.md` for the full v3 decision log.
+**Note:** ADR-001 (Polars) and ADR-004 (quality in Glue) are superseded by v3 — Glue Python Shell has been removed; the Iceberg writer Lambda and dbt Core now handle writes and transforms. See `docs/planning/decision_log_v3.md` for the full v3 decision log.
 
 ## Planning
 

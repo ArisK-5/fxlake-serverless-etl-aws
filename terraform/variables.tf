@@ -103,17 +103,6 @@ variable "lambda_iceberg_maintenance_name" {
   default = "fxlake-iceberg-maintenance-lambda"
 }
 
-variable "glue_job_name" {
-  type    = string
-  default = "fxlake-glue-transform-job"
-}
-
-variable "glue_script_s3_key" {
-  description = "S3 key for Glue job script"
-  type        = string
-  default     = "glue/glue_transform.py"
-}
-
 variable "fx_base_api_url" {
   description = "Base API URL for exchange rates"
   type        = string
@@ -144,12 +133,3 @@ variable "dynamodb_state_table_name" {
   default     = "fxlake-pipeline-state"
 }
 
-variable "fx_output_format" {
-  description = "Output format for processed exchange rate data (csv or parquet)"
-  type        = string
-  default     = "parquet"
-  validation {
-    condition     = contains(["csv", "parquet"], var.fx_output_format)
-    error_message = "fx_output_format must be either 'csv' or 'parquet'"
-  }
-}

@@ -99,74 +99,6 @@ resource "aws_iam_role_policy" "check_query_results_policy" {
   })
 }
 
-# Glue service role & policies
-resource "aws_iam_role" "glue_service_role" {
-  name = "fxlake_glue_service_role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Action    = "sts:AssumeRole",
-      Effect    = "Allow",
-      Principal = { Service = "glue.amazonaws.com" }
-    }]
-  })
-}
-
-resource "aws_iam_policy" "glue_s3_policy" {
-  name = "fxlake-glue-s3"
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Action = [
-          "s3:GetBucketLocation",
-          "s3:ListBucket",
-          "s3:GetObject",
-          "s3:PutObject"
-        ],
-        Effect = "Allow",
-        Resource = [
-          aws_s3_bucket.raw.arn,
-          "${aws_s3_bucket.raw.arn}/*",
-          aws_s3_bucket.processed.arn,
-          "${aws_s3_bucket.processed.arn}/*",
-          aws_s3_bucket.quarantine.arn,
-          "${aws_s3_bucket.quarantine.arn}/*"
-        ]
-      }
-    ]
-  })
-}
-
-resource "aws_iam_policy" "glue_cloudwatch_policy" {
-  name = "fxlake-glue-cloudwatch"
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Action   = "cloudwatch:PutMetricData",
-        Effect   = "Allow",
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "glue_cloudwatch" {
-  role       = aws_iam_role.glue_service_role.name
-  policy_arn = aws_iam_policy.glue_cloudwatch_policy.arn
-}
-
-resource "aws_iam_role_policy_attachment" "glue_s3" {
-  role       = aws_iam_role.glue_service_role.name
-  policy_arn = aws_iam_policy.glue_s3_policy.arn
-}
-
-resource "aws_iam_role_policy_attachment" "glue_service_basic" {
-  role       = aws_iam_role.glue_service_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
-}
-
 # Step Functions service role & policies
 resource "aws_iam_role" "sfn_role" {
   name = "fxlake_stepfunctions_role"
@@ -201,17 +133,6 @@ resource "aws_iam_role_policy" "sfn_policy" {
           module.iceberg_writer.function_arn,
           module.data_validator.function_arn
         ]
-      },
-
-      # --- Glue Job Management ---
-      {
-        Effect = "Allow",
-        Action = [
-          "glue:StartJobRun",
-          "glue:GetJobRun",
-          "glue:GetJobRuns"
-        ],
-        Resource = aws_glue_job.transform.arn
       },
 
       # --- CodeBuild (dbt Transform) ---
