@@ -235,11 +235,22 @@ resource "aws_sfn_state_machine" "etl" {
         Catch = [
           {
             ErrorEquals = ["States.ALL"],
-            Next        = "Check-Backfill-Mode",
-            ResultPath  = "$.dbtError",
-            Comment     = "Non-blocking during dual-run transition — failures logged but pipeline continues"
+            Next        = "dbt-Transform-Failed",
+            ResultPath  = "$.dbtError"
           }
         ],
+        Next = "Check-Backfill-Mode"
+      },
+      # Non-blocking during dual-run transition: captures dbt error details
+      # in execution history then continues the pipeline.
+      dbt-Transform-Failed = {
+        Type       = "Pass",
+        ResultPath = "$.dbtWarning",
+        Parameters = {
+          "message" = "dbt-Transform failed (non-blocking during transition)",
+          "error.$" = "$.dbtError.Error",
+          "cause.$" = "$.dbtError.Cause"
+        },
         Next = "Check-Backfill-Mode"
       },
       # Backfill runs must NOT update DynamoDB state — skip straight to Athena.

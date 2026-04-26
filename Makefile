@@ -211,7 +211,10 @@ dbt-run-codebuild:
 	@if [ -z "$(CBP_NAME)" ]; then \
 		echo "$(RED)ERROR: Run 'make deploy' first to provision CodeBuild project.$(NC)"; exit 1; \
 	fi
-	@aws codebuild start-build --project-name "$(CBP_NAME)" | python3 -c "import sys,json; b=json.load(sys.stdin)['build']; print(f\"Build {b['id']} started (logs: {b['logs'].get('deepLink','pending')})\");"
+	@aws codebuild start-build --project-name "$(CBP_NAME)" > /tmp/fxlake-codebuild-result.json \
+		|| (echo "$(RED)ERROR: Failed to start CodeBuild build.$(NC)" && rm -f /tmp/fxlake-codebuild-result.json && exit 1)
+	@python3 -c "import json; b=json.load(open('/tmp/fxlake-codebuild-result.json'))['build']; print(f\"Build {b['id']} started (logs: {b['logs'].get('deepLink','pending')})\")" \
+		&& rm -f /tmp/fxlake-codebuild-result.json
 	@echo "$(GREEN)CodeBuild dbt execution started.$(NC)"
 
 # -----------------------------------

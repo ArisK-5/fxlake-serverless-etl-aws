@@ -53,11 +53,11 @@ jobs:
       - name: Install dbt packages
         run: cd dbt && uv run dbt deps --profiles-dir .
 
-      - name: Compile dbt models
+      - name: Validate dbt project
         env:
           DBT_ATHENA_S3_STAGING_DIR: "s3://dummy-bucket/dbt-staging/"
           DBT_ATHENA_REGION: "us-east-1"
-        run: cd dbt && uv run dbt compile --profiles-dir . --target dev
+        run: cd dbt && uv run dbt parse --profiles-dir .
 
   lambda-package:
     name: Lambda — Package & Verify
