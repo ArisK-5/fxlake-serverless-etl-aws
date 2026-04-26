@@ -55,6 +55,19 @@ make backfill START=2023-01-01 END=2023-12-31   # Historical re-ingestion (does 
 
 Starts a Step Functions execution with `mode: "backfill"` input. Lambdas use the provided dates directly and skip DynamoDB state management.
 
+### dbt
+
+All dbt commands run from the `dbt/` directory. Environment variables `DBT_ATHENA_S3_STAGING_DIR` and `DBT_ATHENA_REGION` must be set (loaded from `.envrc` by Makefile via `-include .envrc` + `export`).
+
+```bash
+make dbt-compile          # Compile dbt models (SQL preview)
+make dbt-run              # Run dbt models against Athena
+make dbt-test             # Run dbt tests (quality checks)
+make dbt-freshness        # Check source freshness (tolerates non-zero exit)
+make dbt-quality-report MODEL=stg_fx_rates DOMAIN=fx_rates  # Show quality.py → dbt test mapping
+make dbt-docs             # Generate dbt documentation
+```
+
 ### Diagram Generation
 
 Architecture and workflow diagrams are generated via Python scripts:
@@ -128,9 +141,66 @@ Every state has Retry and Catch blocks:
 - **Athena state**: retry on `Athena.InternalServerException`, `Athena.TooManyRequestsException`
 - **All Catch blocks**: `ResultPath = "$.errorInfo"` preserves the actual error; Fail states use `ErrorPath`/`CausePath` to surface the real cause in execution history
 
+### Iceberg Writer Lambda (v3)
+
+`lambda/lambda_iceberg_writer.py` replaces `glue_transform.py` as the write path. Reads raw JSON from S3, runs quality checks (reusing `quality.py`), builds batched `INSERT INTO` SQL, and executes via Athena against Iceberg tables.
+
+**Key details:**
+- Supports two domains: `fx_rates` and `economic_indicators` — routing determined by `event.domain`
+- Builds batched INSERT queries that stay under Athena's 262,144-byte query string limit (`_build_insert_queries`)
+- Quality checks run before INSERT — CRITICAL failures quarantine to S3 and raise `ValueError`
+- Polls Athena with 2s intervals, max 90 attempts (3 min timeout)
+- Table name validated against `^[a-zA-Z_][a-zA-Z0-9_]*$` regex (SQL injection prevention)
+- Env vars: `PROCESSED_BUCKET` and `QUARANTINE_BUCKET` required (`os.environ[]`); `DATABASE_NAME`, `ATHENA_RESULTS_BUCKET`, `ATHENA_WORKGROUP`, `RAW_BUCKET`, `METRIC_NAMESPACE` optional with defaults
+
+### dbt Layer (v3)
+
+dbt Core 1.11.8 with `dbt-athena-community` 1.10.0 adapter. Project lives in `dbt/`.
+
+**Project structure:**
+```
+dbt/
+├── dbt_project.yml          # Profile: fxlake, staging=view, marts=table+iceberg
+├── profiles.yml             # Athena adapter config (env vars for credentials)
+├── packages.yml             # dbt_utils >=1.0.0,<2.0.0
+├── models/
+│   ├── staging/
+│   │   ├── src_fxlake.yml   # Source definitions (fx_rates, economic_indicators)
+│   │   ├── schema.yml       # Model tests (not_null, positive_values, unique_combination)
+│   │   ├── stg_fx_rates.sql
+│   │   └── stg_economic_indicators.sql
+│   └── marts/
+│       ├── schema.yml
+│       ├── fct_fx_rates.sql          # Adds currency_pair derived column
+│       └── fct_economic_indicators.sql
+├── tests/
+│   └── generic/
+│       └── test_positive_values.sql  # Custom generic test (replaces quality.py check_positive_values)
+└── macros/
+    └── generate_quality_report.sql   # quality.py → dbt test mapping (via dbt run-operation)
+```
+
+**Key patterns:**
+- **Staging = source of truth for dedup.** `stg_fx_rates` and `stg_economic_indicators` own the ROW_NUMBER() dedup logic. Marts are thin selects from staging (no re-dedup). FX rates prioritize ECB > Frankfurter via `CASE` ordering.
+- **Staging = views, marts = Iceberg tables.** Configured in `dbt_project.yml` and per-model `config()` blocks.
+- **Source freshness** uses `loaded_at_field: "cast(date as timestamp)"` — checks MAX(date) from the raw Iceberg table, not table write-time. Will show ERROR STALE until dbt is wired into Step Functions (Day 12-14).
+- **dbt 1.11 `arguments:` syntax.** Generic test parameters require the `arguments:` wrapper key (e.g., `accepted_values` needs `arguments: { values: [...] }`). Without it, dbt raises a deprecation error.
+- **Athena adapter profile** reads `DBT_ATHENA_S3_STAGING_DIR` and `DBT_ATHENA_REGION` from environment. The `.envrc` file at project root sets these; Makefile includes it via `-include .envrc` + `export`.
+
+**Quality check migration (quality.py → dbt):**
+
+| quality.py check | dbt equivalent | Level |
+|---|---|---|
+| `check_no_nulls` | `not_null` (built-in) | CRITICAL |
+| `check_positive_values` | `positive_values` (custom generic test) | CRITICAL |
+| `check_value_in_set` | `accepted_values` (built-in, severity: warn) | WARNING |
+| `check_duplicates` | `dbt_utils.unique_combination_of_columns` | CRITICAL |
+| `check_rate_range` | Removed — currencies like KRW/IDR legitimately exceed 1000 | — |
+| `check_required_columns` | Enforced by Iceberg schema at compile time | — |
+
 ### Data Quality Framework
 
-`glue/quality.py` — pure check functions (no AWS deps), imported by `glue_transform.py` via `--extra-py-files`.
+`glue/quality.py` — pure check functions (no AWS deps), imported by `glue_transform.py` via `--extra-py-files` and by `lambda_iceberg_writer.py` as `quality` module.
 
 **Architecture:**
 - `CheckLevel` enum: `CRITICAL` (quarantine + raise) vs `WARNING` (log + metric)
@@ -176,6 +246,7 @@ Every state has Retry and Catch blocks:
 
 - Lambda functions: Python 3.12
 - Glue Python Shell job: Python 3.9 (Polars 0.18.8 + pyarrow)
+- dbt Core: 1.11.8 with dbt-athena-community 1.10.0 (runs locally, queries Athena)
 - Local dev / diagrams: Python 3.11 (see `.python-version`)
 
 ### S3 Bucket Layout
