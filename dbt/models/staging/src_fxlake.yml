@@ -4,7 +4,15 @@ sources:
   - name: fxlake
     database: awsdatacatalog
     schema: fxlake
-    description: Raw Iceberg tables written by the FXLake ingestion pipeline.
+    description: Raw Iceberg tables written by the FXLake ingestion pipeline via Athena CTAS/INSERT.
+    freshness:
+      warn_after:
+        count: 24
+        period: hour
+      error_after:
+        count: 48
+        period: hour
+    loaded_at_field: "cast(date as timestamp)"
     tables:
       - name: fx_rates
         description: Daily foreign exchange rates from Frankfurter and ECB sources.

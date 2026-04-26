@@ -37,6 +37,8 @@ help:
 	@echo "  make dbt-compile   - Compile dbt models"
 	@echo "  make dbt-run       - Run dbt models"
 	@echo "  make dbt-test      - Run dbt tests"
+	@echo "  make dbt-freshness - Check dbt source freshness"
+	@echo "  make dbt-quality-report MODEL=stg_fx_rates DOMAIN=fx_rates - Show quality check mapping"
 	@echo "  make dbt-docs      - Generate dbt documentation"
 	@echo "  make clean        - Remove Lambda zip and Terraform cache"
 	@echo ""
@@ -187,6 +189,15 @@ dbt-test:
 	@echo "$(YELLOW)Running dbt tests...$(NC)"
 	cd $(DBT_DIR) && uv run dbt test
 	@echo "$(GREEN)dbt tests complete.$(NC)"
+
+dbt-freshness:
+	@echo "$(YELLOW)Checking dbt source freshness...$(NC)"
+	-cd $(DBT_DIR) && uv run dbt source freshness
+	@echo "$(GREEN)dbt source freshness check complete.$(NC)"
+
+dbt-quality-report:
+	@echo "$(YELLOW)Generating quality report for $(MODEL)...$(NC)"
+	cd $(DBT_DIR) && uv run dbt run-operation generate_quality_report --args '{"model_name": "$(MODEL)", "domain": "$(DOMAIN)"}'
 
 dbt-docs:
 	@echo "$(YELLOW)Generating dbt documentation...$(NC)"
