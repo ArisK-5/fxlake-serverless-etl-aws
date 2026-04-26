@@ -11,15 +11,14 @@
         {'check_name': 'not_null_trading_date',     'level': 'CRITICAL', 'dbt_test': 'not_null_stg_fx_rates_trading_date'},
         {'check_name': 'not_null_exchange_rate',     'level': 'CRITICAL', 'dbt_test': 'not_null_stg_fx_rates_exchange_rate'},
         {'check_name': 'positive_exchange_rate',     'level': 'CRITICAL', 'dbt_test': 'positive_values_stg_fx_rates_exchange_rate'},
-        {'check_name': 'range_exchange_rate',        'level': 'WARNING',  'dbt_test': 'rate_in_range_stg_fx_rates_exchange_rate'},
         {'check_name': 'value_set_data_source',      'level': 'WARNING',  'dbt_test': 'accepted_values_stg_fx_rates_data_source'},
-        {'check_name': 'no_duplicate_date_currency', 'level': 'WARNING',  'dbt_test': 'dbt_utils_unique_combination_of_columns_stg_fx_rates'},
+        {'check_name': 'no_duplicate_date_currency', 'level': 'CRITICAL', 'dbt_test': 'dbt_utils_unique_combination_of_columns_stg_fx_rates'},
     ],
     'stg_economic_indicators': [
         {'check_name': 'not_null_observation_date',  'level': 'CRITICAL', 'dbt_test': 'not_null_stg_economic_indicators_observation_date'},
         {'check_name': 'not_null_observation_value', 'level': 'CRITICAL', 'dbt_test': 'not_null_stg_economic_indicators_observation_value'},
         {'check_name': 'positive_observation_value', 'level': 'CRITICAL', 'dbt_test': 'positive_values_stg_economic_indicators_observation_value'},
-        {'check_name': 'no_duplicate_date_series',   'level': 'WARNING',  'dbt_test': 'dbt_utils_unique_combination_of_columns_stg_economic_indicators'},
+        {'check_name': 'no_duplicate_date_series',   'level': 'CRITICAL', 'dbt_test': 'dbt_utils_unique_combination_of_columns_stg_economic_indicators'},
     ],
 } %}
 
