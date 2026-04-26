@@ -14,10 +14,6 @@ output "lambda_fx_ingestion_name" {
   value = aws_lambda_function.fx_ingest.function_name
 }
 
-output "glue_job_name" {
-  value = aws_glue_job.transform.name
-}
-
 output "step_function_arn" {
   value = aws_sfn_state_machine.etl.arn
 }

@@ -56,14 +56,14 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
 }
 
 #######################################
-# Glue Job Failure Alarm
+# dbt Transform (CodeBuild) Failure Alarm
 #######################################
 
-resource "aws_cloudwatch_metric_alarm" "glue_job_failure" {
-  alarm_name          = "fxlake-glue-job-failure"
-  alarm_description   = "Triggered when Glue job tasks fail"
-  namespace           = "AWS/Glue"
-  metric_name         = "glue.driver.aggregate.numFailedTasks"
+resource "aws_cloudwatch_metric_alarm" "dbt_transform_failure" {
+  alarm_name          = "fxlake-dbt-transform-failure"
+  alarm_description   = "Triggered when dbt CodeBuild transform job fails"
+  namespace           = "AWS/CodeBuild"
+  metric_name         = "FailedBuilds"
   statistic           = "Sum"
   period              = 60
   evaluation_periods  = 2
@@ -73,7 +73,7 @@ resource "aws_cloudwatch_metric_alarm" "glue_job_failure" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 
   dimensions = {
-    JobName = aws_glue_job.transform.name
+    ProjectName = aws_codebuild_project.dbt_transform.name
   }
 }
 
@@ -274,7 +274,7 @@ resource "aws_cloudwatch_composite_alarm" "pipeline_sla" {
   alarm_name        = "fxlake-pipeline-sla"
   alarm_description = "Pipeline SLA breach: triggers when execution fails, data goes stale, or CRITICAL quality checks fail"
 
-  alarm_rule = "ALARM(${aws_cloudwatch_metric_alarm.step_function_execution_failed.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.stale_fx_data.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.data_quality_checks_failed.alarm_name})"
+  alarm_rule = "ALARM(${aws_cloudwatch_metric_alarm.step_function_execution_failed.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.stale_fx_data.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.data_quality_checks_failed.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.dbt_transform_failure.alarm_name})"
 
   alarm_actions = [aws_sns_topic.alerts.arn]
 
@@ -532,7 +532,7 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
         }
       },
 
-      # Glue job metrics — time series
+      # dbt CodeBuild metrics — time series
       {
         type   = "metric"
         x      = 8
@@ -541,13 +541,14 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/Glue", "glue.driver.aggregate.elapsedTime", "JobName", aws_glue_job.transform.name, { label = "Elapsed Time" }],
-            ["AWS/Glue", "glue.driver.aggregate.numFailedTasks", "JobName", aws_glue_job.transform.name, { label = "Failed Tasks" }]
+            ["AWS/CodeBuild", "Duration", "ProjectName", aws_codebuild_project.dbt_transform.name, { label = "Build Duration", stat = "p90" }],
+            ["AWS/CodeBuild", "FailedBuilds", "ProjectName", aws_codebuild_project.dbt_transform.name, { label = "Failed Builds" }],
+            ["AWS/CodeBuild", "SucceededBuilds", "ProjectName", aws_codebuild_project.dbt_transform.name, { label = "Succeeded Builds" }]
           ]
           view    = "timeSeries"
           stacked = false
           region  = var.aws_region
-          title   = "Glue Job Performance"
+          title   = "dbt Transform (CodeBuild) Performance"
           period  = 86400
           stat    = "Sum"
         }

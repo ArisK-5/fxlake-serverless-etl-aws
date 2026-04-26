@@ -19,7 +19,7 @@ NC=\033[0m # No Color
 # -----------------------------------
 help:
 	@echo ""
-	@echo "FXLake - Serverless ETL (Terraform + Lambda + Glue + Athena)"
+	@echo "FXLake - Serverless ETL (Terraform + Lambda + dbt + Athena)"
 	@echo ""
 	@echo "Available targets:"
 	@echo "  make package      - Package Lambda function into a .zip"
@@ -68,7 +68,7 @@ test-integration:
 
 test-all:
 	@echo "$(YELLOW)Running all tests with coverage...$(NC)"
-	uv run pytest tests/ -v --cov=lambda --cov=glue --cov-report=term-missing
+	uv run pytest tests/ -v --cov=lambda --cov-report=term-missing
 	@echo "$(GREEN)All tests passed.$(NC)"
 
 # -----------------------------------
