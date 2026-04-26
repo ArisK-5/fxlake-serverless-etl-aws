@@ -1,18 +1,16 @@
-"""Integration tests: multi-source parallel ingestion and Glue transform.
+"""Integration tests: multi-source parallel ingestion and Iceberg write.
 
 Verifies that all three sources (Frankfurter, ECB, FRED) can be ingested
-concurrently, that each writes to the correct S3 path, and that the Glue
-transform correctly routes files to the appropriate domain.
+concurrently, that each writes to the correct S3 path, and that the Iceberg
+writer correctly routes files to the appropriate domain with quality reports.
 """
 
-import io
 import json
 import os
 from typing import Any
+from unittest.mock import patch
 
 import boto3
-import polars as pl
-import pyarrow.parquet as pq
 import pytest
 import responses
 from moto import mock_aws
@@ -112,10 +110,41 @@ def _s3_keys(s3_client: Any, bucket: str, prefix: str = "") -> list[str]:
     return sorted(obj["Key"] for obj in resp.get("Contents", []))
 
 
-def _read_parquet(s3_client: Any, bucket: str, key: str) -> pl.DataFrame:
-    obj = s3_client.get_object(Bucket=bucket, Key=key)
-    table = pq.read_table(io.BytesIO(obj["Body"].read()))
-    return pl.from_arrow(table)
+def _domain_for_key(key: str) -> str:
+    if key.startswith("fred_"):
+        return "economic_indicators"
+    return "fx_rates"
+
+
+def _call_iceberg_writer(
+    raw_key: str,
+    domain: str | None = None,
+    captured_queries: list[str] | None = None,
+) -> dict:
+    """Call the Iceberg writer Lambda with Athena execution patched."""
+    import lambda_iceberg_writer as writer_mod
+
+    resolved_domain = domain or _domain_for_key(raw_key)
+
+    def fake_execute(athena_client: Any, query: str, database: str,
+                     output_location: str, workgroup: str) -> str:
+        if captured_queries is not None:
+            captured_queries.append(query)
+        return "fake-query-id"
+
+    def fake_poll(athena_client: Any, query_execution_id: str,
+                  poll_interval: int = 2, max_attempts: int = 90) -> dict:
+        return {"QueryExecution": {"Status": {"State": "SUCCEEDED"}}}
+
+    event = {
+        "raw_bucket": TEST_RAW_BUCKET,
+        "raw_key": raw_key,
+        "domain": resolved_domain,
+    }
+
+    with patch.object(writer_mod, "_execute_athena_query", side_effect=fake_execute), \
+         patch.object(writer_mod, "_poll_query_completion", side_effect=fake_poll):
+        return writer_mod.lambda_handler(event, None)
 
 
 # ---------------------------------------------------------------------------
@@ -237,17 +266,17 @@ class TestParallelIngestion:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Glue transform handles multiple schemas
+# Tests: Iceberg writer handles multiple schemas
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
-class TestGlueMultiSchema:
-    """Glue transform correctly routes and transforms all source types."""
+class TestIcebergMultiSchema:
+    """Iceberg writer correctly routes and writes all source types."""
 
     @responses.activate
-    def test_transform_routes_all_sources_to_correct_domains(
+    def test_iceberg_write_routes_all_sources_to_correct_domains(
         self, multi_source_aws, monkeypatch
     ):
-        """Frankfurter + ECB → fx_rates/, FRED → economic_indicators/."""
+        """Frankfurter + ECB → fx_rates INSERT, FRED → economic_indicators INSERT."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
 
         responses.add(
@@ -267,28 +296,27 @@ class TestGlueMultiSchema:
         ecb_mod.lambda_handler({}, None)
         fred_mod.lambda_handler({}, None)
 
-        import glue_transform
-
         raw_keys = _s3_keys(multi_source_aws["s3"], TEST_RAW_BUCKET)
+
+        fx_queries: list[str] = []
+        econ_queries: list[str] = []
         for key in raw_keys:
-            glue_transform.process_key(key)
+            domain = _domain_for_key(key)
+            target = fx_queries if domain == "fx_rates" else econ_queries
+            _call_iceberg_writer(key, domain=domain, captured_queries=target)
 
-        s3 = multi_source_aws["s3"]
+        assert len(fx_queries) >= 2
+        assert all("INSERT INTO fx_rates" in q for q in fx_queries)
 
-        # FX domain: Frankfurter + ECB
-        fx_keys = _s3_keys(s3, TEST_PROCESSED_BUCKET, "fx_rates/year=")
-        assert len(fx_keys) >= 2  # at least 2 dates from Frankfurter + 1 from ECB
-
-        # Economic domain: FRED
-        econ_keys = _s3_keys(s3, TEST_PROCESSED_BUCKET, "economic_indicators/year=")
-        assert len(econ_keys) == 2  # 2 monthly observations
+        assert len(econ_queries) == 1
+        assert "INSERT INTO economic_indicators" in econ_queries[0]
 
     @responses.activate
-    def test_fx_and_economic_schemas_are_distinct(
+    def test_fx_and_economic_insert_columns_are_distinct(
         self, multi_source_aws, monkeypatch
     ):
-        """FX Parquet has {date,source,base_currency,target_currency,rate};
-        Economic has {date,source,series_id,value}."""
+        """FX INSERT uses (date,source,base_currency,target_currency,rate);
+        Economic uses (date,source,series_id,value)."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
 
         responses.add(
@@ -305,22 +333,20 @@ class TestGlueMultiSchema:
         fx_mod.lambda_handler({}, None)
         fred_mod.lambda_handler({}, None)
 
-        import glue_transform
-
         raw_keys = _s3_keys(multi_source_aws["s3"], TEST_RAW_BUCKET)
+
+        fx_queries: list[str] = []
+        econ_queries: list[str] = []
         for key in raw_keys:
-            glue_transform.process_key(key)
+            domain = _domain_for_key(key)
+            target = fx_queries if domain == "fx_rates" else econ_queries
+            _call_iceberg_writer(key, domain=domain, captured_queries=target)
 
-        s3 = multi_source_aws["s3"]
+        assert len(fx_queries) >= 1
+        assert "date, source, base_currency, target_currency, rate" in fx_queries[0]
 
-        fx_keys = _s3_keys(s3, TEST_PROCESSED_BUCKET, "fx_rates/year=")
-        econ_keys = _s3_keys(s3, TEST_PROCESSED_BUCKET, "economic_indicators/year=")
-
-        fx_df = _read_parquet(s3, TEST_PROCESSED_BUCKET, fx_keys[0])
-        econ_df = _read_parquet(s3, TEST_PROCESSED_BUCKET, econ_keys[0])
-
-        assert set(fx_df.columns) == {"date", "source", "base_currency", "target_currency", "rate"}
-        assert set(econ_df.columns) == {"date", "source", "series_id", "value"}
+        assert len(econ_queries) == 1
+        assert "date, source, series_id, value" in econ_queries[0]
 
     @responses.activate
     def test_quality_reports_generated_for_each_domain(
@@ -343,11 +369,9 @@ class TestGlueMultiSchema:
         fx_mod.lambda_handler({}, None)
         fred_mod.lambda_handler({}, None)
 
-        import glue_transform
-
         raw_keys = _s3_keys(multi_source_aws["s3"], TEST_RAW_BUCKET)
         for key in raw_keys:
-            glue_transform.process_key(key)
+            _call_iceberg_writer(key)
 
         s3 = multi_source_aws["s3"]
 
@@ -357,7 +381,6 @@ class TestGlueMultiSchema:
         assert len(fx_reports) == 1
         assert len(econ_reports) == 1
 
-        # Verify report structure
         for report_key in fx_reports + econ_reports:
             obj = s3.get_object(Bucket=TEST_PROCESSED_BUCKET, Key=report_key)
             report = json.loads(obj["Body"].read())
@@ -367,10 +390,10 @@ class TestGlueMultiSchema:
             assert "overall_passed" in report
 
     @responses.activate
-    def test_partition_paths_follow_hive_convention(
+    def test_iceberg_writer_returns_correct_metadata(
         self, multi_source_aws, monkeypatch
     ):
-        """Output paths use year=YYYY/month=MM/day=DD Hive-style partitioning."""
+        """Each Iceberg writer call returns status, domain, and row count."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
 
         responses.add(
@@ -384,18 +407,11 @@ class TestGlueMultiSchema:
 
         fx_mod.lambda_handler({}, None)
 
-        import glue_transform
-
         raw_keys = _s3_keys(multi_source_aws["s3"], TEST_RAW_BUCKET)
-        glue_transform.process_key(raw_keys[0])
+        result = _call_iceberg_writer(raw_keys[0])
 
-        fx_keys = _s3_keys(multi_source_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/year=")
-
-        for key in fx_keys:
-            parts = key.split("/")
-            # fx_rates/year=2024/month=01/day=02/stem.parquet
-            assert parts[0] == "fx_rates"
-            assert parts[1].startswith("year=")
-            assert parts[2].startswith("month=")
-            assert parts[3].startswith("day=")
-            assert parts[4].endswith(".parquet")
+        assert result["status"] == "ok"
+        assert result["domain"] == "fx_rates"
+        assert result["target_table"] == "fx_rates"
+        assert result["rows_inserted"] > 0
+        assert result["batches"] >= 1
