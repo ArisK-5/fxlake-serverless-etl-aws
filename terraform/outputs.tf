@@ -45,3 +45,8 @@ output "dlq_arn" {
   description = "ARN of the DLQ SQS queue"
   value       = aws_sqs_queue.pipeline_dlq.arn
 }
+
+output "codebuild_dbt_project_name" {
+  description = "Name of the CodeBuild project for dbt"
+  value       = aws_codebuild_project.dbt_transform.name
+}
