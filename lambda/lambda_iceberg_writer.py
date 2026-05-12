@@ -7,7 +7,7 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 from common.logging import Timer, configure_logger, inject_request_id
-from quality import (
+from common.quality import (
     QualityResult,
     build_quality_report,
     has_critical_failures,

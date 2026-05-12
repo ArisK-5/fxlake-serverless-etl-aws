@@ -5,7 +5,7 @@ function and the domain-level runners.
 """
 
 import pytest
-from quality import (
+from common.quality import (
     CheckLevel,
     QualityResult,
     build_quality_report,
@@ -88,6 +88,30 @@ class TestCheckRequiredColumns:
         assert "c" in r.message
         assert r.level == CheckLevel.CRITICAL
 
+    def test_empty_rows(self) -> None:
+        r = check_required_columns([], ["a", "b"])
+        assert r.passed is True
+
+    def test_inconsistent_keys_across_rows(self) -> None:
+        rows = [
+            {"a": 1, "b": 2, "c": 3},
+            {"a": 1, "c": 3},
+        ]
+        r = check_required_columns(rows, ["a", "b", "c"])
+        assert r.passed is False
+        assert r.failing_row_count == 1
+        assert "b" in r.message
+
+    def test_all_rows_validated(self) -> None:
+        rows = [
+            {"a": 1, "b": 2},
+            {"a": 1},
+            {"b": 2},
+        ]
+        r = check_required_columns(rows, ["a", "b"])
+        assert r.passed is False
+        assert r.failing_row_count == 2
+
 
 # ---------------------------------------------------------------------------
 # check_no_nulls
@@ -158,6 +182,18 @@ class TestCheckDuplicates:
         assert r.passed is False
         assert r.failing_row_count == 2
 
+    def test_multi_group_duplicates(self) -> None:
+        rows = [
+            {"date": "2024-01-01", "target_currency": "USD"},
+            {"date": "2024-01-01", "target_currency": "USD"},
+            {"date": "2024-01-02", "target_currency": "GBP"},
+            {"date": "2024-01-02", "target_currency": "GBP"},
+            {"date": "2024-01-02", "target_currency": "GBP"},
+        ]
+        r = check_duplicates(rows, ["date", "target_currency"])
+        assert r.passed is False
+        assert r.failing_row_count == 5
+
 
 # ---------------------------------------------------------------------------
 # check_rate_range
@@ -226,6 +262,13 @@ class TestRunFxChecks:
         results = run_fx_checks(rows)
         assert has_critical_failures(results)
 
+    def test_missing_columns_short_circuits(self) -> None:
+        rows = [{"date": "2024-01-01", "source": "frankfurter"}]
+        results = run_fx_checks(rows)
+        assert len(results) == 1
+        assert results[0].check_name == "required_columns"
+        assert results[0].passed is False
+
     def test_duplicate_date_currency_warning(self) -> None:
         rows = [
             {"date": "2024-01-01", "source": "frankfurter", "base_currency": "EUR",
@@ -267,6 +310,13 @@ class TestRunEconomicChecks:
         ]
         results = run_economic_checks(rows)
         assert has_critical_failures(results)
+
+    def test_missing_columns_short_circuits(self) -> None:
+        rows = [{"date": "2024-01-01", "source": "fred"}]
+        results = run_economic_checks(rows)
+        assert len(results) == 1
+        assert results[0].check_name == "required_columns"
+        assert results[0].passed is False
 
 
 # ---------------------------------------------------------------------------

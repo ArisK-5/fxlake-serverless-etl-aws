@@ -53,15 +53,21 @@ def check_required_columns(
     level: CheckLevel = CheckLevel.CRITICAL,
 ) -> QualityResult:
     """Verify all *required* columns exist as keys in every row."""
-    actual = set(rows[0].keys()) if rows else set()
-    missing = sorted(set(required) - actual)
-    if missing:
+    required_set = set(required)
+    failing_count = 0
+    all_missing: set[str] = set()
+    for row in rows:
+        missing = required_set - set(row.keys())
+        if missing:
+            failing_count += 1
+            all_missing |= missing
+    if failing_count > 0:
         return QualityResult(
             check_name="required_columns",
             level=level,
             passed=False,
-            message=f"Missing columns: {', '.join(missing)}",
-            failing_row_count=len(rows),
+            message=f"Missing columns: {', '.join(sorted(all_missing))}",
+            failing_row_count=failing_count,
         )
     return QualityResult(
         check_name="required_columns",
@@ -213,8 +219,11 @@ _ECON_REQUIRED = ["date", "source", "series_id", "value"]
 
 def run_fx_checks(rows: list[dict[str, Any]]) -> list[QualityResult]:
     """Run all quality checks for the FX rates domain."""
+    schema_result = check_required_columns(rows, _FX_REQUIRED)
+    if not schema_result.passed:
+        return [schema_result]
     return [
-        check_required_columns(rows, _FX_REQUIRED),
+        schema_result,
         check_no_nulls(rows, "date"),
         check_no_nulls(rows, "rate"),
         check_positive_values(rows, "rate"),
@@ -226,8 +235,11 @@ def run_fx_checks(rows: list[dict[str, Any]]) -> list[QualityResult]:
 
 def run_economic_checks(rows: list[dict[str, Any]]) -> list[QualityResult]:
     """Run all quality checks for the economic indicators domain."""
+    schema_result = check_required_columns(rows, _ECON_REQUIRED)
+    if not schema_result.passed:
+        return [schema_result]
     return [
-        check_required_columns(rows, _ECON_REQUIRED),
+        schema_result,
         check_no_nulls(rows, "date"),
         check_no_nulls(rows, "value"),
         check_duplicates(rows, ["date", "series_id"]),

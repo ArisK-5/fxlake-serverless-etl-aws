@@ -46,12 +46,12 @@ Terraform · S3 · Lambda · Glue · Athena · Step Functions · EventBridge · 
 ├── lambda/
 │   ├── common/
 │   │   ├── base.py                    # BaseIngestionHandler (shared logic)
-│   │   └── logging.py                 # Structured JSON logging + Timer
+│   │   ├── logging.py                 # Structured JSON logging + Timer
+│   │   └── quality.py                 # Data quality check framework
 │   ├── lambda_fx_ingestion.py         # Frankfurter API handler
 │   ├── lambda_ecb_ingestion.py        # ECB SDW API handler
 │   ├── lambda_fred_ingestion.py       # FRED API handler
 │   ├── lambda_validation_function.py  # Athena result validation
-│   ├── quality.py                     # Data quality check framework
 │   ├── package_lambdas.sh             # Lambda ZIP packaging script
 │   └── requirements.txt               # Lambda runtime dependencies
 ├── terraform/
