@@ -108,7 +108,10 @@ def check_positive_values(
     column: str,
     level: CheckLevel = CheckLevel.CRITICAL,
 ) -> QualityResult:
-    """Verify all values in *column* are strictly positive (> 0)."""
+    """Verify all values in *column* are strictly positive (> 0).
+
+    Precondition: call check_required_columns first — uses row[column] directly.
+    """
     bad_count = sum(1 for row in rows if row[column] <= 0)
     name = f"positive_{column}"
     if bad_count > 0:
@@ -133,7 +136,10 @@ def check_duplicates(
     columns: list[str],
     level: CheckLevel = CheckLevel.WARNING,
 ) -> QualityResult:
-    """Verify no duplicate rows exist for the given column combination."""
+    """Verify no duplicate rows exist for the given column combination.
+
+    Precondition: call check_required_columns first — uses row[column] directly.
+    """
     keys = [tuple(row[c] for c in columns) for row in rows]
     counts = Counter(keys)
     dup_count = sum(cnt for cnt in counts.values() if cnt > 1)
@@ -162,7 +168,10 @@ def check_rate_range(
     max_val: float,
     level: CheckLevel = CheckLevel.WARNING,
 ) -> QualityResult:
-    """Verify values in *column* fall within [min_val, max_val]."""
+    """Verify values in *column* fall within [min_val, max_val].
+
+    Precondition: call check_required_columns first — uses row[column] directly.
+    """
     bad_count = sum(1 for row in rows if row[column] < min_val or row[column] > max_val)
     name = f"range_{column}"
     if bad_count > 0:
@@ -188,7 +197,10 @@ def check_value_in_set(
     valid_values: set[str],
     level: CheckLevel = CheckLevel.WARNING,
 ) -> QualityResult:
-    """Verify all values in *column* belong to *valid_values*."""
+    """Verify all values in *column* belong to *valid_values*.
+
+    Precondition: call check_required_columns first — uses row[column] directly.
+    """
     bad_count = sum(1 for row in rows if row[column] not in valid_values)
     name = f"value_set_{column}"
     if bad_count > 0:

@@ -280,6 +280,7 @@ def _run_quality_checks(
         logger.info("All quality checks passed", extra={"raw_key": raw_key, "domain": domain})
         return results
 
+    total_rows = len(rows)
     for r in failed:
         logger.warning(
             "Quality check failed",
@@ -288,6 +289,8 @@ def _run_quality_checks(
                 "level": r.level.value,
                 "detail": r.message,
                 "domain": domain,
+                "failing_row_count": r.failing_row_count,
+                "total_rows": total_rows,
             },
         )
 

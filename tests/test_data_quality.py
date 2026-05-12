@@ -137,6 +137,11 @@ class TestCheckNoNulls:
         r = check_no_nulls(rows, "val", level=CheckLevel.WARNING)
         assert r.level == CheckLevel.WARNING
 
+    def test_empty_rows(self) -> None:
+        r = check_no_nulls([], "date")
+        assert r.passed is True
+        assert r.failing_row_count == 0
+
 
 # ---------------------------------------------------------------------------
 # check_positive_values
@@ -158,6 +163,11 @@ class TestCheckPositiveValues:
         r = check_positive_values(rows, "rate")
         assert r.passed is False
         assert r.failing_row_count == 1
+
+    def test_empty_rows(self) -> None:
+        r = check_positive_values([], "rate")
+        assert r.passed is True
+        assert r.failing_row_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +204,11 @@ class TestCheckDuplicates:
         assert r.passed is False
         assert r.failing_row_count == 5
 
+    def test_empty_rows(self) -> None:
+        r = check_duplicates([], ["date", "target_currency"])
+        assert r.passed is True
+        assert r.failing_row_count == 0
+
 
 # ---------------------------------------------------------------------------
 # check_rate_range
@@ -210,6 +225,11 @@ class TestCheckRateRange:
         assert r.passed is False
         assert r.failing_row_count == 2
 
+    def test_empty_rows(self) -> None:
+        r = check_rate_range([], "rate", min_val=0.0001, max_val=1000.0)
+        assert r.passed is True
+        assert r.failing_row_count == 0
+
 
 # ---------------------------------------------------------------------------
 # check_value_in_set
@@ -225,6 +245,11 @@ class TestCheckValueInSet:
         r = check_value_in_set(rows, "source", {"frankfurter", "ecb"})
         assert r.passed is False
         assert r.failing_row_count == 1
+
+    def test_empty_rows(self) -> None:
+        r = check_value_in_set([], "source", {"frankfurter", "ecb"})
+        assert r.passed is True
+        assert r.failing_row_count == 0
 
 
 # ---------------------------------------------------------------------------
