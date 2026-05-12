@@ -8,6 +8,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from common.logging import Timer, configure_logger, inject_request_id
+from common.schema_validation import validate_data
 
 # X-Ray tracing — instruments boto3 and requests when running in Lambda.
 # Skipped gracefully in local/test environments where aws-xray-sdk is absent.
@@ -337,6 +338,7 @@ class BaseIngestionHandler(ABC):
             and "mode" only for backfill).
         """
         data = self.fetch_data(start_date, end_date)
+        validate_data(data)
         filename = self.make_filename(start_date, end_date)
         self.save_to_s3(data, filename, start_date=start_date, end_date=end_date)
 

@@ -685,11 +685,13 @@ class TestCriticalQualityFailure:
     """CRITICAL quality check → quarantine + metrics + saga rollback."""
 
     @responses.activate
-    def test_negative_rates_quarantined_and_state_not_updated(
+    def test_negative_rates_rejected_by_schema_and_state_not_updated(
         self, integration_aws, monkeypatch
     ):
-        """Negative FX rates trigger CRITICAL failure: quarantine written, ValueError raised,
+        """Negative FX rates fail schema validation at ingestion: data never reaches S3,
         DynamoDB state unchanged (saga rollback)."""
+        from common.schema_validation import SchemaValidationError
+
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         ddb = integration_aws["dynamodb"]
 
@@ -711,29 +713,11 @@ class TestCriticalQualityFailure:
 
         import lambda_fx_ingestion as fx_mod
 
-        result = fx_mod.lambda_handler({}, None)
-        assert result["status"] == "ok"
+        with pytest.raises(SchemaValidationError):
+            fx_mod.lambda_handler({}, None)
 
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
-        assert len(raw_keys) == 1
-
-        with pytest.raises(ValueError, match="CRITICAL"):
-            _call_iceberg_writer(raw_keys[0])
-
-        quarantine_keys = _s3_keys(integration_aws["s3"], TEST_QUARANTINE_BUCKET, "fx_rates/")
-        assert len(quarantine_keys) == 1
-        assert "quarantine" in quarantine_keys[0]
-
-        quality_keys = _s3_keys(
-            integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/quality_reports/"
-        )
-        assert len(quality_keys) == 1
-        report = json.loads(
-            integration_aws["s3"]
-            .get_object(Bucket=TEST_PROCESSED_BUCKET, Key=quality_keys[0])["Body"]
-            .read()
-        )
-        assert report["overall_passed"] is False
+        assert len(raw_keys) == 0
 
         item = ddb.get_item(
             TableName=TEST_STATE_TABLE,
@@ -742,8 +726,10 @@ class TestCriticalQualityFailure:
         assert item["last_processed_date"]["S"] == "2024-01-10"
 
     @responses.activate
-    def test_quarantine_contains_original_data(self, integration_aws, monkeypatch):
-        """Quarantined JSON preserves the original parsed records."""
+    def test_negative_rates_never_saved_to_s3(self, integration_aws, monkeypatch):
+        """Schema validation rejects bad data before S3 write."""
+        from common.schema_validation import SchemaValidationError
+
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
 
         responses.add(
@@ -755,20 +741,11 @@ class TestCriticalQualityFailure:
 
         import lambda_fx_ingestion as fx_mod
 
-        fx_mod.lambda_handler({}, None)
+        with pytest.raises(SchemaValidationError):
+            fx_mod.lambda_handler({}, None)
+
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
-
-        with pytest.raises(ValueError):
-            _call_iceberg_writer(raw_keys[0])
-
-        quarantine_keys = _s3_keys(integration_aws["s3"], TEST_QUARANTINE_BUCKET, "fx_rates/")
-        obj = integration_aws["s3"].get_object(
-            Bucket=TEST_QUARANTINE_BUCKET, Key=quarantine_keys[0]
-        )
-        quarantined = json.loads(obj["Body"].read())
-        assert isinstance(quarantined, list)
-        assert len(quarantined) > 0
-        assert any(rec["rate"] < 0 for rec in quarantined)
+        assert len(raw_keys) == 0
 
 
 @pytest.mark.integration

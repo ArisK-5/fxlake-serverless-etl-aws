@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fxlake.dev/schemas/processed/economic_indicators.json",
+  "title": "Normalised Economic Indicators",
+  "description": "Schema contract for normalised economic indicator data produced by the FRED ingestion handler. This is the shape saved to S3 and consumed by the Iceberg writer.",
+  "type": "object",
+  "required": ["source", "series_id", "observations"],
+  "properties": {
+    "source": {
+      "type": "string",
+      "description": "Data source identifier (e.g. fred)."
+    },
+    "series_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Economic series identifier (e.g. UNRATE)."
+    },
+    "observations": {
+      "type": "object",
+      "description": "Map of date -> numeric value.",
+      "minProperties": 1,
+      "patternProperties": {
+        "^\\d{4}-\\d{2}-\\d{2}$": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
