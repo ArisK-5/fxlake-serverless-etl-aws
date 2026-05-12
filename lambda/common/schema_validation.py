@@ -19,7 +19,16 @@ def _resolve_schemas_dir() -> Path:
     repo_path = base.parent / "schemas"
     if repo_path.is_dir():
         return repo_path
-    return package_path
+    logger.error(
+        "Schemas directory not found",
+        extra={
+            "package_path": str(package_path),
+            "repo_path": str(repo_path),
+        },
+    )
+    raise FileNotFoundError(
+        f"Schemas directory not found. Checked: {package_path}, {repo_path}"
+    )
 
 
 _SCHEMAS_DIR = _resolve_schemas_dir()
@@ -31,7 +40,7 @@ class SchemaValidationError(Exception):
     def __init__(self, message: str, schema_name: str, errors: list[str]) -> None:
         super().__init__(message)
         self.schema_name = schema_name
-        self.errors = errors
+        self.errors: tuple[str, ...] = tuple(errors)
 
 
 @lru_cache(maxsize=4)

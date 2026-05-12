@@ -68,10 +68,12 @@ build_lambda() {
   cp -r common package/
 
   for extra in "${extra_dirs[@]}"; do
-    if [ -d "${extra}" ]; then
-      cp -r "${extra}" package/
-      echo "  📂 Bundled ${extra}/"
+    if [ ! -d "${extra}" ]; then
+      echo "❌ ERROR: Required directory not found: ${extra}"
+      exit 1
     fi
+    cp -r "${extra}" package/
+    echo "  📂 Bundled ${extra}/"
   done
 
   cd package

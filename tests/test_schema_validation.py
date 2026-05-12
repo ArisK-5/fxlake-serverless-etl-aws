@@ -239,4 +239,4 @@ class TestSchemaValidationError:
         )
         assert str(err) == "test message"
         assert err.schema_name == "processed/fx_rates.json"
-        assert err.errors == ["err1", "err2"]
+        assert err.errors == ("err1", "err2")
