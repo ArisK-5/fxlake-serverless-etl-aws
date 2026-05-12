@@ -46,3 +46,42 @@ output "codebuild_dbt_project_name" {
   description = "Name of the CodeBuild project for dbt"
   value       = aws_codebuild_project.dbt_transform.name
 }
+
+# -----------------------------------------------------------
+# Data Catalog
+# -----------------------------------------------------------
+
+output "glue_database_name" {
+  description = "Name of the Glue Data Catalog database"
+  value       = aws_glue_catalog_database.fxlake.name
+}
+
+output "glue_database_arn" {
+  description = "ARN of the Glue Data Catalog database"
+  value       = aws_glue_catalog_database.fxlake.arn
+}
+
+output "glue_table_fx_rates_arn" {
+  description = "ARN of the fx_rates Iceberg table in Glue Data Catalog"
+  value       = aws_glue_catalog_table.fx_rates_iceberg.arn
+}
+
+output "glue_table_fx_rates_name" {
+  description = "Name of the fx_rates Iceberg table"
+  value       = aws_glue_catalog_table.fx_rates_iceberg.name
+}
+
+output "glue_table_economic_indicators_arn" {
+  description = "ARN of the economic_indicators Iceberg table in Glue Data Catalog"
+  value       = aws_glue_catalog_table.economic_indicators_iceberg.arn
+}
+
+output "glue_table_economic_indicators_name" {
+  description = "Name of the economic_indicators Iceberg table"
+  value       = aws_glue_catalog_table.economic_indicators_iceberg.name
+}
+
+output "athena_workgroup_name" {
+  description = "Name of the Athena workgroup for queries"
+  value       = aws_athena_workgroup.fxlake.name
+}

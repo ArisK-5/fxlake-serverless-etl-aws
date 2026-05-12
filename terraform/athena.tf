@@ -1,6 +1,12 @@
 resource "aws_glue_catalog_database" "fxlake" {
   name        = "fxlake"
-  description = "Database for FXLake multi-domain ETL data"
+  description = "FXLake data lake — daily foreign exchange rates (Frankfurter, ECB) and economic indicators (FRED), stored as Apache Iceberg tables with ACID transactions and time travel."
+
+  parameters = {
+    "owner"               = "fxlake-pipeline"
+    "classification"      = "financial-data"
+    "data_classification" = "internal"
+  }
 }
 
 resource "aws_athena_workgroup" "fxlake" {
