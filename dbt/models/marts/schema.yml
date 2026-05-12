@@ -6,31 +6,39 @@ models:
       Foreign exchange rates fact table with derived currency_pair column (e.g. EUR/USD).
       Deduplication is handled upstream in stg_fx_rates.
     config:
+      contract:
+        enforced: true
       tags: ["marts", "frankfurter", "ecb"]
     columns:
       - name: trading_date
         description: Trading date.
+        data_type: date
         tests:
           - not_null
       - name: data_source
         description: Winning data provider after deduplication.
+        data_type: varchar
         tests:
           - not_null
       - name: base_currency
         description: Base currency code.
+        data_type: varchar
         tests:
           - not_null
       - name: target_currency
         description: Target currency code.
+        data_type: varchar
         tests:
           - not_null
       - name: exchange_rate
         description: Exchange rate value.
+        data_type: decimal(18,8)
         tests:
           - not_null
       - name: currency_pair
         description: >
           {{ doc("fct_fx_rates_currency_pair") }}
+        data_type: varchar
         tests:
           - not_null
 
@@ -39,21 +47,27 @@ models:
       Economic indicator observations fact table.
       Deduplication is handled upstream in stg_economic_indicators.
     config:
+      contract:
+        enforced: true
       tags: ["marts", "fred"]
     columns:
       - name: observation_date
         description: Observation date.
+        data_type: date
         tests:
           - not_null
       - name: data_source
         description: Data provider.
+        data_type: varchar
         tests:
           - not_null
       - name: series_id
         description: Indicator series identifier.
+        data_type: varchar
         tests:
           - not_null
       - name: observation_value
         description: Observation value.
+        data_type: decimal(18,4)
         tests:
           - not_null

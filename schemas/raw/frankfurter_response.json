@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fxlake.dev/schemas/raw/frankfurter_response.json",
+  "title": "Frankfurter API Response",
+  "description": "JSON Schema for the Frankfurter exchange rates API response (GET /{start_date}..{end_date}).",
+  "type": "object",
+  "required": ["base", "start_date", "end_date", "rates"],
+  "additionalProperties": false,
+  "properties": {
+    "amount": {
+      "type": "number",
+      "description": "Amount used for conversion (default 1)."
+    },
+    "base": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "Base currency code (ISO 4217)."
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date",
+      "description": "Start of the requested date range (ISO 8601)."
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date",
+      "description": "End of the requested date range (ISO 8601)."
+    },
+    "rates": {
+      "type": "object",
+      "description": "Map of date -> { currency_code -> rate }.",
+      "minProperties": 1,
+      "patternProperties": {
+        "^\\d{4}-\\d{2}-\\d{2}$": {
+          "type": "object",
+          "minProperties": 1,
+          "patternProperties": {
+            "^[A-Z]{3}$": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -32,7 +32,7 @@ echo "✅ All source files present."
 
 # -----------------------------------------------------------
 # Helper: build one Lambda zip
-#   Usage: build_lambda <source_file> <zip_name> [requirements_file] [platform]
+#   Usage: build_lambda <source_file> <zip_name> [requirements_file] [platform] [extra_dirs...]
 # -----------------------------------------------------------
 RUNTIME_PROVIDED_PACKAGES=(boto3 botocore s3transfer)
 
@@ -41,6 +41,8 @@ build_lambda() {
   local zip_name="$2"
   local req_file="${3:-requirements.txt}"
   local platform="${4:-}"
+  shift 4 2>/dev/null || shift $#
+  local extra_dirs=("$@")
 
   echo "📦 Building Lambda: ${source_file}..."
 
@@ -65,6 +67,13 @@ build_lambda() {
   cp "${source_file}" package/
   cp -r common package/
 
+  for extra in "${extra_dirs[@]}"; do
+    if [ -d "${extra}" ]; then
+      cp -r "${extra}" package/
+      echo "  📂 Bundled ${extra}/"
+    fi
+  done
+
   cd package
   zip -r "../${zip_name}" .
   cd ..
@@ -83,9 +92,9 @@ build_lambda() {
 # -----------------------------------------------------------
 # Build each Lambda
 # -----------------------------------------------------------
-build_lambda lambda_fx_ingestion.py       lambda_fx_ingestion.zip
-build_lambda lambda_ecb_ingestion.py      lambda_ecb_ingestion.zip
-build_lambda lambda_fred_ingestion.py     lambda_fred_ingestion.zip
+build_lambda lambda_fx_ingestion.py       lambda_fx_ingestion.zip   requirements.txt "" ../schemas
+build_lambda lambda_ecb_ingestion.py      lambda_ecb_ingestion.zip  requirements.txt "" ../schemas
+build_lambda lambda_fred_ingestion.py     lambda_fred_ingestion.zip requirements.txt "" ../schemas
 build_lambda lambda_validation_function.py lambda_validation_function.zip requirements_validation.txt
 build_lambda lambda_iceberg_writer.py     lambda_iceberg_writer.zip requirements_iceberg_writer.txt manylinux2014_x86_64
 

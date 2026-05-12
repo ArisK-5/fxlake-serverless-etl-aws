@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fxlake.dev/schemas/processed/fx_rates.json",
+  "title": "Normalised FX Rates",
+  "description": "Schema contract for normalised FX rate data produced by Frankfurter and ECB ingestion handlers. This is the shape saved to S3 and consumed by the Iceberg writer.",
+  "type": "object",
+  "required": ["base", "rates"],
+  "properties": {
+    "base": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "Base currency code (ISO 4217)."
+    },
+    "source": {
+      "type": "string",
+      "description": "Data source identifier (frankfurter or ecb)."
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "amount": {
+      "type": "number"
+    },
+    "rates": {
+      "type": "object",
+      "description": "Map of date -> { currency_code -> rate }.",
+      "minProperties": 1,
+      "patternProperties": {
+        "^\\d{4}-\\d{2}-\\d{2}$": {
+          "type": "object",
+          "minProperties": 1,
+          "patternProperties": {
+            "^[A-Z]{3}$": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
