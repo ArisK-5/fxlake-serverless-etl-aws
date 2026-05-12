@@ -5,7 +5,6 @@ import time
 from typing import Any
 
 import boto3
-import polars as pl
 from botocore.exceptions import ClientError
 from common.logging import Timer, configure_logger, inject_request_id
 from quality import (
@@ -261,18 +260,6 @@ def _poll_query_completion(
     )
 
 
-def _rows_to_dataframe(rows: list[dict[str, Any]], domain: str) -> pl.DataFrame:
-    """Convert parsed rows to a Polars DataFrame for quality checks."""
-    if domain == "economic_indicators":
-        schema = {"date": pl.Utf8, "source": pl.Utf8, "series_id": pl.Utf8, "value": pl.Float64}
-    else:
-        schema = {
-            "date": pl.Utf8, "source": pl.Utf8, "base_currency": pl.Utf8,
-            "target_currency": pl.Utf8, "rate": pl.Float64,
-        }
-    return pl.DataFrame(rows, schema=schema)
-
-
 def _run_quality_checks(
     rows: list[dict[str, Any]],
     domain: str,
@@ -280,12 +267,10 @@ def _run_quality_checks(
     s3_client: Any,
 ) -> list[QualityResult]:
     """Run quality checks on parsed rows. Write report to S3. Quarantine + raise on CRITICAL."""
-    df = _rows_to_dataframe(rows, domain)
-
     if domain == "economic_indicators":
-        results = run_economic_checks(df)
+        results = run_economic_checks(rows)
     else:
-        results = run_fx_checks(df)
+        results = run_fx_checks(rows)
 
     report = build_quality_report(results, raw_key, domain)
     _write_quality_report(s3_client, report, raw_key, domain)

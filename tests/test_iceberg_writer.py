@@ -21,7 +21,6 @@ from lambda_iceberg_writer import (
     _publish_quality_metric,
     _quarantine_records,
     _read_raw_json,
-    _rows_to_dataframe,
     _run_quality_checks,
     _write_quality_report,
     lambda_handler,
@@ -447,25 +446,6 @@ class TestPollQueryCompletion:
         }
         with pytest.raises(RuntimeError, match="unknown"):
             _poll_query_completion(mock_athena, "qid-6", poll_interval=0)
-
-
-# ---------------------------------------------------------------------------
-# _rows_to_dataframe
-# ---------------------------------------------------------------------------
-
-
-class TestRowsToDataframe:
-    def test_fx_schema(self):
-        rows = _parse_fx_rates(SAMPLE_FX_JSON)
-        df = _rows_to_dataframe(rows, "fx_rates")
-        assert set(df.columns) == {"date", "source", "base_currency", "target_currency", "rate"}
-        assert len(df) == 4
-
-    def test_econ_schema(self):
-        rows = _parse_economic_indicators(SAMPLE_FRED_JSON)
-        df = _rows_to_dataframe(rows, "economic_indicators")
-        assert set(df.columns) == {"date", "source", "series_id", "value"}
-        assert len(df) == 2
 
 
 # ---------------------------------------------------------------------------

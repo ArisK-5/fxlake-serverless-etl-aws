@@ -24,7 +24,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["lambda", "glue"]
+pythonpath = ["lambda"]
 markers = ["integration: end-to-end pipeline integration tests (moto + responses)"]
 
 [tool.ruff]

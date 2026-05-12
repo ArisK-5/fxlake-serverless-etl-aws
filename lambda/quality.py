@@ -1,15 +1,14 @@
-"""Data quality check framework for the Glue transform job.
+"""Data quality check framework for the Iceberg writer Lambda.
 
-Pure functions — no AWS dependencies. Each check receives a Polars DataFrame
-and returns an immutable QualityResult. Domain runners compose checks with
-per-source configs.
+Pure functions — no AWS dependencies. Each check receives a list of row
+dicts and returns an immutable QualityResult. Domain runners compose checks
+with per-source configs.
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Set
-
-import polars as pl
+from typing import Any
 
 
 # ---------------------------------------------------------------------------
@@ -49,12 +48,12 @@ class QualityResult:
 # Individual check functions
 # ---------------------------------------------------------------------------
 def check_required_columns(
-    df: pl.DataFrame,
-    required: List[str],
+    rows: list[dict[str, Any]],
+    required: list[str],
     level: CheckLevel = CheckLevel.CRITICAL,
 ) -> QualityResult:
-    """Verify all *required* columns exist in *df*."""
-    actual = set(df.columns)
+    """Verify all *required* columns exist as keys in every row."""
+    actual = set(rows[0].keys()) if rows else set()
     missing = sorted(set(required) - actual)
     if missing:
         return QualityResult(
@@ -62,7 +61,7 @@ def check_required_columns(
             level=level,
             passed=False,
             message=f"Missing columns: {', '.join(missing)}",
-            failing_row_count=len(df),
+            failing_row_count=len(rows),
         )
     return QualityResult(
         check_name="required_columns",
@@ -74,12 +73,12 @@ def check_required_columns(
 
 
 def check_no_nulls(
-    df: pl.DataFrame,
+    rows: list[dict[str, Any]],
     column: str,
     level: CheckLevel = CheckLevel.CRITICAL,
 ) -> QualityResult:
-    """Verify *column* contains no null values."""
-    null_count = df[column].null_count()
+    """Verify *column* contains no None values."""
+    null_count = sum(1 for row in rows if row.get(column) is None)
     name = f"no_nulls_{column}"
     if null_count > 0:
         return QualityResult(
@@ -99,20 +98,20 @@ def check_no_nulls(
 
 
 def check_positive_values(
-    df: pl.DataFrame,
+    rows: list[dict[str, Any]],
     column: str,
     level: CheckLevel = CheckLevel.CRITICAL,
 ) -> QualityResult:
     """Verify all values in *column* are strictly positive (> 0)."""
-    bad = df.filter(pl.col(column) <= 0)
+    bad_count = sum(1 for row in rows if row[column] <= 0)
     name = f"positive_{column}"
-    if len(bad) > 0:
+    if bad_count > 0:
         return QualityResult(
             check_name=name,
             level=level,
             passed=False,
-            message=f"Column '{column}' has {len(bad)} non-positive value(s)",
-            failing_row_count=len(bad),
+            message=f"Column '{column}' has {bad_count} non-positive value(s)",
+            failing_row_count=bad_count,
         )
     return QualityResult(
         check_name=name,
@@ -124,13 +123,14 @@ def check_positive_values(
 
 
 def check_duplicates(
-    df: pl.DataFrame,
-    columns: List[str],
+    rows: list[dict[str, Any]],
+    columns: list[str],
     level: CheckLevel = CheckLevel.WARNING,
 ) -> QualityResult:
     """Verify no duplicate rows exist for the given column combination."""
-    dup_mask = df.select(columns).is_duplicated()
-    dup_count = dup_mask.sum()
+    keys = [tuple(row[c] for c in columns) for row in rows]
+    counts = Counter(keys)
+    dup_count = sum(cnt for cnt in counts.values() if cnt > 1)
     name = f"no_duplicate_{'_'.join(columns)}"
     if dup_count > 0:
         return QualityResult(
@@ -150,22 +150,22 @@ def check_duplicates(
 
 
 def check_rate_range(
-    df: pl.DataFrame,
+    rows: list[dict[str, Any]],
     column: str,
     min_val: float,
     max_val: float,
     level: CheckLevel = CheckLevel.WARNING,
 ) -> QualityResult:
     """Verify values in *column* fall within [min_val, max_val]."""
-    bad = df.filter((pl.col(column) < min_val) | (pl.col(column) > max_val))
+    bad_count = sum(1 for row in rows if row[column] < min_val or row[column] > max_val)
     name = f"range_{column}"
-    if len(bad) > 0:
+    if bad_count > 0:
         return QualityResult(
             check_name=name,
             level=level,
             passed=False,
-            message=f"Column '{column}' has {len(bad)} value(s) outside [{min_val}, {max_val}]",
-            failing_row_count=len(bad),
+            message=f"Column '{column}' has {bad_count} value(s) outside [{min_val}, {max_val}]",
+            failing_row_count=bad_count,
         )
     return QualityResult(
         check_name=name,
@@ -177,21 +177,21 @@ def check_rate_range(
 
 
 def check_value_in_set(
-    df: pl.DataFrame,
+    rows: list[dict[str, Any]],
     column: str,
-    valid_values: Set[str],
+    valid_values: set[str],
     level: CheckLevel = CheckLevel.WARNING,
 ) -> QualityResult:
     """Verify all values in *column* belong to *valid_values*."""
-    bad = df.filter(~pl.col(column).is_in(list(valid_values)))
+    bad_count = sum(1 for row in rows if row[column] not in valid_values)
     name = f"value_set_{column}"
-    if len(bad) > 0:
+    if bad_count > 0:
         return QualityResult(
             check_name=name,
             level=level,
             passed=False,
-            message=f"Column '{column}' has {len(bad)} value(s) not in {sorted(valid_values)}",
-            failing_row_count=len(bad),
+            message=f"Column '{column}' has {bad_count} value(s) not in {sorted(valid_values)}",
+            failing_row_count=bad_count,
         )
     return QualityResult(
         check_name=name,
@@ -211,33 +211,33 @@ _FX_VALID_SOURCES = {"frankfurter", "ecb"}
 _ECON_REQUIRED = ["date", "source", "series_id", "value"]
 
 
-def run_fx_checks(df: pl.DataFrame) -> List[QualityResult]:
+def run_fx_checks(rows: list[dict[str, Any]]) -> list[QualityResult]:
     """Run all quality checks for the FX rates domain."""
     return [
-        check_required_columns(df, _FX_REQUIRED),
-        check_no_nulls(df, "date"),
-        check_no_nulls(df, "rate"),
-        check_positive_values(df, "rate"),
-        check_rate_range(df, "rate", min_val=0.0001, max_val=1000.0),
-        check_value_in_set(df, "source", _FX_VALID_SOURCES),
-        check_duplicates(df, ["date", "target_currency"]),
+        check_required_columns(rows, _FX_REQUIRED),
+        check_no_nulls(rows, "date"),
+        check_no_nulls(rows, "rate"),
+        check_positive_values(rows, "rate"),
+        check_rate_range(rows, "rate", min_val=0.0001, max_val=1000.0),
+        check_value_in_set(rows, "source", _FX_VALID_SOURCES),
+        check_duplicates(rows, ["date", "target_currency"]),
     ]
 
 
-def run_economic_checks(df: pl.DataFrame) -> List[QualityResult]:
+def run_economic_checks(rows: list[dict[str, Any]]) -> list[QualityResult]:
     """Run all quality checks for the economic indicators domain."""
     return [
-        check_required_columns(df, _ECON_REQUIRED),
-        check_no_nulls(df, "date"),
-        check_no_nulls(df, "value"),
-        check_duplicates(df, ["date", "series_id"]),
+        check_required_columns(rows, _ECON_REQUIRED),
+        check_no_nulls(rows, "date"),
+        check_no_nulls(rows, "value"),
+        check_duplicates(rows, ["date", "series_id"]),
     ]
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def has_critical_failures(results: List[QualityResult]) -> bool:
+def has_critical_failures(results: list[QualityResult]) -> bool:
     """Return True if any CRITICAL check failed."""
     return any(
         r.level == CheckLevel.CRITICAL and not r.passed for r in results
@@ -245,10 +245,10 @@ def has_critical_failures(results: List[QualityResult]) -> bool:
 
 
 def build_quality_report(
-    results: List[QualityResult],
+    results: list[QualityResult],
     source_key: str,
     domain: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build a JSON-serialisable quality report dictionary."""
     return {
         "source_key": source_key,

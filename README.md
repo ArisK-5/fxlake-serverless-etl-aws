@@ -43,9 +43,6 @@ Terraform · S3 · Lambda · Glue · Athena · Step Functions · EventBridge · 
 ├── docs/
 │   ├── adr/                            # Architecture Decision Records (ADR-001–004)
 │   └── planning/                       # Project planning docs
-├── glue/
-│   ├── glue_transform.py               # Glue Python Shell job (Polars transform)
-│   └── quality.py                      # Data quality check framework
 ├── lambda/
 │   ├── common/
 │   │   ├── base.py                    # BaseIngestionHandler (shared logic)
@@ -54,6 +51,7 @@ Terraform · S3 · Lambda · Glue · Athena · Step Functions · EventBridge · 
 │   ├── lambda_ecb_ingestion.py        # ECB SDW API handler
 │   ├── lambda_fred_ingestion.py       # FRED API handler
 │   ├── lambda_validation_function.py  # Athena result validation
+│   ├── quality.py                     # Data quality check framework
 │   ├── package_lambdas.sh             # Lambda ZIP packaging script
 │   └── requirements.txt               # Lambda runtime dependencies
 ├── terraform/
@@ -61,7 +59,6 @@ Terraform · S3 · Lambda · Glue · Athena · Step Functions · EventBridge · 
 │   ├── modules/lambda_function/       # Reusable Lambda module (ECB, FRED)
 │   ├── step_function.tf               # 9-stage Step Functions ASL
 │   ├── lambda.tf                      # Lambda definitions + EventBridge
-│   ├── glue.tf                        # Glue job + quality.py upload
 │   ├── dynamodb.tf                    # Pipeline state table
 │   ├── s3.tf                          # 5 S3 buckets (raw, processed, athena, cloudtrail, quarantine)
 │   ├── athena.tf                      # Glue Data Catalog + partition projection

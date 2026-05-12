@@ -1,10 +1,9 @@
-"""Tests for glue/quality.py — data quality check framework.
+"""Tests for lambda/quality.py — data quality check framework.
 
 Uses known-bad data (nulls, negatives, duplicates) to verify each check
 function and the domain-level runners.
 """
 
-import polars as pl
 import pytest
 from quality import (
     CheckLevel,
@@ -76,14 +75,14 @@ class TestQualityResult:
 # ---------------------------------------------------------------------------
 class TestCheckRequiredColumns:
     def test_all_present(self) -> None:
-        df = pl.DataFrame({"a": [1], "b": [2], "c": [3]})
-        r = check_required_columns(df, ["a", "b"])
+        rows = [{"a": 1, "b": 2, "c": 3}]
+        r = check_required_columns(rows, ["a", "b"])
         assert r.passed is True
         assert r.level == CheckLevel.CRITICAL
 
     def test_missing_columns(self) -> None:
-        df = pl.DataFrame({"a": [1]})
-        r = check_required_columns(df, ["a", "b", "c"])
+        rows = [{"a": 1}]
+        r = check_required_columns(rows, ["a", "b", "c"])
         assert r.passed is False
         assert "b" in r.message
         assert "c" in r.message
@@ -95,19 +94,23 @@ class TestCheckRequiredColumns:
 # ---------------------------------------------------------------------------
 class TestCheckNoNulls:
     def test_no_nulls(self) -> None:
-        df = pl.DataFrame({"date": ["2024-01-01"], "rate": [1.1]})
-        r = check_no_nulls(df, "date")
+        rows = [{"date": "2024-01-01", "rate": 1.1}]
+        r = check_no_nulls(rows, "date")
         assert r.passed is True
 
     def test_has_nulls(self) -> None:
-        df = pl.DataFrame({"date": [None, "2024-01-01", None], "rate": [1.0, 1.1, 1.2]})
-        r = check_no_nulls(df, "date")
+        rows = [
+            {"date": None, "rate": 1.0},
+            {"date": "2024-01-01", "rate": 1.1},
+            {"date": None, "rate": 1.2},
+        ]
+        r = check_no_nulls(rows, "date")
         assert r.passed is False
         assert r.failing_row_count == 2
 
     def test_custom_level(self) -> None:
-        df = pl.DataFrame({"val": [None]})
-        r = check_no_nulls(df, "val", level=CheckLevel.WARNING)
+        rows = [{"val": None}]
+        r = check_no_nulls(rows, "val", level=CheckLevel.WARNING)
         assert r.level == CheckLevel.WARNING
 
 
@@ -116,19 +119,19 @@ class TestCheckNoNulls:
 # ---------------------------------------------------------------------------
 class TestCheckPositiveValues:
     def test_all_positive(self) -> None:
-        df = pl.DataFrame({"rate": [1.1, 2.2, 0.5]})
-        r = check_positive_values(df, "rate")
+        rows = [{"rate": 1.1}, {"rate": 2.2}, {"rate": 0.5}]
+        r = check_positive_values(rows, "rate")
         assert r.passed is True
 
     def test_has_zero(self) -> None:
-        df = pl.DataFrame({"rate": [1.1, 0.0, 2.2]})
-        r = check_positive_values(df, "rate")
+        rows = [{"rate": 1.1}, {"rate": 0.0}, {"rate": 2.2}]
+        r = check_positive_values(rows, "rate")
         assert r.passed is False
         assert r.failing_row_count == 1
 
     def test_has_negative(self) -> None:
-        df = pl.DataFrame({"rate": [1.1, -0.5, 2.2]})
-        r = check_positive_values(df, "rate")
+        rows = [{"rate": 1.1}, {"rate": -0.5}, {"rate": 2.2}]
+        r = check_positive_values(rows, "rate")
         assert r.passed is False
         assert r.failing_row_count == 1
 
@@ -138,19 +141,20 @@ class TestCheckPositiveValues:
 # ---------------------------------------------------------------------------
 class TestCheckDuplicates:
     def test_no_duplicates(self) -> None:
-        df = pl.DataFrame({
-            "date": ["2024-01-01", "2024-01-02"],
-            "target_currency": ["USD", "USD"],
-        })
-        r = check_duplicates(df, ["date", "target_currency"])
+        rows = [
+            {"date": "2024-01-01", "target_currency": "USD"},
+            {"date": "2024-01-02", "target_currency": "USD"},
+        ]
+        r = check_duplicates(rows, ["date", "target_currency"])
         assert r.passed is True
 
     def test_has_duplicates(self) -> None:
-        df = pl.DataFrame({
-            "date": ["2024-01-01", "2024-01-01", "2024-01-02"],
-            "target_currency": ["USD", "USD", "GBP"],
-        })
-        r = check_duplicates(df, ["date", "target_currency"])
+        rows = [
+            {"date": "2024-01-01", "target_currency": "USD"},
+            {"date": "2024-01-01", "target_currency": "USD"},
+            {"date": "2024-01-02", "target_currency": "GBP"},
+        ]
+        r = check_duplicates(rows, ["date", "target_currency"])
         assert r.passed is False
         assert r.failing_row_count == 2
 
@@ -160,13 +164,13 @@ class TestCheckDuplicates:
 # ---------------------------------------------------------------------------
 class TestCheckRateRange:
     def test_within_range(self) -> None:
-        df = pl.DataFrame({"rate": [1.1, 0.5, 50.0]})
-        r = check_rate_range(df, "rate", min_val=0.0001, max_val=1000.0)
+        rows = [{"rate": 1.1}, {"rate": 0.5}, {"rate": 50.0}]
+        r = check_rate_range(rows, "rate", min_val=0.0001, max_val=1000.0)
         assert r.passed is True
 
     def test_out_of_range(self) -> None:
-        df = pl.DataFrame({"rate": [1.1, 0.00001, 5000.0, 2.0]})
-        r = check_rate_range(df, "rate", min_val=0.0001, max_val=1000.0)
+        rows = [{"rate": 1.1}, {"rate": 0.00001}, {"rate": 5000.0}, {"rate": 2.0}]
+        r = check_rate_range(rows, "rate", min_val=0.0001, max_val=1000.0)
         assert r.passed is False
         assert r.failing_row_count == 2
 
@@ -176,13 +180,13 @@ class TestCheckRateRange:
 # ---------------------------------------------------------------------------
 class TestCheckValueInSet:
     def test_all_valid(self) -> None:
-        df = pl.DataFrame({"source": ["frankfurter", "ecb", "ecb"]})
-        r = check_value_in_set(df, "source", {"frankfurter", "ecb"})
+        rows = [{"source": "frankfurter"}, {"source": "ecb"}, {"source": "ecb"}]
+        r = check_value_in_set(rows, "source", {"frankfurter", "ecb"})
         assert r.passed is True
 
     def test_invalid_values(self) -> None:
-        df = pl.DataFrame({"source": ["frankfurter", "unknown", "ecb"]})
-        r = check_value_in_set(df, "source", {"frankfurter", "ecb"})
+        rows = [{"source": "frankfurter"}, {"source": "unknown"}, {"source": "ecb"}]
+        r = check_value_in_set(rows, "source", {"frankfurter", "ecb"})
         assert r.passed is False
         assert r.failing_row_count == 1
 
@@ -192,48 +196,44 @@ class TestCheckValueInSet:
 # ---------------------------------------------------------------------------
 class TestRunFxChecks:
     def test_clean_data_passes(self) -> None:
-        df = pl.DataFrame({
-            "date": ["2024-01-01", "2024-01-02"],
-            "source": ["frankfurter", "frankfurter"],
-            "base_currency": ["EUR", "EUR"],
-            "target_currency": ["USD", "GBP"],
-            "rate": [1.1, 0.85],
-        })
-        results = run_fx_checks(df)
+        rows = [
+            {"date": "2024-01-01", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "USD", "rate": 1.1},
+            {"date": "2024-01-02", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "GBP", "rate": 0.85},
+        ]
+        results = run_fx_checks(rows)
         assert all(r.passed for r in results)
         assert not has_critical_failures(results)
 
     def test_null_date_critical(self) -> None:
-        df = pl.DataFrame({
-            "date": [None, "2024-01-02"],
-            "source": ["frankfurter", "frankfurter"],
-            "base_currency": ["EUR", "EUR"],
-            "target_currency": ["USD", "GBP"],
-            "rate": [1.1, 0.85],
-        })
-        results = run_fx_checks(df)
+        rows = [
+            {"date": None, "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "USD", "rate": 1.1},
+            {"date": "2024-01-02", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "GBP", "rate": 0.85},
+        ]
+        results = run_fx_checks(rows)
         assert has_critical_failures(results)
 
     def test_negative_rate_critical(self) -> None:
-        df = pl.DataFrame({
-            "date": ["2024-01-01", "2024-01-02"],
-            "source": ["frankfurter", "frankfurter"],
-            "base_currency": ["EUR", "EUR"],
-            "target_currency": ["USD", "GBP"],
-            "rate": [-1.0, 0.85],
-        })
-        results = run_fx_checks(df)
+        rows = [
+            {"date": "2024-01-01", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "USD", "rate": -1.0},
+            {"date": "2024-01-02", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "GBP", "rate": 0.85},
+        ]
+        results = run_fx_checks(rows)
         assert has_critical_failures(results)
 
     def test_duplicate_date_currency_warning(self) -> None:
-        df = pl.DataFrame({
-            "date": ["2024-01-01", "2024-01-01"],
-            "source": ["frankfurter", "frankfurter"],
-            "base_currency": ["EUR", "EUR"],
-            "target_currency": ["USD", "USD"],
-            "rate": [1.1, 1.1],
-        })
-        results = run_fx_checks(df)
+        rows = [
+            {"date": "2024-01-01", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "USD", "rate": 1.1},
+            {"date": "2024-01-01", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "USD", "rate": 1.1},
+        ]
+        results = run_fx_checks(rows)
         dup_results = [r for r in results if r.check_name == "no_duplicate_date_target_currency"]
         assert len(dup_results) == 1
         assert dup_results[0].passed is False
@@ -245,33 +245,27 @@ class TestRunFxChecks:
 # ---------------------------------------------------------------------------
 class TestRunEconomicChecks:
     def test_clean_data_passes(self) -> None:
-        df = pl.DataFrame({
-            "date": ["2024-01-01", "2024-02-01"],
-            "source": ["fred", "fred"],
-            "series_id": ["UNRATE", "UNRATE"],
-            "value": [3.7, 3.9],
-        })
-        results = run_economic_checks(df)
+        rows = [
+            {"date": "2024-01-01", "source": "fred", "series_id": "UNRATE", "value": 3.7},
+            {"date": "2024-02-01", "source": "fred", "series_id": "UNRATE", "value": 3.9},
+        ]
+        results = run_economic_checks(rows)
         assert all(r.passed for r in results)
 
     def test_null_value_critical(self) -> None:
-        df = pl.DataFrame({
-            "date": ["2024-01-01", "2024-02-01"],
-            "source": ["fred", "fred"],
-            "series_id": ["UNRATE", "UNRATE"],
-            "value": [None, 3.9],
-        })
-        results = run_economic_checks(df)
+        rows = [
+            {"date": "2024-01-01", "source": "fred", "series_id": "UNRATE", "value": None},
+            {"date": "2024-02-01", "source": "fred", "series_id": "UNRATE", "value": 3.9},
+        ]
+        results = run_economic_checks(rows)
         assert has_critical_failures(results)
 
     def test_null_date_critical(self) -> None:
-        df = pl.DataFrame({
-            "date": [None, "2024-02-01"],
-            "source": ["fred", "fred"],
-            "series_id": ["UNRATE", "UNRATE"],
-            "value": [3.7, 3.9],
-        })
-        results = run_economic_checks(df)
+        rows = [
+            {"date": None, "source": "fred", "series_id": "UNRATE", "value": 3.7},
+            {"date": "2024-02-01", "source": "fred", "series_id": "UNRATE", "value": 3.9},
+        ]
+        results = run_economic_checks(rows)
         assert has_critical_failures(results)
 
 
