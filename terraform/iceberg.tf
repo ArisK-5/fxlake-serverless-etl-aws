@@ -4,7 +4,18 @@
 resource "aws_glue_catalog_table" "fx_rates_iceberg" {
   name          = "fx_rates"
   database_name = aws_glue_catalog_database.fxlake.name
+  description   = "Daily foreign exchange rates from Frankfurter API and ECB Statistics Data Warehouse. Ingested daily via Step Functions, quality-checked, and written as Iceberg format."
   table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    "classification"      = "financial-data"
+    "owner"               = "fxlake-pipeline"
+    "update_frequency"    = "daily"
+    "retention_period"    = "365 days"
+    "domain"              = "fx_rates"
+    "source"              = "frankfurter,ecb"
+    "data_classification" = "internal"
+  }
 
   open_table_format_input {
     iceberg_input {
@@ -21,24 +32,29 @@ resource "aws_glue_catalog_table" "fx_rates_iceberg" {
     }
 
     columns {
-      name = "date"
-      type = "string"
+      name    = "date"
+      type    = "string"
+      comment = "Trading date in ISO 8601 format (YYYY-MM-DD)"
     }
     columns {
-      name = "source"
-      type = "string"
+      name    = "source"
+      type    = "string"
+      comment = "Data provider identifier: frankfurter or ecb"
     }
     columns {
-      name = "base_currency"
-      type = "string"
+      name    = "base_currency"
+      type    = "string"
+      comment = "ISO 4217 base currency code (e.g. EUR)"
     }
     columns {
-      name = "target_currency"
-      type = "string"
+      name    = "target_currency"
+      type    = "string"
+      comment = "ISO 4217 target currency code (e.g. USD, GBP)"
     }
     columns {
-      name = "rate"
-      type = "double"
+      name    = "rate"
+      type    = "double"
+      comment = "Exchange rate: 1 unit of base_currency equals this many units of target_currency"
     }
   }
 }
@@ -46,7 +62,18 @@ resource "aws_glue_catalog_table" "fx_rates_iceberg" {
 resource "aws_glue_catalog_table" "economic_indicators_iceberg" {
   name          = "economic_indicators"
   database_name = aws_glue_catalog_database.fxlake.name
+  description   = "Economic indicator observations from FRED (Federal Reserve Economic Data). Ingested daily via Step Functions, quality-checked, and written as Iceberg format."
   table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    "classification"      = "financial-data"
+    "owner"               = "fxlake-pipeline"
+    "update_frequency"    = "daily"
+    "retention_period"    = "365 days"
+    "domain"              = "economic_indicators"
+    "source"              = "fred"
+    "data_classification" = "internal"
+  }
 
   open_table_format_input {
     iceberg_input {
@@ -63,20 +90,24 @@ resource "aws_glue_catalog_table" "economic_indicators_iceberg" {
     }
 
     columns {
-      name = "date"
-      type = "string"
+      name    = "date"
+      type    = "string"
+      comment = "Observation date in ISO 8601 format (YYYY-MM-DD)"
     }
     columns {
-      name = "source"
-      type = "string"
+      name    = "source"
+      type    = "string"
+      comment = "Data provider identifier: fred"
     }
     columns {
-      name = "series_id"
-      type = "string"
+      name    = "series_id"
+      type    = "string"
+      comment = "FRED series identifier (e.g. UNRATE for unemployment rate)"
     }
     columns {
-      name = "value"
-      type = "double"
+      name    = "value"
+      type    = "double"
+      comment = "Observation value for the given series and date"
     }
   }
 }
