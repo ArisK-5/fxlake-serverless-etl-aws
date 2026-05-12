@@ -15,6 +15,9 @@ clean-targets:
 
 models:
   fxlake_dbt:
+    +persist_docs:
+      relation: true
+      columns: true
     staging:
       +materialized: view
     marts:
