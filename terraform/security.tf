@@ -67,6 +67,20 @@ resource "aws_cloudtrail" "fxlake" {
   cloud_watch_logs_group_arn    = "${aws_cloudwatch_log_group.cloudtrail_logs.arn}:*"
   cloud_watch_logs_role_arn     = aws_iam_role.cloudtrail_role.arn
 
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+
+    data_resource {
+      type   = "AWS::S3::Object"
+      values = ["${aws_s3_bucket.processed.arn}/"]
+    }
+  }
+
+  insight_selector {
+    insight_type = "ApiCallRateInsight"
+  }
+
   tags = {
     component = "security"
   }
@@ -76,6 +90,20 @@ resource "aws_cloudtrail" "fxlake" {
     aws_iam_role_policy.cloudtrail_policy,
     aws_s3_bucket_policy.cloudtrail_bucket_policy
   ]
+}
+
+resource "aws_s3_bucket_logging" "processed" {
+  bucket = aws_s3_bucket.processed.id
+
+  target_bucket = aws_s3_bucket.cloudtrail_logs.id
+  target_prefix = "s3-access-logs/processed/"
+}
+
+resource "aws_s3_bucket_logging" "raw" {
+  bucket = aws_s3_bucket.raw.id
+
+  target_bucket = aws_s3_bucket.cloudtrail_logs.id
+  target_prefix = "s3-access-logs/raw/"
 }
 
 resource "aws_cloudwatch_log_metric_filter" "unauthorized_api_calls" {
