@@ -21,7 +21,6 @@ from lambda_iceberg_writer import (
     _publish_quality_metric,
     _quarantine_records,
     _read_raw_json,
-    _rows_to_dataframe,
     _run_quality_checks,
     _write_quality_report,
     lambda_handler,
@@ -450,25 +449,6 @@ class TestPollQueryCompletion:
 
 
 # ---------------------------------------------------------------------------
-# _rows_to_dataframe
-# ---------------------------------------------------------------------------
-
-
-class TestRowsToDataframe:
-    def test_fx_schema(self):
-        rows = _parse_fx_rates(SAMPLE_FX_JSON)
-        df = _rows_to_dataframe(rows, "fx_rates")
-        assert set(df.columns) == {"date", "source", "base_currency", "target_currency", "rate"}
-        assert len(df) == 4
-
-    def test_econ_schema(self):
-        rows = _parse_economic_indicators(SAMPLE_FRED_JSON)
-        df = _rows_to_dataframe(rows, "economic_indicators")
-        assert set(df.columns) == {"date", "source", "series_id", "value"}
-        assert len(df) == 2
-
-
-# ---------------------------------------------------------------------------
 # _run_quality_checks
 # ---------------------------------------------------------------------------
 
@@ -524,6 +504,23 @@ class TestRunQualityChecks:
         warnings = [r for r in results if not r.passed]
         assert len(warnings) > 0
         assert all(r.level.value == "WARNING" for r in warnings)
+
+    def test_warning_log_includes_row_counts(self, s3_with_fx_json):
+        rows = [
+            {"date": "2024-01-02", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "USD", "rate": 1.1},
+            {"date": "2024-01-02", "source": "frankfurter", "base_currency": "EUR",
+             "target_currency": "USD", "rate": 1.1},
+        ]
+        with patch("lambda_iceberg_writer.logger") as mock_logger:
+            _run_quality_checks(rows, "fx_rates", "dup.json", s3_with_fx_json)
+            warning_calls = [c for c in mock_logger.warning.call_args_list
+                             if c[0][0] == "Quality check failed"]
+            assert len(warning_calls) > 0
+            extra = warning_calls[0][1]["extra"]
+            assert "failing_row_count" in extra
+            assert "total_rows" in extra
+            assert extra["total_rows"] == 2
 
     def test_econ_critical_failure_quarantines(self, s3_with_fred_json):
         rows = [

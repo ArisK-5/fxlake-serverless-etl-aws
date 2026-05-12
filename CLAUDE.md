@@ -146,7 +146,7 @@ Every state has Retry and Catch blocks:
 
 ### Iceberg Writer Lambda (v3)
 
-`lambda/lambda_iceberg_writer.py` replaces `glue_transform.py` as the write path. Reads raw JSON from S3, runs quality checks (reusing `quality.py`), builds batched `INSERT INTO` SQL, and executes via Athena against Iceberg tables.
+`lambda/lambda_iceberg_writer.py` replaces `glue_transform.py` as the write path. Reads raw JSON from S3, runs quality checks (reusing `common/quality.py`), builds batched `INSERT INTO` SQL, and executes via Athena against Iceberg tables.
 
 **Key details:**
 - Supports two domains: `fx_rates` and `economic_indicators` — routing determined by `event.domain`
@@ -203,13 +203,13 @@ dbt/
 
 ### Data Quality Framework
 
-`glue/quality.py` — pure check functions (no AWS deps), imported by `lambda_iceberg_writer.py` as `quality` module.
+`lambda/common/quality.py` — pure check functions (no AWS deps, no Polars), imported by `lambda_iceberg_writer.py` as `common.quality` module. Operates on `list[dict[str, Any]]`.
 
 **Architecture:**
 - `CheckLevel` enum: `CRITICAL` (quarantine + raise) vs `WARNING` (log + metric)
 - `QualityResult` frozen dataclass: immutable check result with `__post_init__` invariant validation (rejects `passed=True` with `failing_row_count>0` and vice versa)
 - 6 check functions: `check_required_columns`, `check_no_nulls`, `check_positive_values`, `check_duplicates`, `check_rate_range`, `check_value_in_set`
-- 2 domain runners: `run_fx_checks(df)`, `run_economic_checks(df)`
+- 2 domain runners: `run_fx_checks(rows)`, `run_economic_checks(rows)`
 - Helpers: `has_critical_failures(results)`, `build_quality_report(results, key, domain)`
 
 **Per-domain checks:**
@@ -348,7 +348,7 @@ uv run pytest tests/test_lambda_fx_ingestion.py -v    # Single file
 | `lambda/lambda_ecb_ingestion.py` | 100% |
 | `lambda/lambda_fred_ingestion.py` | 100% |
 | `lambda/lambda_validation_function.py` | 98% |
-| `glue/quality.py` | 100% |
+| `lambda/common/quality.py` | 100% |
 
 **Overall: 97%**
 
