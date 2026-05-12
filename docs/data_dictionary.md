@@ -95,7 +95,7 @@ Staging models are materialised as views. They apply type casting, renaming, fil
 | `target_currency` | `varchar` | `target_currency` | ISO 4217 target currency code |
 | `exchange_rate` | `decimal(18,8)` | `rate` | Exchange rate value |
 
-**Deduplication:** `ROW_NUMBER()` over `(date, base_currency, target_currency)` ordered by source priority: ECB > Frankfurter.
+**Deduplication:** `ROW_NUMBER()` over `(trading_date, base_currency, target_currency)` ordered by source priority: ECB > Frankfurter.
 
 **dbt tests:** `not_null` on all columns, `positive_values` on `exchange_rate`, `accepted_values` on `data_source`, `unique_combination_of_columns` on `(trading_date, base_currency, target_currency)`.
 
@@ -108,7 +108,7 @@ Staging models are materialised as views. They apply type casting, renaming, fil
 | `series_id` | `varchar` | `series_id` | FRED series identifier |
 | `observation_value` | `decimal(18,4)` | `value` | Observation value |
 
-**Deduplication:** `ROW_NUMBER()` over `(date, series_id)`.
+**Deduplication:** `ROW_NUMBER()` over `(observation_date, series_id)`.
 
 **dbt tests:** `not_null` on all columns, `positive_values` on `observation_value`, `unique_combination_of_columns` on `(observation_date, series_id)`.
 
