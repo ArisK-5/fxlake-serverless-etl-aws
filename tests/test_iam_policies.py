@@ -32,7 +32,10 @@ def _extract_jsonencode_blocks(tf_file: Path) -> dict[str, str]:
 
 
 def _extract_bucket_policy_blocks(tf_file: Path) -> dict[str, str]:
-    """Extract bucket policy jsonencode() blocks from a Terraform file."""
+    """Extract bucket policy jsonencode() blocks from a Terraform file.
+
+    Returns a dict mapping resource name to the JSON string inside jsonencode().
+    """
     content = tf_file.read_text()
     results: dict[str, str] = {}
 
@@ -138,6 +141,18 @@ class TestIAMPolicyStructure:
             for i, stmt in enumerate(policy["Statement"]):
                 resource = stmt.get("Resource")
                 assert resource is not None, f"{name} stmt {i} missing Resource"
+
+    def test_all_consumer_policies_parsed(self, iam_policies):
+        expected = {"consumer_readonly", "consumer_analyst", "consumer_admin"}
+        parsed = {k for k in iam_policies if k.startswith("consumer_")}
+        assert parsed == expected, f"Failed to parse: {expected - parsed}"
+
+    def test_no_wildcard_actions(self, iam_policies):
+        dangerous = {"*", "s3:*", "athena:*", "lambda:*", "states:*", "glue:*"}
+        for name, policy in iam_policies.items():
+            all_actions = _collect_actions(policy)
+            found = all_actions & dangerous
+            assert not found, f"{name} has wildcard actions: {found}"
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +283,40 @@ class TestBucketPolicies:
         assert "AllowPipelineRoleOnly" in content
         assert "DenyAllOtherPrincipals" in content
 
+    def test_processed_deny_condition_uses_string_not_equals(self, bucket_policies):
+        if "processed_deny_unencrypted" not in bucket_policies:
+            pytest.skip("Could not parse processed bucket policy")
+        policy = bucket_policies["processed_deny_unencrypted"]
+        deny_stmts = [s for s in policy["Statement"] if s.get("Effect") == "Deny"]
+        assert len(deny_stmts) >= 1
+        condition = deny_stmts[0].get("Condition", {})
+        assert "StringNotEquals" in condition
+        sse = condition["StringNotEquals"]
+        assert sse.get("s3:x-amz-server-side-encryption") == "AES256"
+
+    def test_raw_deny_condition_uses_secure_transport(self, bucket_policies):
+        if "raw_deny_non_ssl" not in bucket_policies:
+            pytest.skip("Could not parse raw bucket policy")
+        policy = bucket_policies["raw_deny_non_ssl"]
+        deny_stmts = [s for s in policy["Statement"] if s.get("Sid") == "DenyNonSSLRequests"]
+        assert len(deny_stmts) == 1
+        condition = deny_stmts[0].get("Condition", {})
+        assert "Bool" in condition
+        assert condition["Bool"].get("aws:SecureTransport") == "false"
+
+    def test_quarantine_deny_condition_uses_string_not_equals(self, bucket_policies):
+        if "quarantine_restrict" not in bucket_policies:
+            pytest.skip("Could not parse quarantine bucket policy")
+        policy = bucket_policies["quarantine_restrict"]
+        deny_stmts = [
+            s for s in policy["Statement"]
+            if s.get("Sid") == "DenyAllOtherPrincipals"
+        ]
+        assert len(deny_stmts) == 1
+        condition = deny_stmts[0].get("Condition", {})
+        assert "StringNotEquals" in condition
+        assert "aws:PrincipalArn" in condition["StringNotEquals"]
+
 
 # ---------------------------------------------------------------------------
 # CloudTrail & access logging
@@ -299,7 +348,9 @@ class TestCloudTrailConfig:
 # Public access blocks
 # ---------------------------------------------------------------------------
 class TestPublicAccessBlocks:
-    @pytest.mark.parametrize("bucket", ["raw", "processed", "athena_results", "quarantine"])
+    @pytest.mark.parametrize(
+        "bucket", ["raw", "processed", "athena_results", "quarantine", "cloudtrail_logs"],
+    )
     def test_public_access_block_exists(self, bucket):
         content = (TERRAFORM_DIR / "s3.tf").read_text()
         pattern = rf'resource\s+"aws_s3_bucket_public_access_block"\s+"{bucket}"'

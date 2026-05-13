@@ -48,6 +48,15 @@ resource "aws_s3_bucket" "quarantine" {
   }
 }
 
+resource "aws_s3_bucket_public_access_block" "cloudtrail_logs" {
+  bucket = aws_s3_bucket.cloudtrail_logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 resource "aws_s3_bucket_public_access_block" "quarantine" {
   bucket = aws_s3_bucket.quarantine.id
 
@@ -126,6 +135,18 @@ resource "aws_s3_bucket_policy" "raw_deny_non_ssl" {
         Condition = {
           Bool = {
             "aws:SecureTransport" = "false"
+          }
+        }
+      },
+      {
+        Sid       = "DenyUnencryptedObjectUploads",
+        Effect    = "Deny",
+        Principal = "*",
+        Action    = "s3:PutObject",
+        Resource  = "${aws_s3_bucket.raw.arn}/*",
+        Condition = {
+          StringNotEquals = {
+            "s3:x-amz-server-side-encryption" = "AES256"
           }
         }
       }

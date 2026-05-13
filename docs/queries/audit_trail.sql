@@ -76,6 +76,8 @@ LIMIT 200;
 
 
 -- 4. Data modification audit (writes to raw and processed buckets)
+--    Note: CloudTrail S3 data events are enabled for the processed bucket only.
+--    Raw bucket writes appear here only if management events capture them.
 SELECT
     eventtime,
     useridentity.arn  AS caller_arn,
