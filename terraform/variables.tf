@@ -133,3 +133,9 @@ variable "dynamodb_state_table_name" {
   default     = "fxlake-pipeline-state"
 }
 
+variable "deployer_role_arn" {
+  description = "IAM role ARN used by CI/CD (GitHub Actions OIDC) to deploy infrastructure"
+  type        = string
+  sensitive   = true
+}
+
