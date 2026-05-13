@@ -91,6 +91,7 @@ The pipeline is orchestrated by **Step Functions** and triggered daily by **Even
 9. **Lambda (Update-FRED-State)** — commits FRED `last_processed_date` to DynamoDB. Calls the `fred_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fred.Payload.end_date"}`.
 10. **Athena (Athena-Sample-Query)** — runs a data freshness query (`SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates`) via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
 11. **Lambda (Validation)** — parses `latest_date` and `total_records` from Athena results, checks if `latest_date` is within 2 days (freshness threshold), publishes `EmptyQueryResults` and `StaleFXData` CloudWatch metrics
+12. **Lambda (Cross-Source-Validation)** — compares FX rates from Frankfurter and ECB for consistency: rate deviation (>1% threshold), temporal alignment (>1 day gap), and volume distribution (>50% deviation from mean). Publishes `CrossSource_rate_consistency`, `CrossSource_temporal_consistency`, `CrossSource_volume_consistency`, and `CrossSourceDiscrepancy` metrics to CloudWatch
 
 ### Multi-Source Ingestion
 
@@ -227,7 +228,7 @@ dbt/
 
 | File | What it defines |
 |------|----------------|
-| `step_function.tf` | ASL definition for 11-stage orchestration: Parallel-Ingestion (3 branches) → Check-New-Data → Write-FX-Iceberg → Write-Economic-Iceberg → dbt-Transform (CodeBuild .sync) → Check-Backfill-Mode → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation, with Retry/Catch + Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. `Check-Backfill-Mode` skips Update-State steps for backfill executions to protect the incremental watermark. |
+| `step_function.tf` | ASL definition for 12-stage orchestration: Parallel-Ingestion (3 branches) → Check-New-Data → Write-FX-Iceberg → Write-Economic-Iceberg → dbt-Transform (CodeBuild .sync) → Check-Backfill-Mode → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation → Cross-Source-Validation, with Retry/Catch + Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. `Check-Backfill-Mode` skips Update-State steps for backfill executions to protect the incremental watermark. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
 | `lambda.tf` | Frankfurter + validation Lambdas (inline), ECB + FRED Lambdas (via `modules/lambda_function`), Iceberg writer + data validator Lambdas, EventBridge rule/target (→ Step Functions) |
 | `codebuild.tf` | CodeBuild project for dbt execution (fxlake-dbt-transform), S3 source from packaged dbt project, buildspec.yml |
@@ -322,7 +323,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 253 tests (221 unit + 32 integration), 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 493 tests (461 unit + 32 integration), 97% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
@@ -378,6 +379,7 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 | `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder, invariant validation (29 tests) |
 | `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
 | `test_structured_logging.py` | Structured logging — JSON formatter, request ID filter, configure_logger, inject_request_id, Timer (18 tests) |
+| `test_cross_validator.py` | Cross-source validation — query builders, result parsers, rate/temporal/volume checks, metric publishing, invariant validation, defensive parsing, Athena polling (46 tests) |
 | `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, validation Athena errors, backfill pipeline (25 tests) |
 | `integration/test_multi_source.py` | Multi-source parallel ingestion, quality reports (7 tests) |
 
