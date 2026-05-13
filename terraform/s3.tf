@@ -106,7 +106,7 @@ resource "aws_s3_bucket_policy" "processed_deny_unencrypted" {
         Action    = "s3:PutObject",
         Resource  = "${aws_s3_bucket.processed.arn}/*",
         Condition = {
-          StringNotEquals = {
+          StringNotEqualsIfExists = {
             "s3:x-amz-server-side-encryption" = "AES256"
           }
         }
@@ -145,7 +145,7 @@ resource "aws_s3_bucket_policy" "raw_deny_non_ssl" {
         Action    = "s3:PutObject",
         Resource  = "${aws_s3_bucket.raw.arn}/*",
         Condition = {
-          StringNotEquals = {
+          StringNotEqualsIfExists = {
             "s3:x-amz-server-side-encryption" = "AES256"
           }
         }

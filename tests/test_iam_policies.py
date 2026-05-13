@@ -283,15 +283,15 @@ class TestBucketPolicies:
         assert "AllowPipelineRoleOnly" in content
         assert "DenyAllOtherPrincipals" in content
 
-    def test_processed_deny_condition_uses_string_not_equals(self, bucket_policies):
+    def test_processed_deny_condition_uses_string_not_equals_if_exists(self, bucket_policies):
         if "processed_deny_unencrypted" not in bucket_policies:
             pytest.skip("Could not parse processed bucket policy")
         policy = bucket_policies["processed_deny_unencrypted"]
         deny_stmts = [s for s in policy["Statement"] if s.get("Effect") == "Deny"]
         assert len(deny_stmts) >= 1
         condition = deny_stmts[0].get("Condition", {})
-        assert "StringNotEquals" in condition
-        sse = condition["StringNotEquals"]
+        assert "StringNotEqualsIfExists" in condition
+        sse = condition["StringNotEqualsIfExists"]
         assert sse.get("s3:x-amz-server-side-encryption") == "AES256"
 
     def test_raw_deny_condition_uses_secure_transport(self, bucket_policies):
