@@ -692,9 +692,9 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
         height = 6
         properties = {
           metrics = [
-            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSourceDiscrepancy", { label = "Rate Discrepancies", color = "#d62728" }],
-            ["${var.metric_namespace_prefix}/CrossValidation", "RateMismatchCount", { label = "Mismatched Pairs", color = "#ff7f0e" }],
-            ["${var.metric_namespace_prefix}/CrossValidation", "TemporalGapDays", { label = "Temporal Gap (days)", color = "#1f77b4" }]
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSourceDiscrepancy", { label = "Total Discrepancies", color = "#d62728" }],
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSource_rate_consistency", { label = "Rate Mismatches", color = "#ff7f0e" }],
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSource_temporal_consistency", { label = "Temporal Gap (days)", color = "#1f77b4" }]
           ]
           view    = "timeSeries"
           stacked = false
@@ -719,7 +719,7 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
         height = 6
         properties = {
           metrics = [
-            ["${var.metric_namespace_prefix}/CrossValidation", "VolumeDeviationPercent", { label = "Max Volume Deviation %" }]
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSource_volume_consistency", { label = "Max Volume Deviation %" }]
           ]
           view   = "singleValue"
           region = var.aws_region

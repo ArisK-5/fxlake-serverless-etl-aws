@@ -105,6 +105,36 @@ class TestParseResults:
         }
         assert parse_rate_consistency_results(result_set) == []
 
+    def test_parse_rate_consistency_missing_varcharvalue(self):
+        result_set = {
+            "Rows": [
+                {"Data": [{"VarCharValue": "h"}] * 5},
+                {"Data": [
+                    {"VarCharValue": "2024-01-15"},
+                    {"VarCharValue": "USD"},
+                    {},
+                    {"VarCharValue": "1.080"},
+                    {"VarCharValue": "0.0121"},
+                ]},
+            ]
+        }
+        assert parse_rate_consistency_results(result_set) == []
+
+    def test_parse_rate_consistency_invalid_float(self):
+        result_set = {
+            "Rows": [
+                {"Data": [{"VarCharValue": "h"}] * 5},
+                {"Data": [
+                    {"VarCharValue": "2024-01-15"},
+                    {"VarCharValue": "USD"},
+                    {"VarCharValue": "not_a_number"},
+                    {"VarCharValue": "1.080"},
+                    {"VarCharValue": "0.0121"},
+                ]},
+            ]
+        }
+        assert parse_rate_consistency_results(result_set) == []
+
     def test_parse_temporal_empty(self):
         assert parse_temporal_results({"Rows": []}) == {}
 
@@ -142,6 +172,19 @@ class TestParseResults:
         }
         assert parse_temporal_results(result_set) == {}
 
+    def test_parse_temporal_missing_varcharvalue(self):
+        result_set = {
+            "Rows": [
+                {"Data": [{"VarCharValue": "h"}] * 3},
+                {"Data": [
+                    {"VarCharValue": "frankfurter"},
+                    {},
+                    {"VarCharValue": "2024-12-31"},
+                ]},
+            ]
+        }
+        assert parse_temporal_results(result_set) == {}
+
     def test_parse_volume_empty(self):
         assert parse_volume_results({"Rows": []}) == {}
 
@@ -175,6 +218,30 @@ class TestParseResults:
         }
         assert parse_volume_results(result_set) == {}
 
+    def test_parse_volume_missing_varcharvalue(self):
+        result_set = {
+            "Rows": [
+                {"Data": [{"VarCharValue": "h"}] * 2},
+                {"Data": [
+                    {"VarCharValue": "frankfurter"},
+                    {},
+                ]},
+            ]
+        }
+        assert parse_volume_results(result_set) == {}
+
+    def test_parse_volume_invalid_int(self):
+        result_set = {
+            "Rows": [
+                {"Data": [{"VarCharValue": "h"}] * 2},
+                {"Data": [
+                    {"VarCharValue": "frankfurter"},
+                    {"VarCharValue": "not_a_number"},
+                ]},
+            ]
+        }
+        assert parse_volume_results(result_set) == {}
+
 
 class TestCrossValidationCheck:
     def test_frozen(self):
@@ -186,6 +253,33 @@ class TestCrossValidationCheck:
         )
         with pytest.raises(AttributeError):
             check.passed = False
+
+    def test_post_init_rejects_negative_metric_on_pass(self):
+        with pytest.raises(ValueError, match="negative metric_value"):
+            CrossValidationCheck(
+                check_name="test",
+                passed=True,
+                detail="ok",
+                metric_value=-1.0,
+            )
+
+    def test_post_init_rejects_zero_metric_on_failed_rate(self):
+        with pytest.raises(ValueError, match="non-zero"):
+            CrossValidationCheck(
+                check_name="rate_consistency",
+                passed=False,
+                detail="fail",
+                metric_value=0.0,
+            )
+
+    def test_post_init_allows_valid_combinations(self):
+        check = CrossValidationCheck(
+            check_name="temporal_consistency",
+            passed=False,
+            detail="gap",
+            metric_value=0.0,
+        )
+        assert check.passed is False
 
 
 def _make_athena_mock(result_set: dict) -> MagicMock:
@@ -287,6 +381,23 @@ class TestCheckTemporalConsistency:
         assert result.passed is False
         assert "3 day(s)" in result.detail
 
+    def test_invalid_date_format_raises(self):
+        athena = _make_athena_mock({"Rows": [
+            {"Data": [{"VarCharValue": "h"}] * 3},
+            {"Data": [
+                {"VarCharValue": "frankfurter"},
+                {"VarCharValue": "2024-01-01"},
+                {"VarCharValue": "2024-12-31"},
+            ]},
+            {"Data": [
+                {"VarCharValue": "ecb"},
+                {"VarCharValue": "2024-01-01"},
+                {"VarCharValue": "2024-12-31T00:00:00Z"},
+            ]},
+        ]})
+        with pytest.raises(ValueError, match="Cannot parse source dates"):
+            check_temporal_consistency(athena, "fxlake", "s3://bucket/", "wg")
+
     def test_within_threshold(self):
         athena = _make_athena_mock({"Rows": [
             {"Data": [{"VarCharValue": "h"}] * 3},
@@ -369,7 +480,7 @@ class TestPublishMetrics:
         )
         assert discrepancy_metric["Value"] == 1.0
 
-    def test_publish_client_error_logged(self):
+    def test_publish_client_error_reraises(self):
         from lambda_cross_validator import _publish_cross_validation_metrics
 
         cw = MagicMock()
@@ -378,7 +489,8 @@ class TestPublishMetrics:
             "PutMetricData",
         )
         checks = [CrossValidationCheck("test", True, "ok", 0.0)]
-        _publish_cross_validation_metrics(cw, checks)
+        with pytest.raises(ClientError):
+            _publish_cross_validation_metrics(cw, checks)
 
 
 class TestLambdaHandler:
@@ -507,6 +619,29 @@ class TestLambdaHandler:
             assert call[1]["QueryExecutionContext"]["Database"] == "custom_db"
 
 
+class TestLambdaHandlerErrors:
+    @patch("lambda_cross_validator.boto3")
+    def test_athena_error_propagates(self, mock_boto3):
+        athena = MagicMock()
+        athena.start_query_execution.return_value = {"QueryExecutionId": "qid"}
+        athena.get_query_execution.return_value = {
+            "QueryExecution": {
+                "Status": {
+                    "State": "FAILED",
+                    "StateChangeReason": "table not found",
+                }
+            }
+        }
+        cw = MagicMock()
+        mock_boto3.client.side_effect = (
+            lambda svc: athena if svc == "athena" else cw
+        )
+        context = MagicMock()
+        context.aws_request_id = "req-err"
+        with pytest.raises(RuntimeError, match="table not found"):
+            lambda_handler({}, context)
+
+
 class TestAthenaPolling:
     def test_query_failure_raises(self):
         from lambda_cross_validator import _execute_and_wait
@@ -522,6 +657,18 @@ class TestAthenaPolling:
             }
         }
         with pytest.raises(RuntimeError, match="syntax error"):
+            _execute_and_wait(athena, "SELECT 1", "db", "s3://b/", "wg")
+
+    def test_missing_result_set_raises(self):
+        from lambda_cross_validator import _execute_and_wait
+
+        athena = MagicMock()
+        athena.start_query_execution.return_value = {"QueryExecutionId": "qid-no-rs"}
+        athena.get_query_execution.return_value = {
+            "QueryExecution": {"Status": {"State": "SUCCEEDED"}}
+        }
+        athena.get_query_results.return_value = {}
+        with pytest.raises(RuntimeError, match="no ResultSet"):
             _execute_and_wait(athena, "SELECT 1", "db", "s3://b/", "wg")
 
     def test_query_cancelled_raises(self):

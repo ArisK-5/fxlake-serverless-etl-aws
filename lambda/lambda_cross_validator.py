@@ -2,6 +2,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import boto3
@@ -37,6 +38,16 @@ class CrossValidationCheck:
     detail: str
     metric_value: float
 
+    def __post_init__(self) -> None:
+        if self.passed and self.metric_value < 0:
+            raise ValueError(
+                f"Passed check '{self.check_name}' cannot have negative metric_value"
+            )
+        if not self.passed and self.check_name == "rate_consistency" and self.metric_value == 0.0:
+            raise ValueError(
+                "Failed rate_consistency check must have non-zero metric_value"
+            )
+
 
 def _execute_and_wait(
     athena_client: Any,
@@ -59,7 +70,12 @@ def _execute_and_wait(
         state = exec_resp["QueryExecution"]["Status"]["State"]
         if state == "SUCCEEDED":
             results = athena_client.get_query_results(QueryExecutionId=qid)
-            return results["ResultSet"]
+            result_set = results.get("ResultSet")
+            if result_set is None:
+                raise RuntimeError(
+                    f"Athena query {qid} returned no ResultSet"
+                )
+            return result_set
         if state in ("FAILED", "CANCELLED"):
             reason = exec_resp["QueryExecution"]["Status"].get(
                 "StateChangeReason", "unknown"
@@ -117,13 +133,19 @@ def parse_rate_consistency_results(result_set: dict) -> list[dict[str, Any]]:
         data = row.get("Data", [])
         if len(data) < 5:
             continue
-        discrepancies.append({
-            "date": data[0].get("VarCharValue", ""),
-            "target_currency": data[1].get("VarCharValue", ""),
-            "frankfurter_rate": float(data[2].get("VarCharValue", "0")),
-            "ecb_rate": float(data[3].get("VarCharValue", "0")),
-            "deviation": float(data[4].get("VarCharValue", "0")),
-        })
+        try:
+            discrepancies.append({
+                "date": data[0].get("VarCharValue", ""),
+                "target_currency": data[1].get("VarCharValue", ""),
+                "frankfurter_rate": float(data[2]["VarCharValue"]),
+                "ecb_rate": float(data[3]["VarCharValue"]),
+                "deviation": float(data[4]["VarCharValue"]),
+            })
+        except (KeyError, ValueError) as e:
+            logger.warning(
+                "Skipping malformed rate consistency row",
+                extra={"error": str(e), "row_data": str(data)},
+            )
     return discrepancies
 
 
@@ -137,11 +159,17 @@ def parse_temporal_results(result_set: dict) -> dict[str, dict[str, str]]:
         data = row.get("Data", [])
         if len(data) < 3:
             continue
-        source = data[0].get("VarCharValue", "")
-        parsed[source] = {
-            "min_date": data[1].get("VarCharValue", ""),
-            "max_date": data[2].get("VarCharValue", ""),
-        }
+        try:
+            source = data[0]["VarCharValue"]
+            parsed[source] = {
+                "min_date": data[1]["VarCharValue"],
+                "max_date": data[2]["VarCharValue"],
+            }
+        except KeyError as e:
+            logger.warning(
+                "Skipping malformed temporal row",
+                extra={"error": str(e), "row_data": str(data)},
+            )
     return parsed
 
 
@@ -155,8 +183,14 @@ def parse_volume_results(result_set: dict) -> dict[str, int]:
         data = row.get("Data", [])
         if len(data) < 2:
             continue
-        source = data[0].get("VarCharValue", "")
-        parsed[source] = int(data[1].get("VarCharValue", "0"))
+        try:
+            source = data[0]["VarCharValue"]
+            parsed[source] = int(data[1]["VarCharValue"])
+        except (KeyError, ValueError) as e:
+            logger.warning(
+                "Skipping malformed volume row",
+                extra={"error": str(e), "row_data": str(data)},
+            )
     return parsed
 
 
@@ -223,15 +257,18 @@ def check_temporal_consistency(
     max_dates = sorted(sources[s]["max_date"] for s in sources)
     min_dates = sorted(sources[s]["min_date"] for s in sources)
 
-    from datetime import datetime
+    try:
+        latest_max = datetime.strptime(max_dates[-1], "%Y-%m-%d")
+        earliest_max = datetime.strptime(max_dates[0], "%Y-%m-%d")
+        max_gap_days = abs((latest_max - earliest_max).days)
 
-    latest_max = datetime.strptime(max_dates[-1], "%Y-%m-%d")
-    earliest_max = datetime.strptime(max_dates[0], "%Y-%m-%d")
-    max_gap_days = abs((latest_max - earliest_max).days)
-
-    latest_min = datetime.strptime(min_dates[-1], "%Y-%m-%d")
-    earliest_min = datetime.strptime(min_dates[0], "%Y-%m-%d")
-    min_gap_days = abs((latest_min - earliest_min).days)
+        latest_min = datetime.strptime(min_dates[-1], "%Y-%m-%d")
+        earliest_min = datetime.strptime(min_dates[0], "%Y-%m-%d")
+        min_gap_days = abs((latest_min - earliest_min).days)
+    except ValueError as e:
+        raise ValueError(
+            f"Cannot parse source dates: {max_dates + min_dates}. Error: {e}"
+        ) from e
 
     gap = max(max_gap_days, min_gap_days)
     passed = gap <= TEMPORAL_GAP_THRESHOLD_DAYS
@@ -327,6 +364,7 @@ def _publish_cross_validation_metrics(
             "Failed to publish cross-validation metrics",
             extra={"error_code": e.response["Error"]["Code"]},
         )
+        raise
 
 
 def lambda_handler(event: dict, context: Any) -> dict:
