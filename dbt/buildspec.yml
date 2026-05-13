@@ -10,7 +10,7 @@ phases:
     runtime-versions:
       python: 3.11
     commands:
-      - pip install dbt-core==1.11.8 dbt-athena-community==1.10.0
+      - pip install dbt-core==1.11.8 dbt-athena-community==1.10.0 "dbt-adapters<1.24.0"
 
   build:
     commands:
