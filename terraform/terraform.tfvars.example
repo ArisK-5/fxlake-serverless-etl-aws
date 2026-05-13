@@ -21,3 +21,6 @@ fx_end_date       = "2024-12-31"
 fx_base_currency  = "EUR"         # Base currency for rates
 
 fred_api_key = "your-api-key"
+
+# CI/CD deployer role (GitHub Actions OIDC role ARN)
+deployer_role_arn = "arn:aws:iam::ACCOUNT_ID:role/Github_Actions"

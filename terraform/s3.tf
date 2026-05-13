@@ -194,7 +194,10 @@ resource "aws_s3_bucket_policy" "quarantine_restrict" {
         ],
         Condition = {
           StringNotEquals = {
-            "aws:PrincipalArn" = aws_iam_role.lambda_exec.arn
+            "aws:PrincipalArn" = [
+              aws_iam_role.lambda_exec.arn,
+              var.deployer_role_arn,
+            ]
           }
         }
       }
