@@ -65,7 +65,9 @@ def _hcl_to_json(hcl_block: str) -> str:
         result,
     )
     result = re.sub(r"^(\s*)(\w+)\s*=", r'\1"\2" :', result, flags=re.MULTILINE)
-    result = result.replace(",]", "]").replace(",}", "}")
+    result = re.sub(r'(")\s*=\s*', r"\1 : ", result)
+    result = re.sub(r",\s*]", "]", result)
+    result = re.sub(r",\s*}", "}", result)
     result = re.sub(r"(?<=[\]\}\"])\s*\n\s*(?=[\"{\[])", ",\n", result)
     return result
 
@@ -283,16 +285,18 @@ class TestBucketPolicies:
         assert "AllowPipelineRoleOnly" in content
         assert "DenyAllOtherPrincipals" in content
 
-    def test_processed_deny_condition_uses_string_not_equals_if_exists(self, bucket_policies):
+    def test_processed_deny_condition_uses_null_guard(self, bucket_policies):
         if "processed_deny_unencrypted" not in bucket_policies:
             pytest.skip("Could not parse processed bucket policy")
         policy = bucket_policies["processed_deny_unencrypted"]
         deny_stmts = [s for s in policy["Statement"] if s.get("Effect") == "Deny"]
         assert len(deny_stmts) >= 1
         condition = deny_stmts[0].get("Condition", {})
-        assert "StringNotEqualsIfExists" in condition
-        sse = condition["StringNotEqualsIfExists"]
+        assert "StringNotEquals" in condition
+        sse = condition["StringNotEquals"]
         assert sse.get("s3:x-amz-server-side-encryption") == "AES256"
+        assert "Null" in condition
+        assert condition["Null"].get("s3:x-amz-server-side-encryption") == "false"
 
     def test_raw_deny_condition_uses_secure_transport(self, bucket_policies):
         if "raw_deny_non_ssl" not in bucket_policies:
