@@ -133,6 +133,11 @@ variable "dynamodb_state_table_name" {
   default     = "fxlake-pipeline-state"
 }
 
+variable "lambda_cross_validator_name" {
+  type    = string
+  default = "fxlake-cross-validator-lambda"
+}
+
 variable "deployer_role_arn" {
   description = "IAM role ARN used by CI/CD (GitHub Actions OIDC) to deploy infrastructure"
   type        = string

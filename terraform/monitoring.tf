@@ -678,6 +678,55 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
           stat    = "Sum"
           yAxis   = { left = { min = 0 } }
         }
+      },
+
+      ###################################
+      # Row 8 — Cross-Source Validation (y=48)
+      ###################################
+
+      {
+        type   = "metric"
+        x      = 0
+        y      = 48
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSourceDiscrepancy", { label = "Total Discrepancies", color = "#d62728" }],
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSource_rate_consistency", { label = "Rate Mismatches", color = "#ff7f0e" }],
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSource_temporal_consistency", { label = "Temporal Gap (days)", color = "#1f77b4" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Cross-Source Validation (FX vs ECB)"
+          period  = 86400
+          stat    = "Maximum"
+          yAxis   = { left = { min = 0 } }
+          annotations = {
+            horizontal = [
+              { label = "Rate threshold (1%)", value = 0.01, color = "#d62728" }
+            ]
+          }
+        }
+      },
+
+      {
+        type   = "metric"
+        x      = 12
+        y      = 48
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSource_volume_consistency", { label = "Max Volume Deviation %" }]
+          ]
+          view   = "singleValue"
+          region = var.aws_region
+          title  = "Volume Consistency (Last 24h)"
+          period = 86400
+          stat   = "Maximum"
+        }
       }
     ]
   })

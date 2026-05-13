@@ -131,7 +131,8 @@ resource "aws_iam_role_policy" "sfn_policy" {
           module.fred_ingest.function_arn,
           aws_lambda_function.check_query_results.arn,
           module.iceberg_writer.function_arn,
-          module.data_validator.function_arn
+          module.data_validator.function_arn,
+          module.cross_validator.function_arn
         ]
       },
 
@@ -681,7 +682,8 @@ resource "aws_iam_policy" "consumer_admin" {
           module.ecb_ingest.function_arn,
           module.fred_ingest.function_arn,
           module.iceberg_writer.function_arn,
-          module.data_validator.function_arn
+          module.data_validator.function_arn,
+          module.cross_validator.function_arn
         ]
       },
       {
