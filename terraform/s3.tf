@@ -182,7 +182,12 @@ resource "aws_s3_bucket_policy" "quarantine_restrict" {
         Sid       = "DenyAllOtherPrincipals",
         Effect    = "Deny",
         Principal = "*",
-        Action    = "s3:*",
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ],
         Resource = [
           aws_s3_bucket.quarantine.arn,
           "${aws_s3_bucket.quarantine.arn}/*"
