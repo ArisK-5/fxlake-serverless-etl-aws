@@ -380,6 +380,33 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
+        Next = "Cross-Source-Validation"
+      },
+      Cross-Source-Validation = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = module.cross_validator.function_arn,
+          Payload = {
+            "database_name" = aws_glue_catalog_database.fxlake.name
+          }
+        },
+        TimeoutSeconds = 300,
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 3,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Cross-Validation-Failed",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
         End = true
       },
       Ingestion-Failed = {
@@ -418,6 +445,11 @@ resource "aws_sfn_state_machine" "etl" {
         CausePath = "$.errorInfo.Cause"
       },
       Validation-Failed = {
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
+      },
+      Cross-Validation-Failed = {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"

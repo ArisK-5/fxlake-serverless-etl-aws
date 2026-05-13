@@ -231,6 +231,71 @@ module "data_validator" {
   }
 }
 
+module "cross_validator" {
+  source = "./modules/lambda_function"
+
+  function_name = var.lambda_cross_validator_name
+  description   = "Cross-source validation — compares FX rates across Frankfurter and ECB for consistency"
+  handler       = "lambda_cross_validator.lambda_handler"
+  filename      = "../lambda/lambda_cross_validator.zip"
+  timeout       = 300
+
+  env_vars = {
+    DATABASE_NAME         = aws_glue_catalog_database.fxlake.name
+    ATHENA_RESULTS_BUCKET = aws_s3_bucket.athena_results.bucket
+    ATHENA_WORKGROUP      = aws_athena_workgroup.fxlake.name
+    METRIC_NAMESPACE      = "${var.metric_namespace_prefix}/CrossValidation"
+  }
+
+  s3_bucket_arns = [
+    aws_s3_bucket.athena_results.arn,
+    aws_s3_bucket.processed.arn,
+  ]
+
+  additional_policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults"
+        ]
+        Resource = aws_athena_workgroup.fxlake.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetTable",
+          "glue:GetPartitions"
+        ]
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.metric_namespace_prefix}/CrossValidation"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    component = "validation"
+    source    = "cross-source"
+  }
+}
+
 resource "aws_lambda_function" "check_query_results" {
   function_name    = var.lambda_validation_name
   description      = "Checks Athena query results and publishes custom CloudWatch metric"
