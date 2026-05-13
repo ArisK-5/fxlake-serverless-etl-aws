@@ -478,6 +478,249 @@ resource "aws_iam_role_policy" "codebuild_dbt_policy" {
   })
 }
 
+# ---------------------------------------------------------------------------
+# Consumer IAM policies (documents only — not attached to users/roles)
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_policy" "consumer_readonly" {
+  name        = "fxlake-consumer-readonly"
+  description = "Read-only access: Athena queries + S3 read on processed bucket"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "AthenaQueryAccess",
+        Effect = "Allow",
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults",
+          "athena:GetWorkGroup",
+          "athena:StopQueryExecution"
+        ],
+        Resource = [
+          aws_athena_workgroup.fxlake.arn,
+          "arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:workgroup/primary"
+        ]
+      },
+      {
+        Sid    = "S3ProcessedRead",
+        Effect = "Allow",
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket",
+          "s3:GetObject"
+        ],
+        Resource = [
+          aws_s3_bucket.processed.arn,
+          "${aws_s3_bucket.processed.arn}/*"
+        ]
+      },
+      {
+        Sid    = "S3AthenaResults",
+        Effect = "Allow",
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        Resource = [
+          aws_s3_bucket.athena_results.arn,
+          "${aws_s3_bucket.athena_results.arn}/*"
+        ]
+      },
+      {
+        Sid    = "GlueCatalogRead",
+        Effect = "Allow",
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:GetTable",
+          "glue:GetTables",
+          "glue:GetPartition",
+          "glue:GetPartitions"
+        ],
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "consumer_analyst" {
+  name        = "fxlake-consumer-analyst"
+  description = "Analyst access: Athena queries only (no direct S3 read on processed bucket)"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "AthenaQueryAccess",
+        Effect = "Allow",
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults",
+          "athena:GetWorkGroup",
+          "athena:StopQueryExecution"
+        ],
+        Resource = [
+          aws_athena_workgroup.fxlake.arn,
+          "arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:workgroup/primary"
+        ]
+      },
+      {
+        Sid    = "S3AthenaResultsOnly",
+        Effect = "Allow",
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        Resource = [
+          aws_s3_bucket.athena_results.arn,
+          "${aws_s3_bucket.athena_results.arn}/*"
+        ]
+      },
+      {
+        Sid    = "GlueCatalogRead",
+        Effect = "Allow",
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:GetTable",
+          "glue:GetTables",
+          "glue:GetPartition",
+          "glue:GetPartitions"
+        ],
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "consumer_admin" {
+  name        = "fxlake-consumer-admin"
+  description = "Admin access: full pipeline control for data engineering leads"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "AthenaFullAccess",
+        Effect = "Allow",
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults",
+          "athena:GetWorkGroup",
+          "athena:StopQueryExecution",
+          "athena:ListQueryExecutions",
+          "athena:BatchGetQueryExecution"
+        ],
+        Resource = [
+          aws_athena_workgroup.fxlake.arn,
+          "arn:aws:athena:${var.aws_region}:${data.aws_caller_identity.current.account_id}:workgroup/primary"
+        ]
+      },
+      {
+        Sid    = "S3FullDataAccess",
+        Effect = "Allow",
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ],
+        Resource = [
+          aws_s3_bucket.raw.arn,
+          "${aws_s3_bucket.raw.arn}/*",
+          aws_s3_bucket.processed.arn,
+          "${aws_s3_bucket.processed.arn}/*",
+          aws_s3_bucket.athena_results.arn,
+          "${aws_s3_bucket.athena_results.arn}/*",
+          aws_s3_bucket.quarantine.arn,
+          "${aws_s3_bucket.quarantine.arn}/*"
+        ]
+      },
+      {
+        Sid    = "StepFunctionsControl",
+        Effect = "Allow",
+        Action = [
+          "states:StartExecution",
+          "states:StopExecution",
+          "states:DescribeExecution",
+          "states:ListExecutions",
+          "states:DescribeStateMachine"
+        ],
+        Resource = [
+          aws_sfn_state_machine.etl.arn,
+          "${aws_sfn_state_machine.etl.arn}:*"
+        ]
+      },
+      {
+        Sid    = "LambdaInvoke",
+        Effect = "Allow",
+        Action = [
+          "lambda:InvokeFunction",
+          "lambda:GetFunction"
+        ],
+        Resource = [
+          aws_lambda_function.fx_ingest.arn,
+          module.ecb_ingest.function_arn,
+          module.fred_ingest.function_arn,
+          module.iceberg_writer.function_arn,
+          module.data_validator.function_arn
+        ]
+      },
+      {
+        Sid    = "GlueCatalogFull",
+        Effect = "Allow",
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:GetTable",
+          "glue:GetTables",
+          "glue:GetPartition",
+          "glue:GetPartitions",
+          "glue:UpdateTable",
+          "glue:BatchGetPartition"
+        ],
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
+        ]
+      },
+      {
+        Sid    = "CloudWatchReadAccess",
+        Effect = "Allow",
+        Action = [
+          "cloudwatch:GetMetricData",
+          "cloudwatch:ListMetrics",
+          "cloudwatch:DescribeAlarms",
+          "logs:FilterLogEvents",
+          "logs:GetLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 resource "aws_s3_bucket_policy" "cloudtrail_bucket_policy" {
   bucket = var.cloudtrail_logs_bucket_name
 
