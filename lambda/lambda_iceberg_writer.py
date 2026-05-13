@@ -319,7 +319,11 @@ def _write_quality_report(
     body = json.dumps(report, indent=2).encode()
     try:
         s3_client.put_object(
-            Bucket=PROCESSED_BUCKET, Key=report_key, Body=body, ContentType="application/json"
+            Bucket=PROCESSED_BUCKET,
+            Key=report_key,
+            Body=body,
+            ContentType="application/json",
+            ServerSideEncryption="AES256",
         )
     except ClientError as e:
         logger.error(
@@ -351,7 +355,11 @@ def _quarantine_records(
     body = json.dumps(rows).encode()
     try:
         s3_client.put_object(
-            Bucket=QUARANTINE_BUCKET, Key=q_key, Body=body, ContentType="application/json"
+            Bucket=QUARANTINE_BUCKET,
+            Key=q_key,
+            Body=body,
+            ContentType="application/json",
+            ServerSideEncryption="AES256",
         )
     except ClientError as e:
         logger.error(

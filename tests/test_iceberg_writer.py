@@ -564,6 +564,12 @@ class TestWriteQualityReport:
         )
         assert key == "economic_indicators/quality_reports/fred_UNRATE_2024_quality.json"
 
+    def test_sets_server_side_encryption(self):
+        mock_s3 = MagicMock()
+        _write_quality_report(mock_s3, {"checks": []}, "test.json", "fx_rates")
+        call_kwargs = mock_s3.put_object.call_args[1]
+        assert call_kwargs["ServerSideEncryption"] == "AES256"
+
 
 # ---------------------------------------------------------------------------
 # lambda_handler (end-to-end with mocked Athena)
@@ -983,6 +989,13 @@ class TestQuarantineRecords:
         rows = [{"date": "2024-01-02", "value": 1.0}]
         with pytest.raises(ClientError):
             _quarantine_records(mock_s3, rows, "test.json", "fx_rates")
+
+    def test_sets_server_side_encryption(self):
+        mock_s3 = MagicMock()
+        rows = [{"date": "2024-01-02", "value": 1.0}]
+        _quarantine_records(mock_s3, rows, "test.json", "fx_rates")
+        call_kwargs = mock_s3.put_object.call_args[1]
+        assert call_kwargs["ServerSideEncryption"] == "AES256"
 
 
 # ---------------------------------------------------------------------------

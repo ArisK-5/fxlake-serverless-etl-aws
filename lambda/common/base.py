@@ -100,6 +100,7 @@ class BaseIngestionHandler(ABC):
                 Body=body,
                 ContentType="application/json",
                 Metadata=metadata,
+                ServerSideEncryption="AES256",
             )
             logger.debug(
                 "Saved data to S3",

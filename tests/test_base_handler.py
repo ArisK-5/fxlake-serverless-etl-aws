@@ -59,6 +59,15 @@ class TestSaveToS3:
         assert obj["ContentType"] == "application/json"
         assert obj["Metadata"]["source"] == "test"
 
+    def test_sets_server_side_encryption(self, s3_mock):
+        handler = ConcreteHandler()
+        handler._s3 = MagicMock()
+        handler.save_to_s3(SAMPLE_DATA, "test.json")
+
+        handler._s3.put_object.assert_called_once()
+        call_kwargs = handler._s3.put_object.call_args[1]
+        assert call_kwargs["ServerSideEncryption"] == "AES256"
+
     def test_s3_write_failure_raises(self, s3_mock):
         handler = ConcreteHandler()
         handler._s3 = MagicMock()
