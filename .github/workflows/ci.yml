@@ -79,7 +79,7 @@ jobs:
 
       - name: Verify zip artifacts are non-empty
         run: |
-          for zip_file in lambda_fx_ingestion.zip lambda_ecb_ingestion.zip lambda_fred_ingestion.zip lambda_validation_function.zip lambda_iceberg_writer.zip lambda_data_validator.zip lambda_iceberg_maintenance.zip lambda_cross_validator.zip; do
+          for zip_file in lambda_fx_ingestion.zip lambda_ecb_ingestion.zip lambda_fred_ingestion.zip lambda_validation_function.zip lambda_iceberg_writer.zip lambda_data_validator.zip lambda_iceberg_maintenance.zip lambda_cross_validator.zip lambda_anomaly_detector.zip; do
             if [ ! -s "lambda/${zip_file}" ]; then
               echo "❌ ERROR: ${zip_file} is missing or empty"
               exit 1
@@ -110,6 +110,7 @@ jobs:
           touch lambda/lambda_data_validator.zip
           touch lambda/lambda_iceberg_maintenance.zip
           touch lambda/lambda_cross_validator.zip
+          touch lambda/lambda_anomaly_detector.zip
 
       - name: Terraform Init (no backend)
         run: terraform init -backend=false

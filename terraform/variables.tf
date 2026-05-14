@@ -138,6 +138,11 @@ variable "lambda_cross_validator_name" {
   default = "fxlake-cross-validator-lambda"
 }
 
+variable "lambda_anomaly_detector_name" {
+  type    = string
+  default = "fxlake-anomaly-detector-lambda"
+}
+
 variable "deployer_role_arn" {
   description = "IAM role ARN used by CI/CD (GitHub Actions OIDC) to deploy infrastructure"
   type        = string

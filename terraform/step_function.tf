@@ -391,6 +391,7 @@ resource "aws_sfn_state_machine" "etl" {
             "database_name" = aws_glue_catalog_database.fxlake.name
           }
         },
+        ResultPath     = "$.cross_validation",
         TimeoutSeconds = 300,
         Retry = [
           {
@@ -407,7 +408,41 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
+        Next = "Anomaly-Detection"
+      },
+      Anomaly-Detection = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = module.anomaly_detector.function_arn,
+          Payload = {
+            "database_name" = aws_glue_catalog_database.fxlake.name
+          }
+        },
+        ResultPath     = "$.anomaly_detection",
+        TimeoutSeconds = 300,
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 3,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Anomaly-Detection-Error-Handled",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
         End = true
+      },
+      Anomaly-Detection-Error-Handled = {
+        Type       = "Pass",
+        Result     = "Anomaly detection failed but pipeline continues",
+        ResultPath = "$.anomaly_detection_note",
+        End        = true
       },
       Ingestion-Failed = {
         Type      = "Fail",
@@ -453,7 +488,7 @@ resource "aws_sfn_state_machine" "etl" {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"
-      }
+      },
     }
   })
 
