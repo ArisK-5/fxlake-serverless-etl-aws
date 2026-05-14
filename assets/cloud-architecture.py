@@ -1,10 +1,11 @@
 from pathlib import Path
 
 from diagrams import Cluster, Diagram, Edge
-from diagrams.aws.analytics import Athena, Glue
+from diagrams.aws.analytics import Athena
 from diagrams.aws.compute import Lambda
 from diagrams.aws.database import Dynamodb
-from diagrams.aws.integration import SNS, Eventbridge, StepFunctions
+from diagrams.aws.devtools import Codebuild
+from diagrams.aws.integration import SNS, SQS, Eventbridge, StepFunctions
 from diagrams.aws.management import Cloudtrail, Cloudwatch
 from diagrams.aws.security import IAM
 from diagrams.aws.storage import S3
@@ -48,9 +49,17 @@ with Diagram(
             lambda_fx = Lambda("FX Ingestion")
             lambda_ecb = Lambda("ECB Ingestion")
             lambda_fred = Lambda("FRED Ingestion")
-            glue = Glue("Glue (Polars)")
-            athena = Athena("Athena")
+            lambda_iceberg = Lambda("Iceberg Writer")
+            codebuild = Codebuild("dbt Transform")
+            athena = Athena("Athena\n(Iceberg)")
             lambda_validation = Lambda("Validation")
+            lambda_cross = Lambda("Cross-Source\nValidation")
+
+        with Cluster("Self-Healing"):
+            dlq = SQS("Pipeline DLQ")
+            lambda_dlq_retry = Lambda("DLQ Auto-Retry")
+            lambda_stale = Lambda("Stale Data\nBackfill")
+            eventbridge_hourly = Eventbridge("Hourly Check")
 
         with Cluster("State Management"):
             dynamodb = Dynamodb("DynamoDB\n(pipeline state)")
@@ -79,9 +88,11 @@ with Diagram(
             lambda_ecb,
             lambda_fred,
         ]
-        step_function >> Edge(label="transform") >> glue
+        step_function >> Edge(label="Iceberg\nwrite") >> lambda_iceberg
+        step_function >> Edge(label="dbt\ntransform") >> codebuild
         step_function >> Edge(label="query") >> athena
         step_function >> Edge(label="validate") >> lambda_validation
+        step_function >> Edge(label="cross-source") >> lambda_cross
 
         # Ingestion — each Lambda fetches from its API source
         frankfurter_api >> lambda_fx
@@ -96,16 +107,29 @@ with Diagram(
         # Lambdas write raw JSON to S3
         [lambda_fx, lambda_ecb, lambda_fred] >> Edge(label="raw JSON") >> s3_raw
 
-        # Glue transforms raw → processed, quarantines bad data
-        s3_raw >> glue >> Edge(label="Parquet") >> s3_processed
-        glue >> Edge(label="quarantine", style="dashed", color="red") >> s3_quarantine
+        # Iceberg writer reads raw, writes via Athena INSERT, quarantines bad data
+        s3_raw >> lambda_iceberg
+        lambda_iceberg >> Edge(label="Athena\nINSERT") >> athena
+        lambda_iceberg >> Edge(label="quarantine", style="dashed", color="red") >> s3_quarantine
 
-        # Athena queries processed data
-        s3_processed << Edge(label="query") << athena
+        # dbt reads from Iceberg tables, writes mart tables
+        codebuild >> Edge(label="SQL models") >> athena
+
+        # Athena queries processed data (Iceberg tables)
+        s3_processed << Edge(label="Iceberg\ntables") << athena
         athena >> s3_athena_results
 
         # Validation Lambda reads Athena results
         lambda_validation >> s3_athena_results
+
+        # Self-healing flows
+        step_function >> Edge(label="failures", style="dashed", color="red") >> dlq
+        dlq >> lambda_dlq_retry
+        lambda_dlq_retry >> Edge(label="replay", style="dashed") >> step_function
+        lambda_dlq_retry >> Edge(label="alert", style="dashed", color="red") >> sns
+        eventbridge_hourly >> Edge(label="hourly") >> lambda_stale
+        lambda_stale >> Edge(style="dashed") >> dynamodb
+        lambda_stale >> Edge(label="backfill", style="dashed") >> step_function
 
         # Monitoring & Notifications
         cloudwatch - sns >> Edge(label="alert") >> dev
