@@ -391,6 +391,7 @@ resource "aws_sfn_state_machine" "etl" {
             "database_name" = aws_glue_catalog_database.fxlake.name
           }
         },
+        ResultPath     = "$.cross_validation",
         TimeoutSeconds = 300,
         Retry = [
           {
@@ -404,6 +405,34 @@ resource "aws_sfn_state_machine" "etl" {
           {
             ErrorEquals = ["States.ALL"],
             Next        = "Cross-Validation-Failed",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
+        Next = "Anomaly-Detection"
+      },
+      Anomaly-Detection = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = module.anomaly_detector.function_arn,
+          Payload = {
+            "database_name" = aws_glue_catalog_database.fxlake.name
+          }
+        },
+        ResultPath     = "$.anomaly_detection",
+        TimeoutSeconds = 300,
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 3,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Anomaly-Detection-Failed",
             ResultPath  = "$.errorInfo"
           }
         ],
@@ -450,6 +479,11 @@ resource "aws_sfn_state_machine" "etl" {
         CausePath = "$.errorInfo.Cause"
       },
       Cross-Validation-Failed = {
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
+      },
+      Anomaly-Detection-Failed = {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"

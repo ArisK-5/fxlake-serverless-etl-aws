@@ -249,6 +249,32 @@ resource "aws_cloudwatch_metric_alarm" "maintenance_job_failed" {
 }
 
 #######################################
+# Anomaly Detection Alarm
+#######################################
+
+resource "aws_cloudwatch_metric_alarm" "anomaly_detected" {
+  alarm_name          = "fxlake-anomaly-detected"
+  alarm_description   = "Triggered when statistical anomalies are detected in FX rates or economic indicators (z-score >= 3.0)"
+  namespace           = "${var.metric_namespace_prefix}/AnomalyDetection"
+  metric_name         = "AnomalyDetected"
+  statistic           = "Sum"
+  period              = 86400
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    Environment = "production"
+  }
+
+  tags = {
+    component = "monitoring"
+  }
+}
+
+#######################################
 # CloudTrail Unauthorized Access Alarm
 #######################################
 
@@ -292,6 +318,7 @@ locals {
   quality_namespace     = "${var.metric_namespace_prefix}/Quality"
   sla_namespace         = "${var.metric_namespace_prefix}/SLA"
   maintenance_namespace = "${var.metric_namespace_prefix}/Maintenance"
+  anomaly_namespace     = "${var.metric_namespace_prefix}/AnomalyDetection"
 }
 
 resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
@@ -724,6 +751,56 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
           view   = "singleValue"
           region = var.aws_region
           title  = "Volume Consistency (Last 24h)"
+          period = 86400
+          stat   = "Maximum"
+        }
+      },
+
+      ###################################
+      # Row 9 — Anomaly Detection (y=55)
+      ###################################
+
+      {
+        type   = "metric"
+        x      = 0
+        y      = 55
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            [local.anomaly_namespace, "ZScore", "Environment", "production", { label = "Max Z-Score", color = "#d62728" }],
+            [local.anomaly_namespace, "AnomalyDetected", "Environment", "production", { label = "Anomaly Count", color = "#ff7f0e" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Anomaly Detection — Z-Score & Alert Count"
+          period  = 86400
+          stat    = "Maximum"
+          yAxis   = { left = { min = 0 } }
+          annotations = {
+            horizontal = [
+              { label = "Alert threshold (3.0)", value = 3.0, color = "#d62728" },
+              { label = "Warning threshold (2.0)", value = 2.0, color = "#ff7f0e" }
+            ]
+          }
+        }
+      },
+
+      {
+        type   = "metric"
+        x      = 12
+        y      = 55
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            [local.anomaly_namespace, "AnomalyDetected", "Environment", "production", { label = "Anomalies Detected" }],
+            [local.anomaly_namespace, "ZScore", "Environment", "production", { label = "Max Z-Score" }]
+          ]
+          view   = "singleValue"
+          region = var.aws_region
+          title  = "Anomaly Detection Status (Last 24h)"
           period = 86400
           stat   = "Maximum"
         }
