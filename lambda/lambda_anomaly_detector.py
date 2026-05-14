@@ -54,6 +54,13 @@ class AnomalyCheck:
                 f"ALERT severity requires z_score >= {ALERT_THRESHOLD}, "
                 f"got {self.z_score}"
             )
+        if self.severity == "WARNING" and not (
+            WARNING_THRESHOLD <= self.z_score < ALERT_THRESHOLD
+        ):
+            raise ValueError(
+                f"WARNING severity requires {WARNING_THRESHOLD} <= z_score "
+                f"< {ALERT_THRESHOLD}, got {self.z_score}"
+            )
         if self.severity == "NORMAL" and self.z_score >= WARNING_THRESHOLD:
             raise ValueError(
                 f"NORMAL severity requires z_score < {WARNING_THRESHOLD}, "
@@ -181,6 +188,10 @@ def parse_stats_results(result_set: dict) -> list[dict[str, Any]]:
     for row in rows[1:]:
         data = row.get("Data", [])
         if len(data) < 6:
+            logger.warning(
+                "Skipping row with insufficient columns",
+                extra={"column_count": len(data), "row_data": str(data)},
+            )
             continue
         try:
             sample_count = int(data[4]["VarCharValue"])
@@ -265,8 +276,12 @@ def _publish_anomaly_metrics(
     except ClientError as e:
         logger.error(
             "Failed to publish anomaly metrics",
-            extra={"error_code": e.response["Error"]["Code"]},
+            extra={
+                "error_code": e.response["Error"]["Code"],
+                "namespace": METRIC_NAMESPACE,
+            },
         )
+        raise
 
 
 def _send_alert_notification(
@@ -305,8 +320,13 @@ def _send_alert_notification(
     except ClientError as e:
         logger.error(
             "Failed to send anomaly alert notification",
-            extra={"error_code": e.response["Error"]["Code"]},
+            extra={
+                "error_code": e.response["Error"]["Code"],
+                "topic_arn": topic_arn,
+                "alert_count": len(alerts),
+            },
         )
+        raise
 
 
 def lambda_handler(event: dict, context: Any) -> dict:

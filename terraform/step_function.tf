@@ -432,11 +432,17 @@ resource "aws_sfn_state_machine" "etl" {
         Catch = [
           {
             ErrorEquals = ["States.ALL"],
-            Next        = "Anomaly-Detection-Failed",
+            Next        = "Anomaly-Detection-Error-Handled",
             ResultPath  = "$.errorInfo"
           }
         ],
         End = true
+      },
+      Anomaly-Detection-Error-Handled = {
+        Type   = "Pass",
+        Result = "Anomaly detection failed but pipeline continues",
+        ResultPath = "$.anomaly_detection_note",
+        End    = true
       },
       Ingestion-Failed = {
         Type      = "Fail",
@@ -483,11 +489,6 @@ resource "aws_sfn_state_machine" "etl" {
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"
       },
-      Anomaly-Detection-Failed = {
-        Type      = "Fail",
-        ErrorPath = "$.errorInfo.Error",
-        CausePath = "$.errorInfo.Cause"
-      }
     }
   })
 

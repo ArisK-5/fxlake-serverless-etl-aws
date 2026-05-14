@@ -10,6 +10,7 @@ from lambda_anomaly_detector import (
     ALERT_THRESHOLD,
     WARNING_THRESHOLD,
     AnomalyCheck,
+    _build_checks,
     build_economic_stats_query,
     build_fx_stats_query,
     classify_severity,
@@ -124,6 +125,71 @@ class TestAnomalyCheck:
                 stddev_value=0.02,
                 sample_count=30,
             )
+
+    def test_rejects_warning_with_alert_z_score(self):
+        with pytest.raises(ValueError, match="WARNING severity requires"):
+            AnomalyCheck(
+                domain="fx_rates",
+                entity="EUR/USD",
+                z_score=3.5,
+                severity="WARNING",
+                latest_value=1.14,
+                mean_value=1.07,
+                stddev_value=0.02,
+                sample_count=30,
+            )
+
+    def test_rejects_warning_with_normal_z_score(self):
+        with pytest.raises(ValueError, match="WARNING severity requires"):
+            AnomalyCheck(
+                domain="fx_rates",
+                entity="EUR/USD",
+                z_score=1.5,
+                severity="WARNING",
+                latest_value=1.10,
+                mean_value=1.07,
+                stddev_value=0.02,
+                sample_count=30,
+            )
+
+    def test_boundary_z_score_at_alert_threshold(self):
+        check = AnomalyCheck(
+            domain="fx_rates",
+            entity="EUR/USD",
+            z_score=ALERT_THRESHOLD,
+            severity="ALERT",
+            latest_value=1.13,
+            mean_value=1.07,
+            stddev_value=0.02,
+            sample_count=30,
+        )
+        assert check.severity == "ALERT"
+
+    def test_boundary_z_score_at_warning_threshold(self):
+        check = AnomalyCheck(
+            domain="fx_rates",
+            entity="EUR/USD",
+            z_score=WARNING_THRESHOLD,
+            severity="WARNING",
+            latest_value=1.11,
+            mean_value=1.07,
+            stddev_value=0.02,
+            sample_count=30,
+        )
+        assert check.severity == "WARNING"
+
+    def test_boundary_z_score_just_below_warning(self):
+        check = AnomalyCheck(
+            domain="fx_rates",
+            entity="EUR/USD",
+            z_score=1.999,
+            severity="NORMAL",
+            latest_value=1.10,
+            mean_value=1.07,
+            stddev_value=0.02,
+            sample_count=30,
+        )
+        assert check.severity == "NORMAL"
 
 
 class TestComputeZScore:
@@ -290,6 +356,82 @@ class TestParseStatsResults:
         }
         parsed = parse_stats_results(result_set)
         assert len(parsed) == 0
+
+
+class TestBuildChecks:
+    def test_builds_correct_checks(self):
+        stats = [
+            {
+                "entity": "USD",
+                "latest_value": 1.15,
+                "mean_value": 1.07,
+                "stddev_value": 0.02,
+                "sample_count": 30,
+                "z_score": 4.0,
+            },
+            {
+                "entity": "GBP",
+                "latest_value": 0.86,
+                "mean_value": 0.85,
+                "stddev_value": 0.01,
+                "sample_count": 28,
+                "z_score": 1.0,
+            },
+        ]
+        checks = _build_checks("fx_rates", stats)
+        assert len(checks) == 2
+        assert checks[0].domain == "fx_rates"
+        assert checks[0].entity == "USD"
+        assert checks[0].severity == "ALERT"
+        assert checks[1].severity == "NORMAL"
+
+    def test_empty_stats(self):
+        checks = _build_checks("fx_rates", [])
+        assert checks == []
+
+    def test_warning_severity(self):
+        stats = [
+            {
+                "entity": "JPY",
+                "latest_value": 155.0,
+                "mean_value": 150.0,
+                "stddev_value": 2.0,
+                "sample_count": 30,
+                "z_score": 2.5,
+            },
+        ]
+        checks = _build_checks("fx_rates", stats)
+        assert len(checks) == 1
+        assert checks[0].severity == "WARNING"
+
+    def test_multi_domain(self):
+        fx_stats = [
+            {
+                "entity": "USD",
+                "latest_value": 1.15,
+                "mean_value": 1.07,
+                "stddev_value": 0.02,
+                "sample_count": 30,
+                "z_score": 4.0,
+            },
+        ]
+        econ_stats = [
+            {
+                "entity": "UNRATE",
+                "latest_value": 8.5,
+                "mean_value": 4.0,
+                "stddev_value": 1.0,
+                "sample_count": 30,
+                "z_score": 4.5,
+            },
+        ]
+        fx_checks = _build_checks("fx_rates", fx_stats)
+        econ_checks = _build_checks("economic_indicators", econ_stats)
+        all_checks = fx_checks + econ_checks
+        assert len(all_checks) == 2
+        assert all_checks[0].domain == "fx_rates"
+        assert all_checks[1].domain == "economic_indicators"
+        assert all(c.severity == "ALERT" for c in all_checks)
 
 
 def _make_athena_mock(result_set: dict) -> MagicMock:
@@ -540,7 +682,7 @@ class TestLambdaHandlerErrors:
             lambda_handler({}, context)
 
     @patch("lambda_anomaly_detector.boto3")
-    def test_metric_publish_error_does_not_abort(self, mock_boto3):
+    def test_metric_publish_error_propagates(self, mock_boto3):
         athena = MagicMock()
         athena.start_query_execution.return_value = {"QueryExecutionId": "qid"}
         athena.get_query_execution.return_value = {
@@ -563,8 +705,8 @@ class TestLambdaHandlerErrors:
         context = MagicMock()
         context.aws_request_id = "req-metric-err"
 
-        result = lambda_handler({}, context)
-        assert result["status"] == "PASSED"
+        with pytest.raises(ClientError):
+            lambda_handler({}, context)
 
 
 class TestAthenaPolling:
@@ -674,7 +816,7 @@ class TestPublishMetrics:
         _publish_anomaly_metrics(cw, [])
         cw.put_metric_data.assert_called_once()
 
-    def test_publish_client_error_logged_not_raised(self):
+    def test_publish_client_error_propagates(self):
         from lambda_anomaly_detector import _publish_anomaly_metrics
 
         cw = MagicMock()
@@ -682,7 +824,8 @@ class TestPublishMetrics:
             {"Error": {"Code": "InternalServiceError", "Message": "fail"}},
             "PutMetricData",
         )
-        _publish_anomaly_metrics(cw, [])
+        with pytest.raises(ClientError):
+            _publish_anomaly_metrics(cw, [])
 
 
 class TestSNSNotification:
@@ -719,7 +862,7 @@ class TestSNSNotification:
         _send_alert_notification(sns, None, checks)
         sns.publish.assert_not_called()
 
-    def test_sns_client_error_logged_not_raised(self):
+    def test_sns_client_error_propagates(self):
         from lambda_anomaly_detector import _send_alert_notification
 
         sns = MagicMock()
@@ -730,4 +873,5 @@ class TestSNSNotification:
         checks = [
             AnomalyCheck("fx_rates", "USD", 3.5, "ALERT", 1.15, 1.07, 0.02, 30),
         ]
-        _send_alert_notification(sns, "arn:aws:sns:us-east-1:123:alerts", checks)
+        with pytest.raises(ClientError):
+            _send_alert_notification(sns, "arn:aws:sns:us-east-1:123:alerts", checks)
