@@ -439,10 +439,10 @@ resource "aws_sfn_state_machine" "etl" {
         End = true
       },
       Anomaly-Detection-Error-Handled = {
-        Type   = "Pass",
-        Result = "Anomaly detection failed but pipeline continues",
+        Type       = "Pass",
+        Result     = "Anomaly detection failed but pipeline continues",
         ResultPath = "$.anomaly_detection_note",
-        End    = true
+        End        = true
       },
       Ingestion-Failed = {
         Type      = "Fail",
