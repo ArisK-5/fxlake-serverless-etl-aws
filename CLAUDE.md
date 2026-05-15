@@ -70,10 +70,11 @@ make dbt-docs             # Generate dbt documentation
 
 ### Diagram Generation
 
-Architecture and workflow diagrams are generated via Python scripts:
+Architecture and CI/CD workflow diagrams are maintained as Draw.io files in `assets/diagrams/`. Edit them in the [Draw.io desktop app](https://www.drawio.com) and export to PNG.
+
+The dbt lineage diagram is generated from `dbt/target/manifest.json`:
 ```bash
-uv run assets/cloud-architecture.py
-uv run assets/dev-workflow.py
+uv run assets/dbt-lineage.py
 ```
 
 ## Architecture
@@ -92,6 +93,29 @@ The pipeline is orchestrated by **Step Functions** and triggered daily by **Even
 10. **Athena (Athena-Sample-Query)** — runs a data freshness query (`SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates`) via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
 11. **Lambda (Validation)** — parses `latest_date` and `total_records` from Athena results, checks if `latest_date` is within 2 days (freshness threshold), publishes `EmptyQueryResults` and `StaleFXData` CloudWatch metrics
 12. **Lambda (Cross-Source-Validation)** — compares FX rates from Frankfurter and ECB for consistency: rate deviation (>1% threshold), temporal alignment (>1 day gap), and volume distribution (>50% deviation from mean). Publishes `CrossSource_rate_consistency`, `CrossSource_temporal_consistency`, `CrossSource_volume_consistency`, and `CrossSourceDiscrepancy` metrics to CloudWatch
+
+### Self-Healing Mechanisms
+
+Two autonomous Lambdas detect and recover from pipeline failures without manual intervention:
+
+**DLQ Auto-Retry** (`lambda/lambda_dlq_auto_retry.py`):
+- Triggered by SQS messages from the pipeline DLQ (batch size 1, partial batch failure reporting)
+- Classifies failures as transient (ThrottlingException, TooManyRequestsException, ServiceUnavailable, Lambda.ServiceException, Lambda.AWSLambdaException, States.Timeout, States.TaskFailed, InternalError, ServiceException) or permanent
+- Transient failures with `ApproximateReceiveCount < MAX_RETRIES(3)`: replays execution via `sfn.start_execution`, returns empty `batchItemFailures`
+- Permanent failures or max retries exceeded: publishes SNS alert with error details, returns message in `batchItemFailures`
+- Publishes `DLQRetryAttempt` and `DLQPermanentFailure` CloudWatch metrics to `FXLake/SelfHealing` namespace
+- Frozen dataclass `FailureClassification`: `is_transient`, `error_code`, `retry_count` with `__post_init__` validation
+- Env vars: `STATE_MACHINE_ARN`, `SNS_TOPIC_ARN` (required); `MAX_RETRIES=3`, `METRIC_NAMESPACE` (optional)
+
+**Stale Data Auto-Backfill** (`lambda/lambda_stale_data_backfill.py`):
+- Triggered hourly by EventBridge (`rate(1 hour)`)
+- Scans DynamoDB for all 3 sources (`frankfurter`, `ecb`, `fred`), checks `last_processed_date` against `STALE_THRESHOLD_DAYS(2)`
+- If stale: triggers Step Functions backfill execution with `{"mode": "backfill", "start_date": ..., "end_date": ...}`
+- Missing DynamoDB entries treated as stale (defensive — handles first-run or corrupted state)
+- Execution name: `backfill-{source}-{start}-{end}-{hash[:8]}`
+- Publishes `StaleDataDetected` and `BackfillTriggered` CloudWatch metrics to `FXLake/SelfHealing` namespace
+- Frozen dataclass `StaleSource`: `source`, `last_date`, `gap_days`, `backfill_start`, `backfill_end` with `__post_init__` validation
+- Env vars: `STATE_TABLE`, `STATE_MACHINE_ARN` (required); `STALE_THRESHOLD_DAYS=2`, `PIPELINE_ID=fxlake`, `METRIC_NAMESPACE` (optional)
 
 ### Multi-Source Ingestion
 
@@ -230,7 +254,8 @@ dbt/
 |------|----------------|
 | `step_function.tf` | ASL definition for 12-stage orchestration: Parallel-Ingestion (3 branches) → Check-New-Data → Write-FX-Iceberg → Write-Economic-Iceberg → dbt-Transform (CodeBuild .sync) → Check-Backfill-Mode → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation → Cross-Source-Validation, with Retry/Catch + Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. `Check-Backfill-Mode` skips Update-State steps for backfill executions to protect the incremental watermark. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
-| `lambda.tf` | Frankfurter + validation Lambdas (inline), ECB + FRED Lambdas (via `modules/lambda_function`), Iceberg writer + data validator Lambdas, EventBridge rule/target (→ Step Functions) |
+| `lambda.tf` | Frankfurter + validation Lambdas (inline), ECB + FRED Lambdas (via `modules/lambda_function`), Iceberg writer + data validator Lambdas, DLQ auto-retry + stale data backfill Lambdas, EventBridge rule/target (→ Step Functions), SQS event source mapping, hourly EventBridge rule |
+| `dlq.tf` | SQS DLQ + EventBridge failure capture rule + queue policy + CloudWatch alarm |
 | `codebuild.tf` | CodeBuild project for dbt execution (fxlake-dbt-transform), S3 source from packaged dbt project, buildspec.yml |
 | `athena.tf` | Athena database, table schema, and results bucket config |
 | `iam.tf` | All IAM roles/policies (least-privilege per service) |
@@ -323,7 +348,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 493 tests (461 unit + 32 integration), 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 621 tests (589 unit + 32 integration), 97% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
@@ -380,6 +405,11 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 | `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
 | `test_structured_logging.py` | Structured logging — JSON formatter, request ID filter, configure_logger, inject_request_id, Timer (18 tests) |
 | `test_cross_validator.py` | Cross-source validation — query builders, result parsers, rate/temporal/volume checks, metric publishing, invariant validation, defensive parsing, Athena polling (46 tests) |
+| `test_iceberg_writer.py` | Iceberg writer — domain routing, batched INSERT, quality checks, Athena polling, quarantine flow (75 tests) |
+| `test_iceberg_maintenance.py` | Iceberg maintenance — OPTIMIZE, VACUUM, Athena polling, error handling (14 tests) |
+| `test_anomaly_detector.py` | Anomaly detection — Z-score calculation, CloudWatch metrics, threshold checks (60 tests) |
+| `test_lambda_dlq_auto_retry.py` | DLQ auto-retry — failure classification, replay execution, transient/permanent routing, SNS alerts, batch failures, metric error paths (40 tests) |
+| `test_lambda_stale_data_backfill.py` | Stale data backfill — staleness detection, backfill triggering, DynamoDB scanning, metric publishing, validation edge cases (22 tests) |
 | `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, validation Athena errors, backfill pipeline (25 tests) |
 | `integration/test_multi_source.py` | Multi-source parallel ingestion, quality reports (7 tests) |
 
@@ -416,7 +446,7 @@ uv run ruff check . --fix  # auto-fix
 
 ## Architecture Decision Records
 
-v2 ADRs live in `docs/adr/` and document foundational choices:
+ADRs live in `docs/adr/` and document foundational choices:
 
 | ADR | Decision | Key trade-off |
 |-----|----------|---------------|
@@ -424,6 +454,9 @@ v2 ADRs live in `docs/adr/` and document foundational choices:
 | [ADR-002](docs/adr/ADR-002-dynamodb-for-pipeline-state.md) | DynamoDB for pipeline state | Atomic writes + composite key vs overkill for 3 records |
 | [ADR-003](docs/adr/ADR-003-parallel-ingestion-step-functions.md) | Parallel ingestion via Step Functions | 3x faster ingestion vs all-or-nothing failure mode |
 | [ADR-004](docs/adr/ADR-004-data-quality-in-glue.md) | Data quality checks in Glue | Single-pass efficiency vs coupled deployment |
+| [ADR-005](docs/adr/ADR-005-apache-iceberg-open-table-format.md) | Apache Iceberg open table format | ACID + schema evolution + time travel vs write path complexity |
+| [ADR-006](docs/adr/ADR-006-dbt-core-transformation-layer.md) | dbt Core transformation layer | Modular SQL models + lineage vs additional tool in stack |
+| [ADR-007](docs/adr/ADR-007-athena-ctas-over-glue-spark.md) | Athena CTAS over Glue Spark | Near-zero cost at <1 MB/day vs SQL-only transformations |
 
 **Note:** ADR-001 (Polars) and ADR-004 (quality in Glue) are superseded by v3 — Glue Python Shell has been removed; the Iceberg writer Lambda and dbt Core now handle writes and transforms. See `docs/planning/decision_log_v3.md` for the full v3 decision log.
 

@@ -143,6 +143,16 @@ variable "lambda_anomaly_detector_name" {
   default = "fxlake-anomaly-detector-lambda"
 }
 
+variable "lambda_dlq_auto_retry_name" {
+  type    = string
+  default = "fxlake-dlq-auto-retry"
+}
+
+variable "lambda_stale_data_backfill_name" {
+  type    = string
+  default = "fxlake-stale-data-backfill"
+}
+
 variable "deployer_role_arn" {
   description = "IAM role ARN used by CI/CD (GitHub Actions OIDC) to deploy infrastructure"
   type        = string

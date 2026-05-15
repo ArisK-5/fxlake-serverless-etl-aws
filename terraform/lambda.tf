@@ -367,6 +367,146 @@ module "anomaly_detector" {
   }
 }
 
+module "dlq_auto_retry" {
+  source = "./modules/lambda_function"
+
+  function_name = var.lambda_dlq_auto_retry_name
+  description   = "Auto-retries transient DLQ failures, alerts on permanent failures"
+  handler       = "lambda_dlq_auto_retry.lambda_handler"
+  filename      = "../lambda/lambda_dlq_auto_retry.zip"
+  timeout       = 60
+
+  env_vars = {
+    STATE_MACHINE_ARN = aws_sfn_state_machine.etl.arn
+    SNS_TOPIC_ARN     = aws_sns_topic.alerts.arn
+    MAX_RETRIES       = "3"
+    METRIC_NAMESPACE  = "${var.metric_namespace_prefix}/SelfHealing"
+  }
+
+  additional_policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = aws_sqs_queue.pipeline_dlq.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["states:StartExecution"]
+        Resource = aws_sfn_state_machine.etl.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sns:Publish"]
+        Resource = aws_sns_topic.alerts.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.metric_namespace_prefix}/SelfHealing"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    component = "self-healing"
+    source    = "dlq-auto-retry"
+  }
+}
+
+resource "aws_lambda_event_source_mapping" "dlq_auto_retry" {
+  event_source_arn                   = aws_sqs_queue.pipeline_dlq.arn
+  function_name                      = module.dlq_auto_retry.function_arn
+  batch_size                         = 1
+  function_response_types            = ["ReportBatchItemFailures"]
+  maximum_batching_window_in_seconds = 0
+}
+
+module "stale_data_backfill" {
+  source = "./modules/lambda_function"
+
+  function_name = var.lambda_stale_data_backfill_name
+  description   = "Detects stale data sources and auto-triggers backfill executions"
+  handler       = "lambda_stale_data_backfill.lambda_handler"
+  filename      = "../lambda/lambda_stale_data_backfill.zip"
+  timeout       = 60
+
+  env_vars = {
+    STATE_TABLE          = aws_dynamodb_table.pipeline_state.name
+    STATE_MACHINE_ARN    = aws_sfn_state_machine.etl.arn
+    PIPELINE_ID          = "fxlake"
+    STALE_THRESHOLD_DAYS = "2"
+    METRIC_NAMESPACE     = "${var.metric_namespace_prefix}/SelfHealing"
+  }
+
+  additional_policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem"
+        ]
+        Resource = aws_dynamodb_table.pipeline_state.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["states:StartExecution"]
+        Resource = aws_sfn_state_machine.etl.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.metric_namespace_prefix}/SelfHealing"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    component = "self-healing"
+    source    = "stale-data-backfill"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "stale_data_check" {
+  name                = "fxlake-stale-data-check"
+  description         = "Hourly check for stale data sources"
+  schedule_expression = "rate(1 hour)"
+
+  tags = {
+    component = "self-healing"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "stale_data_backfill" {
+  rule      = aws_cloudwatch_event_rule.stale_data_check.name
+  target_id = "stale-data-backfill"
+  arn       = module.stale_data_backfill.function_arn
+}
+
+resource "aws_lambda_permission" "stale_data_eventbridge" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.stale_data_backfill.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.stale_data_check.arn
+}
+
 resource "aws_lambda_function" "check_query_results" {
   function_name    = var.lambda_validation_name
   description      = "Checks Athena query results and publishes custom CloudWatch metric"
