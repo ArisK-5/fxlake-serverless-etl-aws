@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +22,7 @@ logger = configure_logger("dlq-auto-retry")
 STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
 SNS_TOPIC_ARN = os.environ["SNS_TOPIC_ARN"]
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
+MAX_MESSAGE_AGE_HOURS = int(os.environ.get("MAX_MESSAGE_AGE_HOURS", "24"))
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "FXLake/SelfHealing")
 
 SFN_INPUT_MAX_BYTES = 262_144
@@ -49,6 +51,14 @@ class FailureClassification:
             raise ValueError("error_code cannot be empty")
         if self.retry_count < 0:
             raise ValueError("retry_count cannot be negative")
+
+
+def is_message_stale(record: dict[str, Any]) -> bool:
+    sent_ts_ms = int(record.get("attributes", {}).get("SentTimestamp", "0"))
+    if sent_ts_ms == 0:
+        return False
+    age_hours = (time.time() - sent_ts_ms / 1000) / 3600
+    return age_hours > MAX_MESSAGE_AGE_HOURS
 
 
 def classify_failure(detail: dict, receive_count: int) -> FailureClassification:
@@ -163,6 +173,18 @@ def lambda_handler(event: dict, context: Any) -> dict:
         receive_count = int(record.get("attributes", {}).get(
             "ApproximateReceiveCount", "1"
         ))
+
+        if is_message_stale(record):
+            logger.info(
+                "Discarding stale DLQ message",
+                extra={
+                    "message_id": message_id,
+                    "sent_timestamp": record.get("attributes", {}).get("SentTimestamp"),
+                    "max_age_hours": MAX_MESSAGE_AGE_HOURS,
+                },
+            )
+            _publish_metric(cloudwatch_client, "DLQStaleMessageDiscarded")
+            continue
 
         try:
             body = json.loads(record["body"])
