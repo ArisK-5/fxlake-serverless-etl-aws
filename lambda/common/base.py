@@ -298,8 +298,7 @@ class BaseIngestionHandler(ABC):
         """
         last_processed = self.get_last_processed()
         fetch_start = (date.fromisoformat(last_processed) + timedelta(days=1)).isoformat()
-        today = date.today().isoformat()
-        fetch_end = min(today, self.end_date)  # ISO format: string comparison == date comparison
+        fetch_end = date.today().isoformat()
 
         if fetch_start > fetch_end:
             logger.info(

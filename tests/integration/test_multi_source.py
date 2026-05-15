@@ -7,6 +7,7 @@ writer correctly routes files to the appropriate domain with quality reports.
 
 import json
 import os
+from datetime import date
 from typing import Any
 from unittest.mock import patch
 
@@ -163,7 +164,7 @@ class TestParallelIngestion:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER,
             status=200,
         )
@@ -197,7 +198,7 @@ class TestParallelIngestion:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER,
             status=200,
         )
@@ -239,7 +240,7 @@ class TestParallelIngestion:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER,
             status=200,
         )
@@ -281,7 +282,7 @@ class TestIcebergMultiSchema:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER,
             status=200,
         )
@@ -321,7 +322,7 @@ class TestIcebergMultiSchema:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER,
             status=200,
         )
@@ -357,7 +358,7 @@ class TestIcebergMultiSchema:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER,
             status=200,
         )
@@ -398,7 +399,7 @@ class TestIcebergMultiSchema:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER,
             status=200,
         )

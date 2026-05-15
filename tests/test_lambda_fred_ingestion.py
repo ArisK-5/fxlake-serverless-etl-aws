@@ -1,6 +1,7 @@
 """Tests for FREDHandler and its lambda_handler entry point."""
 import json
 import os
+from datetime import date
 
 import lambda_fred_ingestion as fred_module
 import pytest
@@ -315,13 +316,13 @@ class TestLambdaHandlerIncremental:
     def test_no_new_data_returns_correct_status(self, aws_mock, monkeypatch):
         """When already caught up, returns no_new_data with end_date for Step Functions."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
-        # Set last_processed_date to END_DATE so there's nothing new
+        today = date.today().isoformat()
         aws_mock["dynamodb"].put_item(
             TableName=TEST_STATE_TABLE,
             Item={
                 "pipeline_id": {"S": "fxlake"},
                 "source": {"S": "fred"},
-                "last_processed_date": {"S": "2024-01-31"},
+                "last_processed_date": {"S": today},
             },
         )
 
