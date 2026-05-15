@@ -178,7 +178,7 @@ class TestFullPipelineFlow:
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
@@ -414,7 +414,7 @@ class TestDynamoDBStateManagement:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-15..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-15..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
@@ -466,7 +466,7 @@ class TestDynamoDBStateManagement:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-11..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
@@ -511,7 +511,7 @@ class TestCloudWatchMetrics:
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
@@ -616,7 +616,7 @@ class TestPipelineSagaPattern:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-11..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
@@ -645,7 +645,7 @@ class TestPipelineSagaPattern:
                 Item={
                     "pipeline_id": {"S": "fxlake"},
                     "source": {"S": source},
-                    "last_processed_date": {"S": "2024-01-31"},
+                    "last_processed_date": {"S": date.today().isoformat()},
                 },
             )
 
@@ -706,7 +706,7 @@ class TestCriticalQualityFailure:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-11..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_BAD_RATES,
             status=200,
         )
@@ -734,7 +734,7 @@ class TestCriticalQualityFailure:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_BAD_RATES,
             status=200,
         )
@@ -759,7 +759,7 @@ class TestAPIErrorPropagation:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json={"error": "internal server error"},
             status=500,
         )
@@ -821,7 +821,7 @@ class TestAPIErrorPropagation:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-11..{date.today().isoformat()}",
             json={"error": "server error"},
             status=500,
         )
@@ -861,7 +861,7 @@ class TestIcebergWriteFailureSagaRollback:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-11..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )

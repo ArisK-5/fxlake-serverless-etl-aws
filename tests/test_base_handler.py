@@ -239,14 +239,14 @@ class TestIncrementalIngest:
         assert result["status"] == "ok"
         assert result["start_date"] == "2024-01-02"
 
-    def test_no_new_data_when_last_processed_equals_end_date(self, aws_mock, monkeypatch):
+    def test_no_new_data_when_last_processed_equals_today(self, aws_mock, monkeypatch):
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         aws_mock["dynamodb"].put_item(
             TableName=TEST_STATE_TABLE,
             Item={
                 "pipeline_id": {"S": "fxlake"},
                 "source": {"S": "test"},
-                "last_processed_date": {"S": "2024-01-31"},  # == END_DATE
+                "last_processed_date": {"S": date.today().isoformat()},
             },
         )
         handler = ConcreteHandler()
@@ -400,10 +400,10 @@ class TestRun:
 # _incremental_ingest — fetch-end date capping
 # ---------------------------------------------------------------------------
 class TestIncrementalIngestDateCapping:
-    def test_fetch_end_is_capped_at_today_when_end_date_is_future(
+    def test_fetch_end_is_today_regardless_of_end_date(
         self, aws_mock, monkeypatch
     ):
-        """fetch_end = min(today, END_DATE) — must not request future dates from APIs."""
+        """Incremental mode always fetches up to today, ignoring END_DATE."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         monkeypatch.setenv("END_DATE", "2099-12-31")
         handler = ConcreteHandler()
@@ -414,15 +414,15 @@ class TestIncrementalIngestDateCapping:
         assert result["end_date"] == today
         assert result["status"] == "ok"
 
-    def test_fetch_end_uses_end_date_when_end_date_is_past(self, aws_mock, monkeypatch):
-        """When END_DATE is in the past fetch_end should equal END_DATE, not today."""
+    def test_fetch_end_is_today_when_end_date_is_past(self, aws_mock, monkeypatch):
+        """Incremental mode fetches up to today even when END_DATE is in the past."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
-        # END_DATE defaults to 2024-01-31 from conftest; today is well past that
         handler = ConcreteHandler()
 
         result = handler._incremental_ingest()
 
-        assert result["end_date"] == "2024-01-31"
+        assert result["end_date"] == date.today().isoformat()
+        assert result["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
