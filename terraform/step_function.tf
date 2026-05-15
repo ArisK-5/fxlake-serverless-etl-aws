@@ -223,9 +223,17 @@ resource "aws_sfn_state_machine" "etl" {
         Comment = "Skip state updates for backfill executions to protect the incremental watermark.",
         Choices = [
           {
-            Variable     = "$.parallel_results.fx.Payload.mode",
-            StringEquals = "backfill",
-            Next         = "Athena-Sample-Query"
+            And = [
+              {
+                Variable  = "$.parallel_results.fx.Payload.mode",
+                IsPresent = true
+              },
+              {
+                Variable     = "$.parallel_results.fx.Payload.mode",
+                StringEquals = "backfill"
+              }
+            ],
+            Next = "Athena-Sample-Query"
           }
         ],
         Default = "Lambda-Update-FX-State"
