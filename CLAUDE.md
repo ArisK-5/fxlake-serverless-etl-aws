@@ -70,10 +70,11 @@ make dbt-docs             # Generate dbt documentation
 
 ### Diagram Generation
 
-Architecture and workflow diagrams are generated via Python scripts:
+Architecture and CI/CD workflow diagrams are maintained as Draw.io files in `assets/diagrams/`. Edit them in the [Draw.io desktop app](https://www.drawio.com) and export to PNG.
+
+The dbt lineage diagram is generated from `dbt/target/manifest.json`:
 ```bash
-uv run assets/cloud-architecture.py
-uv run assets/dev-workflow.py
+uv run assets/dbt-lineage.py
 ```
 
 ## Architecture

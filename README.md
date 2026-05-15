@@ -12,7 +12,7 @@ Terraform · S3 · Lambda · Athena · Apache Iceberg · dbt Core · CodeBuild �
 - [Overview](#overview)
   - [Repo Structure](#repo-structure)
   - [Cloud Architecture](#cloud-architecture)
-  - [Development Workflow](#development-workflow)
+  - [CI/CD Workflow](#cicd-workflow)
   - [Features](#features)
   - [Skills Demonstrated](#skills-demonstrated)
 - [Getting Started](#getting-started)
@@ -36,72 +36,104 @@ Terraform · S3 · Lambda · Athena · Apache Iceberg · dbt Core · CodeBuild �
 │   ├── ci.yml                              # PR checks: ruff + pytest + terraform validate
 │   └── deploy.yml                          # Deploy: terraform plan → apply (OIDC auth)
 ├── assets/
-│   ├── cloud-architecture.py               # Architecture diagram generator
-│   ├── dev-workflow.py                     # Dev workflow diagram generator
-│   ├── diagrams/                           # Generated PNG diagrams
+│   ├── dbt-lineage.py                      # dbt lineage diagram generator (from manifest.json)
+│   ├── diagrams/                           # Architecture & workflow diagrams (Draw.io + PNG)
 │   └── icons/                              # Custom diagram icons
 ├── dbt/
-│   ├── models/staging/                     # Dedup views (stg_fx_rates, stg_economic_indicators)
-│   ├── models/marts/                       # Iceberg tables (fct_fx_rates, fct_economic_indicators)
-│   ├── tests/generic/                      # Custom generic tests (positive_values)
-│   └── macros/                             # Quality report macro
+│   ├── buildspec.yml                       # CodeBuild build specification
+│   ├── dbt_project.yml                     # dbt project config (profile, materializations)
+│   ├── packages.yml                        # dbt package dependencies (dbt_utils)
+│   ├── profiles.yml                        # Athena adapter config (env vars)
+│   ├── macros/
+│   │   └── generate_quality_report.sql     # quality.py → dbt test mapping macro
+│   ├── models/
+│   │   ├── staging/                        # Dedup views (stg_fx_rates, stg_economic_indicators)
+│   │   └── marts/                          # Iceberg tables (fct_fx_rates, fct_economic_indicators)
+│   ├── seeds/                              # Seed data (placeholder)
+│   └── tests/
+│       ├── generic/
+│       │   └── test_positive_values.sql    # Custom generic test
+│       ├── cross_source_rate_consistency.sql
+│       ├── cross_source_temporal_alignment.sql
+│       ├── unique_fct_fx_rates_keys.sql
+│       └── unique_fct_economic_indicators_keys.sql
 ├── docs/
 │   ├── adr/                                # Architecture Decision Records (ADR-001–007)
-│   └── planning/                           # Project planning docs
+│   ├── data_dictionary.md                  # Data dictionary for all tables
+│   ├── planning/                           # Project planning docs
+│   └── queries/
+│       └── audit_trail.sql                 # Audit trail query examples
 ├── lambda/
 │   ├── common/
-│   │   ├── base.py                        # BaseIngestionHandler (shared logic)
-│   │   ├── logging.py                     # Structured JSON logging + Timer
-│   │   └── quality.py                     # Data quality check framework
-│   ├── lambda_fx_ingestion.py             # Frankfurter API handler
-│   ├── lambda_ecb_ingestion.py            # ECB SDW API handler
-│   ├── lambda_fred_ingestion.py           # FRED API handler
-│   ├── lambda_iceberg_writer.py           # Athena INSERT INTO Iceberg tables
-│   ├── lambda_iceberg_maintenance.py      # OPTIMIZE + VACUUM scheduling
-│   ├── lambda_anomaly_detector.py         # Z-score anomaly detection
-│   ├── lambda_cross_source_validator.py   # Cross-source FX rate consistency
-│   ├── lambda_validation_function.py      # Athena result validation
-│   ├── lambda_dlq_auto_retry.py           # DLQ failure classification + replay
-│   ├── lambda_stale_data_backfill.py      # Hourly staleness check + backfill trigger
-│   ├── package_lambdas.sh                 # Lambda ZIP packaging script
-│   └── requirements.txt                   # Lambda runtime dependencies
+│   │   ├── __init__.py
+│   │   ├── base.py                         # BaseIngestionHandler (shared logic)
+│   │   ├── logging.py                      # Structured JSON logging + Timer
+│   │   ├── quality.py                      # Data quality check framework
+│   │   └── schema_validation.py            # JSON schema validation utilities
+│   ├── lambda_fx_ingestion.py              # Frankfurter API handler
+│   ├── lambda_ecb_ingestion.py             # ECB SDW API handler
+│   ├── lambda_fred_ingestion.py            # FRED API handler
+│   ├── lambda_iceberg_writer.py            # Athena INSERT INTO Iceberg tables
+│   ├── lambda_iceberg_maintenance.py       # OPTIMIZE + VACUUM scheduling
+│   ├── lambda_anomaly_detector.py          # Z-score anomaly detection
+│   ├── lambda_cross_validator.py           # Cross-source FX rate consistency
+│   ├── lambda_data_validator.py            # Data freshness validation
+│   ├── lambda_validation_function.py       # Athena result validation
+│   ├── lambda_dlq_auto_retry.py            # DLQ failure classification + replay
+│   ├── lambda_stale_data_backfill.py       # Hourly staleness check + backfill trigger
+│   ├── package_lambdas.sh                  # Lambda ZIP packaging script
+│   ├── requirements.txt                    # Lambda runtime dependencies
+│   └── requirements_iceberg_writer.txt     # Iceberg writer extra dependencies
+├── schemas/
+│   ├── raw/                                # JSON schemas for API responses
+│   └── processed/                          # JSON schemas for Iceberg table records
+├── scripts/
+│   └── replay_dlq.py                       # Manual DLQ replay utility
 ├── terraform/
-│   ├── bootstrap/main.tf                  # Remote state backend bootstrap
-│   ├── modules/lambda_function/           # Reusable Lambda module
-│   ├── step_function.tf                   # 12-stage Step Functions ASL
-│   ├── lambda.tf                          # Lambda definitions + EventBridge + SQS mapping
-│   ├── dlq.tf                             # SQS DLQ + EventBridge failure capture
-│   ├── dynamodb.tf                        # Pipeline state table
-│   ├── codebuild.tf                       # CodeBuild project for dbt execution
-│   ├── s3.tf                              # 5 S3 buckets (raw, processed, athena, cloudtrail, quarantine)
-│   ├── athena.tf                          # Iceberg table definitions + Glue Data Catalog
-│   ├── monitoring.tf                      # 11 CloudWatch alarms + dashboard
-│   ├── iam.tf                             # Least-privilege roles/policies
-│   ├── security.tf                        # S3 encryption + CloudTrail
-│   ├── variables.tf                       # All configurable inputs
-│   ├── outputs.tf                         # Exported values (ARNs, names)
-│   ├── versions.tf                        # Terraform + provider version constraints
-│   ├── providers.tf                       # AWS provider configuration
-│   └── backend.tf                         # Remote state backend (S3 + DynamoDB)
+│   ├── bootstrap/main.tf                   # Remote state backend bootstrap
+│   ├── modules/lambda_function/            # Reusable Lambda module
+│   ├── step_function.tf                    # 12-stage Step Functions ASL
+│   ├── lambda.tf                           # Lambda definitions + EventBridge + SQS mapping
+│   ├── dlq.tf                              # SQS DLQ + EventBridge failure capture
+│   ├── dynamodb.tf                         # Pipeline state table
+│   ├── codebuild.tf                        # CodeBuild project for dbt execution
+│   ├── s3.tf                               # 5 S3 buckets (raw, processed, athena, cloudtrail, quarantine)
+│   ├── athena.tf                           # Iceberg table definitions + Glue Data Catalog
+│   ├── iceberg.tf                          # Iceberg table format configuration
+│   ├── budget.tf                           # AWS Budgets ($10/month alerts)
+│   ├── monitoring.tf                       # 11 CloudWatch alarms + dashboard
+│   ├── iam.tf                              # Least-privilege roles/policies
+│   ├── security.tf                         # S3 encryption + CloudTrail
+│   ├── variables.tf                        # All configurable inputs
+│   ├── outputs.tf                          # Exported values (ARNs, names)
+│   ├── versions.tf                         # Terraform + provider version constraints
+│   ├── providers.tf                        # AWS provider configuration
+│   └── backend.tf                          # Remote state backend (S3 + DynamoDB)
 ├── tests/
-│   ├── conftest.py                        # Shared fixtures (moto mocks, env setup)
+│   ├── conftest.py                         # Shared fixtures (moto mocks, env setup)
 │   ├── integration/
-│   │   ├── test_pipeline_flow.py          # End-to-end pipeline tests (25 tests)
-│   │   └── test_multi_source.py           # Multi-source parallel ingestion (7 tests)
-│   ├── test_base_handler.py               # Base handler tests (55 tests)
-│   ├── test_lambda_fx_ingestion.py        # Frankfurter handler (19 tests)
-│   ├── test_lambda_ecb_ingestion.py       # ECB handler (20 tests)
-│   ├── test_lambda_fred_ingestion.py      # FRED handler (23 tests)
-│   ├── test_lambda_iceberg_writer.py      # Iceberg writer (38 tests)
-│   ├── test_lambda_iceberg_maintenance.py # Iceberg maintenance (15 tests)
-│   ├── test_lambda_anomaly_detector.py    # Anomaly detection (20 tests)
-│   ├── test_cross_validator.py            # Cross-source validation (46 tests)
-│   ├── test_data_quality.py               # Quality framework (29 tests)
-│   ├── test_lambda_validation.py          # Validation Lambda (16 tests)
-│   ├── test_structured_logging.py         # Logging module (18 tests)
-│   ├── test_lambda_dlq_auto_retry.py      # DLQ auto-retry (32 tests)
-│   └── test_lambda_stale_data_backfill.py # Stale data backfill (17 tests)
+│   │   ├── test_pipeline_flow.py           # End-to-end pipeline tests (25 tests)
+│   │   └── test_multi_source.py            # Multi-source parallel ingestion (7 tests)
+│   ├── test_base_handler.py                # Base handler tests (55 tests)
+│   ├── test_lambda_fx_ingestion.py         # Frankfurter handler (19 tests)
+│   ├── test_lambda_ecb_ingestion.py        # ECB handler (20 tests)
+│   ├── test_lambda_fred_ingestion.py       # FRED handler (23 tests)
+│   ├── test_iceberg_writer.py              # Iceberg writer (38 tests)
+│   ├── test_iceberg_maintenance.py         # Iceberg maintenance (15 tests)
+│   ├── test_anomaly_detector.py            # Anomaly detection (20 tests)
+│   ├── test_cross_validator.py             # Cross-source validation (46 tests)
+│   ├── test_data_quality.py                # Quality framework (29 tests)
+│   ├── test_data_validator.py              # Data validator (16 tests)
+│   ├── test_lambda_validation.py           # Validation Lambda (16 tests)
+│   ├── test_structured_logging.py          # Logging module (18 tests)
+│   ├── test_lambda_dlq_auto_retry.py       # DLQ auto-retry (32 tests)
+│   ├── test_lambda_stale_data_backfill.py  # Stale data backfill (17 tests)
+│   ├── test_schema_validation.py           # Schema validation tests
+│   ├── test_iam_policies.py                # IAM policy tests
+│   └── test_replay_dlq.py                  # DLQ replay script tests
 ├── CLAUDE.md
+├── LICENSE
+├── main.py                                 # Local pipeline entry point
 ├── Makefile
 ├── pyproject.toml
 └── README.md
@@ -123,7 +155,7 @@ The pipeline orchestrates a 12-stage serverless ETL flow using AWS services:
 - **IAM** enforces least-privilege access; **CloudTrail** records all API activity.
 - **Terraform** manages all 80+ resources across 14+ configuration files.
 
-Diagrams are generated with [Diagrams](https://diagrams.mingrammer.com) — see [cloud-architecture.py](assets/cloud-architecture.py) and [dev-workflow.py](assets/dev-workflow.py).
+Diagrams are maintained as [Draw.io](https://www.drawio.com) files in `assets/diagrams/`. The dbt lineage diagram is generated from `dbt/target/manifest.json` via [dbt-lineage.py](assets/dbt-lineage.py).
 
 ![FXLake — Cloud Architecture](/assets/diagrams/cloud-architecture.png "cloud architecture diagram")
 
@@ -131,9 +163,9 @@ Diagrams are generated with [Diagrams](https://diagrams.mingrammer.com) — see 
 
 ![FXLake — Step Function DAG](/assets/diagrams/step-function-dag.png "step function diagram")
 
-### Development Workflow
+### CI/CD Workflow
 
-![FXLake — Development Workflow](/assets/diagrams/dev-workflow.png "development workflow diagram")
+![FXLake — CI/CD Workflow](/assets/diagrams/cicd-workflow.png "CI/CD workflow diagram")
 
 ### Features
 

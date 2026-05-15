@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "boto3>=1.40.72",
-    "diagrams>=0.24.4",
+    "graphviz>=0.20",
 ]
 
 [dependency-groups]
