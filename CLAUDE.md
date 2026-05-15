@@ -100,7 +100,7 @@ Two autonomous Lambdas detect and recover from pipeline failures without manual 
 
 **DLQ Auto-Retry** (`lambda/lambda_dlq_auto_retry.py`):
 - Triggered by SQS messages from the pipeline DLQ (batch size 1, partial batch failure reporting)
-- Classifies failures as transient (ThrottlingException, TooManyRequestsException, ServiceUnavailable, Lambda.ServiceException, States.Timeout) or permanent
+- Classifies failures as transient (ThrottlingException, TooManyRequestsException, ServiceUnavailable, Lambda.ServiceException, Lambda.AWSLambdaException, States.Timeout, States.TaskFailed, InternalError, ServiceException) or permanent
 - Transient failures with `ApproximateReceiveCount < MAX_RETRIES(3)`: replays execution via `sfn.start_execution`, returns empty `batchItemFailures`
 - Permanent failures or max retries exceeded: publishes SNS alert with error details, returns message in `batchItemFailures`
 - Publishes `DLQRetryAttempt` and `DLQPermanentFailure` CloudWatch metrics to `FXLake/SelfHealing` namespace
@@ -348,7 +348,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 608 tests (576 unit + 32 integration), 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 621 tests (589 unit + 32 integration), 97% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
@@ -405,11 +405,11 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 | `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
 | `test_structured_logging.py` | Structured logging — JSON formatter, request ID filter, configure_logger, inject_request_id, Timer (18 tests) |
 | `test_cross_validator.py` | Cross-source validation — query builders, result parsers, rate/temporal/volume checks, metric publishing, invariant validation, defensive parsing, Athena polling (46 tests) |
-| `test_lambda_iceberg_writer.py` | Iceberg writer — domain routing, batched INSERT, quality checks, Athena polling, quarantine flow (38 tests) |
-| `test_lambda_iceberg_maintenance.py` | Iceberg maintenance — OPTIMIZE, VACUUM, Athena polling, error handling (15 tests) |
-| `test_lambda_anomaly_detector.py` | Anomaly detection — Z-score calculation, CloudWatch metrics, threshold checks (20 tests) |
-| `test_lambda_dlq_auto_retry.py` | DLQ auto-retry — failure classification, replay execution, transient/permanent routing, SNS alerts, batch failures (32 tests) |
-| `test_lambda_stale_data_backfill.py` | Stale data backfill — staleness detection, backfill triggering, DynamoDB scanning, metric publishing (17 tests) |
+| `test_iceberg_writer.py` | Iceberg writer — domain routing, batched INSERT, quality checks, Athena polling, quarantine flow (75 tests) |
+| `test_iceberg_maintenance.py` | Iceberg maintenance — OPTIMIZE, VACUUM, Athena polling, error handling (14 tests) |
+| `test_anomaly_detector.py` | Anomaly detection — Z-score calculation, CloudWatch metrics, threshold checks (60 tests) |
+| `test_lambda_dlq_auto_retry.py` | DLQ auto-retry — failure classification, replay execution, transient/permanent routing, SNS alerts, batch failures, metric error paths (40 tests) |
+| `test_lambda_stale_data_backfill.py` | Stale data backfill — staleness detection, backfill triggering, DynamoDB scanning, metric publishing, validation edge cases (22 tests) |
 | `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, validation Athena errors, backfill pipeline (25 tests) |
 | `integration/test_multi_source.py` | Multi-source parallel ingestion, quality reports (7 tests) |
 

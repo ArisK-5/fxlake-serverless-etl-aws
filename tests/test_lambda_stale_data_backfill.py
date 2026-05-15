@@ -15,6 +15,7 @@ os.environ.setdefault(
 from lambda_stale_data_backfill import (
     SOURCES,
     StaleSource,
+    _publish_metrics,
     check_source_staleness,
     lambda_handler,
     trigger_backfill_execution,
@@ -89,6 +90,26 @@ class TestStaleSource:
                 gap_days=-1,
                 backfill_start="2024-01-02",
                 backfill_end="2024-01-03",
+            )
+
+    def test_unknown_source_rejected(self):
+        with pytest.raises(ValueError, match="Unknown source"):
+            StaleSource(
+                source="invalid_source",
+                last_date="2024-01-01",
+                gap_days=5,
+                backfill_start="2024-01-02",
+                backfill_end="2024-01-06",
+            )
+
+    def test_backfill_start_after_end_rejected(self):
+        with pytest.raises(ValueError, match="backfill_start must be <= backfill_end"):
+            StaleSource(
+                source="ecb",
+                last_date="2024-01-01",
+                gap_days=5,
+                backfill_start="2024-01-10",
+                backfill_end="2024-01-05",
             )
 
 
@@ -374,3 +395,45 @@ class TestLambdaHandler:
             all_metrics.extend(m["MetricName"] for m in call.kwargs["MetricData"])
         assert "StaleDataDetected" in all_metrics
         assert "BackfillTriggered" in all_metrics
+
+
+# ---------------------------------------------------------------------------
+# _publish_metrics error path
+# ---------------------------------------------------------------------------
+class TestPublishMetrics:
+    def test_logs_error_on_client_error(self):
+        from botocore.exceptions import ClientError
+
+        cw = MagicMock()
+        cw.put_metric_data.side_effect = ClientError(
+            {"Error": {"Code": "InternalServiceError", "Message": "oops"}},
+            "PutMetricData",
+        )
+
+        _publish_metrics(cw, stale_count=2, backfill_count=1)
+
+        cw.put_metric_data.assert_called_once()
+
+    def test_publishes_correct_counts(self):
+        cw = MagicMock()
+
+        _publish_metrics(cw, stale_count=3, backfill_count=2)
+
+        call_kwargs = cw.put_metric_data.call_args.kwargs
+        metrics = {m["MetricName"]: m["Value"] for m in call_kwargs["MetricData"]}
+        assert metrics["StaleDataDetected"] == 3.0
+        assert metrics["BackfillTriggered"] == 2.0
+
+
+# ---------------------------------------------------------------------------
+# check_source_staleness — invalid date format
+# ---------------------------------------------------------------------------
+class TestCheckSourceStalenessEdgeCases:
+    def test_invalid_date_format_raises(self, dynamodb_mock):
+        _put_state(dynamodb_mock, "frankfurter", "not-a-date")
+
+        with pytest.raises(ValueError):
+            check_source_staleness(
+                "frankfurter", dynamodb_mock, TEST_STATE_TABLE,
+                "fxlake", threshold_days=2,
+            )

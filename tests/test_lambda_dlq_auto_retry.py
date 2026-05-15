@@ -13,6 +13,8 @@ os.environ.setdefault("SNS_TOPIC_ARN", "arn:aws:sns:us-east-1:123456789012:fxlak
 
 from lambda_dlq_auto_retry import (
     FailureClassification,
+    _publish_metric,
+    _send_permanent_failure_alert,
     classify_failure,
     extract_execution_input,
     lambda_handler,
@@ -83,6 +85,12 @@ class TestFailureClassification:
         with pytest.raises(ValueError, match="retry_count cannot be negative"):
             FailureClassification(
                 is_transient=True, error_code="Throttle", retry_count=-1,
+            )
+
+    def test_empty_error_code_rejected(self):
+        with pytest.raises(ValueError, match="error_code cannot be empty"):
+            FailureClassification(
+                is_transient=False, error_code="", retry_count=0,
             )
 
 
@@ -423,3 +431,138 @@ class TestLambdaHandler:
         call_kwargs = sns.publish.call_args.kwargs
         assert "ValueError" in call_kwargs["Message"]
         assert EXEC_ARN in call_kwargs["Message"]
+
+    @patch("lambda_dlq_auto_retry.boto3")
+    def test_sns_failure_does_not_block_metric_publishing(self, mock_boto3):
+        sfn = MagicMock()
+        sns = MagicMock()
+        sns.publish.side_effect = ClientError(
+            {"Error": {"Code": "AuthorizationError", "Message": "denied"}},
+            "Publish",
+        )
+        cw = MagicMock()
+        mock_boto3.client.side_effect = lambda svc, **kw: {
+            "stepfunctions": sfn, "sns": sns, "cloudwatch": cw,
+        }[svc]
+
+        detail = _make_detail(cause="ValueError: bad data")
+        event = _make_sqs_event(detail, receive_count=1)
+        context = MagicMock(aws_request_id="req-sns-fail")
+
+        result = lambda_handler(event, context)
+
+        assert result["errors"] == 1
+        assert result["alerted"] == 0
+        cw.put_metric_data.assert_called()
+
+    @patch("lambda_dlq_auto_retry.boto3")
+    def test_boundary_receive_count_equals_max_retries(self, mock_boto3):
+        sfn = MagicMock()
+        sns = MagicMock()
+        cw = MagicMock()
+        mock_boto3.client.side_effect = lambda svc, **kw: {
+            "stepfunctions": sfn, "sns": sns, "cloudwatch": cw,
+        }[svc]
+
+        detail = _make_detail(cause="ThrottlingException")
+        event = _make_sqs_event(detail, receive_count=3)
+        context = MagicMock(aws_request_id="req-boundary")
+
+        result = lambda_handler(event, context)
+
+        assert result["retried"] == 0
+        assert result["alerted"] == 1
+        sfn.start_execution.assert_not_called()
+
+    @patch("lambda_dlq_auto_retry.boto3")
+    def test_multi_message_batch(self, mock_boto3):
+        sfn = MagicMock()
+        sfn.start_execution.return_value = {"executionArn": "arn:new"}
+        sns = MagicMock()
+        cw = MagicMock()
+        mock_boto3.client.side_effect = lambda svc, **kw: {
+            "stepfunctions": sfn, "sns": sns, "cloudwatch": cw,
+        }[svc]
+
+        transient_detail = _make_detail(
+            cause="ThrottlingException", input_data={"mode": "daily"},
+        )
+        permanent_detail = _make_detail(cause="ValueError: bad data")
+        event = {
+            "Records": [
+                {
+                    "messageId": "msg-001",
+                    "receiptHandle": "r1",
+                    "body": json.dumps({"detail": transient_detail}),
+                    "attributes": {"ApproximateReceiveCount": "1"},
+                },
+                {
+                    "messageId": "msg-002",
+                    "receiptHandle": "r2",
+                    "body": json.dumps({"detail": permanent_detail}),
+                    "attributes": {"ApproximateReceiveCount": "1"},
+                },
+            ],
+        }
+        context = MagicMock(aws_request_id="req-batch")
+
+        result = lambda_handler(event, context)
+
+        assert result["retried"] == 1
+        assert result["alerted"] == 1
+        assert len(result["batchItemFailures"]) == 1
+        assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-002"
+
+
+# ---------------------------------------------------------------------------
+# _publish_metric error path
+# ---------------------------------------------------------------------------
+class TestPublishMetric:
+    def test_logs_error_on_client_error(self):
+        cw = MagicMock()
+        cw.put_metric_data.side_effect = ClientError(
+            {"Error": {"Code": "InternalServiceError", "Message": "oops"}},
+            "PutMetricData",
+        )
+
+        _publish_metric(cw, "TestMetric", 1.0)
+
+        cw.put_metric_data.assert_called_once()
+
+    def test_succeeds_normally(self):
+        cw = MagicMock()
+
+        _publish_metric(cw, "TestMetric", 42.0)
+
+        call_kwargs = cw.put_metric_data.call_args.kwargs
+        assert call_kwargs["MetricData"][0]["MetricName"] == "TestMetric"
+        assert call_kwargs["MetricData"][0]["Value"] == 42.0
+
+
+# ---------------------------------------------------------------------------
+# _send_permanent_failure_alert
+# ---------------------------------------------------------------------------
+class TestSendPermanentFailureAlert:
+    def test_publishes_to_sns(self):
+        sns = MagicMock()
+
+        _send_permanent_failure_alert(
+            sns, "arn:sns:topic", EXEC_ARN, "ValueError", 3,
+        )
+
+        call_kwargs = sns.publish.call_args.kwargs
+        assert call_kwargs["TopicArn"] == "arn:sns:topic"
+        assert "ValueError" in call_kwargs["Message"]
+        assert "3" in call_kwargs["Message"]
+
+    def test_propagates_client_error(self):
+        sns = MagicMock()
+        sns.publish.side_effect = ClientError(
+            {"Error": {"Code": "NotFound", "Message": "topic gone"}},
+            "Publish",
+        )
+
+        with pytest.raises(ClientError):
+            _send_permanent_failure_alert(
+                sns, "arn:sns:topic", EXEC_ARN, "ValueError", 1,
+            )

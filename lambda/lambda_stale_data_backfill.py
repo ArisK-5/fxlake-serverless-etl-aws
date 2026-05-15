@@ -37,8 +37,12 @@ class StaleSource:
     backfill_end: str
 
     def __post_init__(self) -> None:
+        if self.source not in SOURCES:
+            raise ValueError(f"Unknown source: {self.source}")
         if self.gap_days < 0:
             raise ValueError("gap_days must be positive")
+        if self.backfill_start > self.backfill_end:
+            raise ValueError("backfill_start must be <= backfill_end")
 
 
 def check_source_staleness(
@@ -83,7 +87,14 @@ def check_source_staleness(
         )
 
     last_date_str = item["last_processed_date"]["S"]
-    last_date = date.fromisoformat(last_date_str)
+    try:
+        last_date = date.fromisoformat(last_date_str)
+    except ValueError:
+        logger.error(
+            "Invalid date format in DynamoDB",
+            extra={"source": source, "last_date_str": last_date_str},
+        )
+        raise
     gap_days = (today - last_date).days
 
     if gap_days <= threshold_days:
@@ -157,7 +168,11 @@ def _publish_metrics(
     except ClientError as e:
         logger.error(
             "Failed to publish metrics",
-            extra={"error_code": e.response["Error"]["Code"]},
+            extra={
+                "stale_count": stale_count,
+                "backfill_count": backfill_count,
+                "error_code": e.response["Error"]["Code"],
+            },
         )
 
 
@@ -171,7 +186,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
     backfills_triggered = 0
     errors = 0
 
-    dynamodb_client = boto3.client("dynamodb", region_name="us-east-1")
+    dynamodb_client = boto3.client("dynamodb")
 
     for source in SOURCES:
         try:
@@ -179,7 +194,15 @@ def lambda_handler(event: dict, context: Any) -> dict:
                 source, dynamodb_client,
                 STATE_TABLE, PIPELINE_ID, STALE_THRESHOLD_DAYS,
             )
-        except ClientError:
+        except (ClientError, ValueError, KeyError) as e:
+            logger.error(
+                "Failed to check source staleness",
+                extra={
+                    "source": source,
+                    "error_type": type(e).__name__,
+                    "error": str(e),
+                },
+            )
             errors += 1
             continue
 

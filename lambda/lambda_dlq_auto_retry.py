@@ -45,6 +45,8 @@ class FailureClassification:
     retry_count: int
 
     def __post_init__(self) -> None:
+        if not self.error_code:
+            raise ValueError("error_code cannot be empty")
         if self.retry_count < 0:
             raise ValueError("retry_count cannot be negative")
 
@@ -116,6 +118,7 @@ def _publish_metric(
             "Failed to publish metric",
             extra={
                 "metric_name": metric_name,
+                "value": value,
                 "error_code": e.response["Error"]["Code"],
             },
         )
@@ -242,7 +245,6 @@ def lambda_handler(event: dict, context: Any) -> dict:
                     classification.retry_count,
                 )
                 alerted += 1
-                _publish_metric(cloudwatch_client, "DLQPermanentFailure")
             except ClientError as e:
                 logger.error(
                     "Failed to send alert",
@@ -252,6 +254,7 @@ def lambda_handler(event: dict, context: Any) -> dict:
                     },
                 )
                 errors += 1
+            _publish_metric(cloudwatch_client, "DLQPermanentFailure")
             batch_item_failures.append({"itemIdentifier": message_id})
 
     logger.info(
