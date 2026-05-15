@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +18,7 @@ from lambda_dlq_auto_retry import (
     _send_permanent_failure_alert,
     classify_failure,
     extract_execution_input,
+    is_message_stale,
     lambda_handler,
     replay_execution,
 )
@@ -25,12 +27,18 @@ SFN_ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:fxlake-etl"
 EXEC_ARN = "arn:aws:states:us-east-1:123456789012:execution:fxlake-etl:daily-2024-01-15"
 
 
-def _make_sqs_event(detail: dict, receive_count: int = 1) -> dict:
+def _make_sqs_event(
+    detail: dict,
+    receive_count: int = 1,
+    sent_timestamp_ms: int | None = None,
+) -> dict:
     body = json.dumps({
         "source": "aws.states",
         "detail-type": "Step Functions Execution Status Change",
         "detail": detail,
     })
+    if sent_timestamp_ms is None:
+        sent_timestamp_ms = int(time.time() * 1000)
     return {
         "Records": [{
             "messageId": "msg-001",
@@ -38,6 +46,7 @@ def _make_sqs_event(detail: dict, receive_count: int = 1) -> dict:
             "body": body,
             "attributes": {
                 "ApproximateReceiveCount": str(receive_count),
+                "SentTimestamp": str(sent_timestamp_ms),
             },
         }],
     }
@@ -92,6 +101,43 @@ class TestFailureClassification:
             FailureClassification(
                 is_transient=False, error_code="", retry_count=0,
             )
+
+
+# ---------------------------------------------------------------------------
+# is_message_stale
+# ---------------------------------------------------------------------------
+class TestIsMessageStale:
+    def test_fresh_message_is_not_stale(self):
+        record = {
+            "attributes": {"SentTimestamp": str(int(time.time() * 1000))},
+        }
+        assert is_message_stale(record) is False
+
+    def test_old_message_is_stale(self):
+        two_days_ago_ms = int((time.time() - 48 * 3600) * 1000)
+        record = {
+            "attributes": {"SentTimestamp": str(two_days_ago_ms)},
+        }
+        assert is_message_stale(record) is True
+
+    def test_boundary_just_under_threshold_is_not_stale(self):
+        just_under_24h_ms = int((time.time() - 23.9 * 3600) * 1000)
+        record = {
+            "attributes": {"SentTimestamp": str(just_under_24h_ms)},
+        }
+        assert is_message_stale(record) is False
+
+    def test_missing_sent_timestamp_defaults_to_not_stale(self):
+        record = {"attributes": {}}
+        assert is_message_stale(record) is False
+
+    def test_missing_attributes_defaults_to_not_stale(self):
+        record = {}
+        assert is_message_stale(record) is False
+
+    def test_zero_sent_timestamp_defaults_to_not_stale(self):
+        record = {"attributes": {"SentTimestamp": "0"}}
+        assert is_message_stale(record) is False
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +521,35 @@ class TestLambdaHandler:
         sfn.start_execution.assert_not_called()
 
     @patch("lambda_dlq_auto_retry.boto3")
+    def test_discards_stale_message_without_retry_or_alert(self, mock_boto3):
+        sfn = MagicMock()
+        sns = MagicMock()
+        cw = MagicMock()
+        mock_boto3.client.side_effect = lambda svc, **kw: {
+            "stepfunctions": sfn, "sns": sns, "cloudwatch": cw,
+        }[svc]
+
+        detail = _make_detail(cause="ThrottlingException", input_data={"mode": "daily"})
+        two_days_ago_ms = int((time.time() - 48 * 3600) * 1000)
+        event = _make_sqs_event(detail, receive_count=1, sent_timestamp_ms=two_days_ago_ms)
+        context = MagicMock(aws_request_id="req-stale")
+
+        result = lambda_handler(event, context)
+
+        assert result["retried"] == 0
+        assert result["alerted"] == 0
+        assert result["errors"] == 0
+        assert result["batchItemFailures"] == []
+        sfn.start_execution.assert_not_called()
+        sns.publish.assert_not_called()
+
+        metric_calls = cw.put_metric_data.call_args_list
+        metric_names = [
+            m.kwargs["MetricData"][0]["MetricName"] for m in metric_calls
+        ]
+        assert "DLQStaleMessageDiscarded" in metric_names
+
+    @patch("lambda_dlq_auto_retry.boto3")
     def test_multi_message_batch(self, mock_boto3):
         sfn = MagicMock()
         sfn.start_execution.return_value = {"executionArn": "arn:new"}
@@ -488,19 +563,20 @@ class TestLambdaHandler:
             cause="ThrottlingException", input_data={"mode": "daily"},
         )
         permanent_detail = _make_detail(cause="ValueError: bad data")
+        now_ms = str(int(time.time() * 1000))
         event = {
             "Records": [
                 {
                     "messageId": "msg-001",
                     "receiptHandle": "r1",
                     "body": json.dumps({"detail": transient_detail}),
-                    "attributes": {"ApproximateReceiveCount": "1"},
+                    "attributes": {"ApproximateReceiveCount": "1", "SentTimestamp": now_ms},
                 },
                 {
                     "messageId": "msg-002",
                     "receiptHandle": "r2",
                     "body": json.dumps({"detail": permanent_detail}),
-                    "attributes": {"ApproximateReceiveCount": "1"},
+                    "attributes": {"ApproximateReceiveCount": "1", "SentTimestamp": now_ms},
                 },
             ],
         }
