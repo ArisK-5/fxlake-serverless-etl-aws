@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from botocore.exceptions import ClientError
 from common.base import BaseIngestionHandler
+from common.schema_validation import SchemaValidationError
 
 # Must match TEST_STATE_TABLE in conftest.py — both reference the same moto table name.
 TEST_STATE_TABLE = "test-state-table"
@@ -57,6 +58,15 @@ class TestSaveToS3:
         assert body == SAMPLE_DATA
         assert obj["ContentType"] == "application/json"
         assert obj["Metadata"]["source"] == "test"
+
+    def test_sets_server_side_encryption(self, s3_mock):
+        handler = ConcreteHandler()
+        handler._s3 = MagicMock()
+        handler.save_to_s3(SAMPLE_DATA, "test.json")
+
+        handler._s3.put_object.assert_called_once()
+        call_kwargs = handler._s3.put_object.call_args[1]
+        assert call_kwargs["ServerSideEncryption"] == "AES256"
 
     def test_s3_write_failure_raises(self, s3_mock):
         handler = ConcreteHandler()
@@ -229,14 +239,14 @@ class TestIncrementalIngest:
         assert result["status"] == "ok"
         assert result["start_date"] == "2024-01-02"
 
-    def test_no_new_data_when_last_processed_equals_end_date(self, aws_mock, monkeypatch):
+    def test_no_new_data_when_last_processed_equals_today(self, aws_mock, monkeypatch):
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         aws_mock["dynamodb"].put_item(
             TableName=TEST_STATE_TABLE,
             Item={
                 "pipeline_id": {"S": "fxlake"},
                 "source": {"S": "test"},
-                "last_processed_date": {"S": "2024-01-31"},  # == END_DATE
+                "last_processed_date": {"S": date.today().isoformat()},
             },
         )
         handler = ConcreteHandler()
@@ -390,10 +400,10 @@ class TestRun:
 # _incremental_ingest — fetch-end date capping
 # ---------------------------------------------------------------------------
 class TestIncrementalIngestDateCapping:
-    def test_fetch_end_is_capped_at_today_when_end_date_is_future(
+    def test_fetch_end_is_today_regardless_of_end_date(
         self, aws_mock, monkeypatch
     ):
-        """fetch_end = min(today, END_DATE) — must not request future dates from APIs."""
+        """Incremental mode always fetches up to today, ignoring END_DATE."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         monkeypatch.setenv("END_DATE", "2099-12-31")
         handler = ConcreteHandler()
@@ -404,15 +414,15 @@ class TestIncrementalIngestDateCapping:
         assert result["end_date"] == today
         assert result["status"] == "ok"
 
-    def test_fetch_end_uses_end_date_when_end_date_is_past(self, aws_mock, monkeypatch):
-        """When END_DATE is in the past fetch_end should equal END_DATE, not today."""
+    def test_fetch_end_is_today_when_end_date_is_past(self, aws_mock, monkeypatch):
+        """Incremental mode fetches up to today even when END_DATE is in the past."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
-        # END_DATE defaults to 2024-01-31 from conftest; today is well past that
         handler = ConcreteHandler()
 
         result = handler._incremental_ingest()
 
-        assert result["end_date"] == "2024-01-31"
+        assert result["end_date"] == date.today().isoformat()
+        assert result["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -587,3 +597,60 @@ class TestRunBackfill:
 
         assert result["status"] == "ok"
         assert result["mode"] == "backfill"
+
+
+# ---------------------------------------------------------------------------
+# Schema validation in _perform_ingest
+# ---------------------------------------------------------------------------
+class InvalidDataHandler(BaseIngestionHandler):
+    """Returns data that fails schema validation."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            source_name="test",
+            raw_bucket=os.environ["RAW_BUCKET"],
+            state_table=os.getenv("STATE_TABLE"),
+            start_date=os.environ["START_DATE"],
+            end_date=os.environ["END_DATE"],
+        )
+
+    def fetch_data(self, start_date: str, end_date: str) -> dict:
+        return {"bad": "data"}
+
+    def make_filename(self, start_date: str, end_date: str) -> str:
+        return f"test_{start_date}_to_{end_date}.json"
+
+
+class TestSchemaValidationIntegration:
+    """Validate that _perform_ingest enforces schema contracts."""
+
+    def test_valid_data_passes_validation(self, s3_mock):
+        handler = ConcreteHandler()
+        result = handler._perform_ingest("2024-01-01", "2024-01-31", mode="static")
+        assert result["status"] == "ok"
+
+    def test_invalid_data_raises_schema_error(self, s3_mock):
+        handler = InvalidDataHandler()
+        with pytest.raises(SchemaValidationError, match="Cannot detect schema"):
+            handler._perform_ingest("2024-01-01", "2024-01-31", mode="static")
+
+    def test_invalid_data_does_not_save_to_s3(self, s3_mock):
+        handler = InvalidDataHandler()
+        with pytest.raises(SchemaValidationError):
+            handler._perform_ingest("2024-01-01", "2024-01-31", mode="static")
+
+        result = s3_mock.list_objects_v2(Bucket="test-raw-bucket")
+        assert result.get("KeyCount", 0) == 0
+
+    def test_kill_switch_disables_validation(self, s3_mock, monkeypatch):
+        monkeypatch.setenv("SCHEMA_VALIDATION_ENABLED", "false")
+        handler = InvalidDataHandler()
+        result = handler._perform_ingest("2024-01-01", "2024-01-31", mode="static")
+        assert result["status"] == "ok"
+
+    def test_validation_runs_before_s3_save(self, s3_mock):
+        handler = InvalidDataHandler()
+        handler._s3 = MagicMock()
+        with pytest.raises(SchemaValidationError):
+            handler._perform_ingest("2024-01-01", "2024-01-31", mode="static")
+        handler._s3.put_object.assert_not_called()

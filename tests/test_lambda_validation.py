@@ -250,6 +250,96 @@ class TestLambdaHandler:
         with pytest.raises(ValueError, match="Missing QueryExecutionId"):
             validation.lambda_handler({"QueryExecutionId": None}, None)
 
+    def test_fresh_data_publishes_sla_compliant(self):
+        """Fresh, non-empty data → PipelineSLACompliance=1.0."""
+        today = date.today().isoformat()
+        mock_athena = MagicMock()
+        mock_athena.get_query_execution.return_value = _make_execution_response()
+        mock_athena.get_query_results.return_value = _make_freshness_response(today, 500)
+        mock_cw = MagicMock()
+
+        with patch.object(validation, "athena", mock_athena), \
+             patch.object(validation, "cloudwatch", mock_cw):
+            validation.lambda_handler({"QueryExecutionId": "abc-123"}, None)
+
+        sla_calls = [
+            c for c in mock_cw.put_metric_data.call_args_list
+            if c[1]["Namespace"] == "TestFXLake/SLA"
+        ]
+        assert len(sla_calls) == 1
+        metric = sla_calls[0][1]["MetricData"][0]
+        assert metric["MetricName"] == "PipelineSLACompliance"
+        assert metric["Value"] == 1.0
+        dims = {d["Name"]: d["Value"] for d in metric["Dimensions"]}
+        assert dims["Environment"] == "production"
+
+    def test_stale_data_publishes_sla_non_compliant(self):
+        """Stale data → PipelineSLACompliance=0.0."""
+        stale_date = (date.today() - timedelta(days=5)).isoformat()
+        mock_athena = MagicMock()
+        mock_athena.get_query_execution.return_value = _make_execution_response()
+        mock_athena.get_query_results.return_value = _make_freshness_response(stale_date, 100)
+        mock_cw = MagicMock()
+
+        with patch.object(validation, "athena", mock_athena), \
+             patch.object(validation, "cloudwatch", mock_cw):
+            validation.lambda_handler({"QueryExecutionId": "abc-123"}, None)
+
+        sla_calls = [
+            c for c in mock_cw.put_metric_data.call_args_list
+            if c[1]["Namespace"] == "TestFXLake/SLA"
+        ]
+        assert len(sla_calls) == 1
+        assert sla_calls[0][1]["MetricData"][0]["Value"] == 0.0
+
+    def test_empty_data_publishes_sla_non_compliant(self):
+        """Empty table → PipelineSLACompliance=0.0."""
+        mock_athena = MagicMock()
+        mock_athena.get_query_execution.return_value = _make_execution_response()
+        mock_athena.get_query_results.return_value = _make_empty_response()
+        mock_cw = MagicMock()
+
+        with patch.object(validation, "athena", mock_athena), \
+             patch.object(validation, "cloudwatch", mock_cw):
+            validation.lambda_handler({"QueryExecutionId": "abc-123"}, None)
+
+        sla_calls = [
+            c for c in mock_cw.put_metric_data.call_args_list
+            if c[1]["Namespace"] == "TestFXLake/SLA"
+        ]
+        assert len(sla_calls) == 1
+        assert sla_calls[0][1]["MetricData"][0]["Value"] == 0.0
+
+    def test_sla_metric_failure_does_not_abort(self, caplog):
+        """SLA metric publish failure must not abort the handler."""
+        today = date.today().isoformat()
+        mock_athena = MagicMock()
+        mock_athena.get_query_execution.return_value = _make_execution_response()
+        mock_athena.get_query_results.return_value = _make_freshness_response(today, 500)
+        mock_cw = MagicMock()
+
+        call_count = 0
+        original_put = mock_cw.put_metric_data
+
+        def selective_fail(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if kwargs.get("Namespace") == "TestFXLake/SLA":
+                raise _make_client_error("InternalError", "SLA metric failed")
+            return original_put(**kwargs)
+
+        mock_cw.put_metric_data = selective_fail
+
+        with caplog.at_level(logging.ERROR):
+            with patch.object(validation, "athena", mock_athena), \
+                 patch.object(validation, "cloudwatch", mock_cw):
+                result = validation.lambda_handler(
+                    {"QueryExecutionId": "abc-123"}, None
+                )
+
+        assert result["status"] == "SUCCEEDED"
+        assert "Failed to publish SLA metric" in caplog.text
+
     def test_malformed_athena_row_returns_empty(self):
         """Athena row missing 'Data' key should be treated as empty."""
         mock_athena = MagicMock()

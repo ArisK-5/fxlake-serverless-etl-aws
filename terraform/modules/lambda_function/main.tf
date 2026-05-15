@@ -41,7 +41,8 @@ resource "aws_iam_policy" "s3_access" {
       Action = [
         "s3:PutObject",
         "s3:GetObject",
-        "s3:ListBucket"
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
       ]
       Resource = flatten([
         for arn in var.s3_bucket_arns : [arn, "${arn}/*"]
@@ -87,6 +88,8 @@ resource "aws_lambda_function" "this" {
   environment {
     variables = var.env_vars
   }
+
+  tags = var.tags
 
   depends_on = [aws_cloudwatch_log_group.lambda]
 }

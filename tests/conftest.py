@@ -1,6 +1,4 @@
 import os
-import sys
-from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
 # Environment variables — must be set BEFORE Lambda modules are imported,
@@ -13,10 +11,16 @@ os.environ.setdefault("BASE_CURRENCY", "EUR")
 os.environ.setdefault("BASE_API_URL", "https://api.frankfurter.app")
 os.environ.setdefault("METRIC_NAMESPACE", "TestFXLake/Athena")
 os.environ.setdefault("PIPELINE", "fxlake-etl-test")
+os.environ.setdefault("SLA_NAMESPACE", "TestFXLake/SLA")
 os.environ.setdefault("ECB_BASE_URL", "https://data-api.ecb.europa.eu/service/data")
 os.environ.setdefault("FRED_BASE_URL", "https://api.stlouisfed.org/fred")
 os.environ.setdefault("FRED_API_KEY", "test_fred_api_key")
 os.environ.setdefault("FRED_SERIES", "UNRATE")
+os.environ.setdefault("DATABASE_NAME", "fxlake")
+os.environ.setdefault("ATHENA_RESULTS_BUCKET", "test-athena-results")
+os.environ.setdefault("ATHENA_WORKGROUP", "fxlake")
+os.environ.setdefault("PROCESSED_BUCKET", "test-processed-bucket")
+os.environ.setdefault("QUARANTINE_BUCKET", "test-quarantine-bucket")
 
 # Fake AWS credentials for moto
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -24,22 +28,6 @@ os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 os.environ.setdefault("AWS_SECURITY_TOKEN", "testing")
 os.environ.setdefault("AWS_SESSION_TOKEN", "testing")
-
-# ---------------------------------------------------------------------------
-# Mock awsglue — not available outside Glue runtime.
-# Must be registered in sys.modules BEFORE glue_transform is imported.
-# ---------------------------------------------------------------------------
-_glue_utils_mock = MagicMock()
-_glue_utils_mock.getResolvedOptions.return_value = {
-    "RAW_BUCKET": "test-raw-bucket",
-    "PROCESSED_BUCKET": "test-processed-bucket",
-    "OUTPUT_FORMAT": "parquet",
-    "LOG_LEVEL": "INFO",
-    "QUARANTINE_BUCKET": "test-quarantine-bucket",
-    "METRIC_NAMESPACE": "TestFXLake/Quality",
-}
-sys.modules["awsglue"] = MagicMock()
-sys.modules["awsglue.utils"] = _glue_utils_mock
 
 # ---------------------------------------------------------------------------
 # Shared fixtures

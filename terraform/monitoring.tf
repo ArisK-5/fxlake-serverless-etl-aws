@@ -4,6 +4,27 @@
 
 resource "aws_sns_topic" "alerts" {
   name = "fxlake-alerts"
+
+  tags = {
+    component = "monitoring"
+  }
+}
+
+resource "aws_sns_topic_policy" "alerts" {
+  arn = aws_sns_topic.alerts.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowBudgetsPublish"
+        Effect    = "Allow"
+        Principal = { Service = "budgets.amazonaws.com" }
+        Action    = "SNS:Publish"
+        Resource  = aws_sns_topic.alerts.arn
+      }
+    ]
+  })
 }
 
 resource "aws_sns_topic_subscription" "alerts_email" {
@@ -35,14 +56,14 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
 }
 
 #######################################
-# Glue Job Failure Alarm
+# dbt Transform (CodeBuild) Failure Alarm
 #######################################
 
-resource "aws_cloudwatch_metric_alarm" "glue_job_failure" {
-  alarm_name          = "fxlake-glue-job-failure"
-  alarm_description   = "Triggered when Glue job tasks fail"
-  namespace           = "AWS/Glue"
-  metric_name         = "glue.driver.aggregate.numFailedTasks"
+resource "aws_cloudwatch_metric_alarm" "dbt_transform_failure" {
+  alarm_name          = "fxlake-dbt-transform-failure"
+  alarm_description   = "Triggered when dbt CodeBuild transform job fails"
+  namespace           = "AWS/CodeBuild"
+  metric_name         = "FailedBuilds"
   statistic           = "Sum"
   period              = 60
   evaluation_periods  = 2
@@ -52,7 +73,7 @@ resource "aws_cloudwatch_metric_alarm" "glue_job_failure" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 
   dimensions = {
-    JobName = aws_glue_job.transform.name
+    ProjectName = aws_codebuild_project.dbt_transform.name
   }
 }
 
@@ -206,6 +227,54 @@ resource "aws_cloudwatch_metric_alarm" "records_quarantined" {
 }
 
 #######################################
+# Iceberg Maintenance Job Failed Alarm
+#######################################
+
+resource "aws_cloudwatch_metric_alarm" "maintenance_job_failed" {
+  alarm_name          = "fxlake-maintenance-job-failed"
+  alarm_description   = "Triggered when Iceberg maintenance operations fail"
+  namespace           = "${var.metric_namespace_prefix}/Maintenance"
+  metric_name         = "MaintenanceJobFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  tags = {
+    component = "monitoring"
+  }
+}
+
+#######################################
+# Anomaly Detection Alarm
+#######################################
+
+resource "aws_cloudwatch_metric_alarm" "anomaly_detected" {
+  alarm_name          = "fxlake-anomaly-detected"
+  alarm_description   = "Triggered when statistical anomalies are detected in FX rates or economic indicators (z-score >= 3.0)"
+  namespace           = "${var.metric_namespace_prefix}/AnomalyDetection"
+  metric_name         = "AnomalyDetected"
+  statistic           = "Sum"
+  period              = 86400
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    Environment = "production"
+  }
+
+  tags = {
+    component = "monitoring"
+  }
+}
+
+#######################################
 # CloudTrail Unauthorized Access Alarm
 #######################################
 
@@ -224,12 +293,32 @@ resource "aws_cloudwatch_metric_alarm" "unauthorized_api_alarm" {
 }
 
 #######################################
+# Composite Alarm — Pipeline SLA
+#######################################
+
+resource "aws_cloudwatch_composite_alarm" "pipeline_sla" {
+  alarm_name        = "fxlake-pipeline-sla"
+  alarm_description = "Pipeline SLA breach: triggers when execution fails, data goes stale, or CRITICAL quality checks fail"
+
+  alarm_rule = "ALARM(${aws_cloudwatch_metric_alarm.step_function_execution_failed.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.stale_fx_data.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.data_quality_checks_failed.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.dbt_transform_failure.alarm_name})"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+
+  tags = {
+    component = "monitoring"
+  }
+}
+
+#######################################
 # CloudWatch Dashboard
 #######################################
 
 locals {
-  athena_namespace  = "${var.metric_namespace_prefix}/Athena"
-  quality_namespace = "${var.metric_namespace_prefix}/Quality"
+  athena_namespace      = "${var.metric_namespace_prefix}/Athena"
+  quality_namespace     = "${var.metric_namespace_prefix}/Quality"
+  sla_namespace         = "${var.metric_namespace_prefix}/SLA"
+  maintenance_namespace = "${var.metric_namespace_prefix}/Maintenance"
+  anomaly_namespace     = "${var.metric_namespace_prefix}/AnomalyDetection"
 }
 
 resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
@@ -238,231 +327,482 @@ resource "aws_cloudwatch_dashboard" "fxlake_alarms_dashboard" {
   dashboard_body = jsonencode({
     widgets = [
 
-      # Lambda Errors
+      ###################################
+      # Row 1 — Pipeline Health (y=0)
+      ###################################
+
+      # Step Function execution duration (p50, p90, p99) — 30-day time series
       {
         type   = "metric"
         x      = 0
         y      = 0
-        width  = 6
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.fx_ingest.function_name]
+            ["AWS/States", "ExecutionTime", "StateMachineArn", aws_sfn_state_machine.etl.arn, { stat = "p50", label = "p50" }],
+            ["...", { stat = "p90", label = "p90" }],
+            ["...", { stat = "p99", label = "p99" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Lambda Errors (FX Ingestion)"
-          period = 60
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Pipeline Execution Duration"
+          period  = 86400
+          yAxis   = { left = { label = "ms" } }
         }
       },
 
-      # Glue Job Failed Tasks
+      # Lambda invocation count by function — 30-day time series
       {
         type   = "metric"
-        x      = 6
+        x      = 8
         y      = 0
-        width  = 6
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            ["AWS/Glue", "glue.driver.aggregate.numFailedTasks", "JobName", aws_glue_job.transform.name]
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.fx_ingest.function_name, { label = "FX" }],
+            ["...", module.ecb_ingest.function_name, { label = "ECB" }],
+            ["...", module.fred_ingest.function_name, { label = "FRED" }],
+            ["...", aws_lambda_function.check_query_results.function_name, { label = "Validation" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Glue Job Failed Tasks"
-          period = 60
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Lambda Invocations by Function"
+          period  = 86400
+          stat    = "Sum"
         }
       },
 
-      # Athena Query Failures
+      # Pipeline execution results — stat (succeeded, failed, throttled)
       {
         type   = "metric"
-        x      = 12
+        x      = 16
         y      = 0
-        width  = 6
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            [local.athena_namespace, "QueryFailed", "WorkGroup", aws_athena_workgroup.fxlake.name]
+            ["AWS/States", "ExecutionsSucceeded", "StateMachineArn", aws_sfn_state_machine.etl.arn, { label = "Succeeded" }],
+            ["AWS/States", "ExecutionsFailed", "StateMachineArn", aws_sfn_state_machine.etl.arn, { label = "Failed" }],
+            ["AWS/States", "ExecutionThrottled", "StateMachineArn", aws_sfn_state_machine.etl.arn, { label = "Throttled" }]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Athena Query Failures"
-          period = 60
+          title  = "Pipeline Status (Last 24h)"
+          period = 86400
           stat   = "Sum"
         }
       },
 
-      # Athena Empty Results
-      {
-        type   = "metric"
-        x      = 18
-        y      = 0
-        width  = 6
-        height = 6
-        properties = {
-          metrics = [
-            [local.athena_namespace, "EmptyQueryResults"]
-          ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Athena Empty Query Results"
-          period = 60
-          stat   = "Sum"
-        }
-      },
+      ###################################
+      # Row 2 — Data Quality (y=7)
+      ###################################
 
-      # Step Function Execution Failures
+      # Quality check failures by domain — 30-day time series
       {
         type   = "metric"
         x      = 0
-        y      = 6
-        width  = 6
+        y      = 7
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            ["AWS/States", "ExecutionsFailed", "StateMachineArn", aws_sfn_state_machine.etl.arn]
+            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "fx_rates", { label = "FX Rates" }],
+            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "economic_indicators", { label = "Economic" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Step Function Executions Failed"
-          period = 60
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Quality Check Failures by Domain"
+          period  = 86400
+          stat    = "Sum"
         }
       },
 
-      # Step Function Throttles
+      # Records quarantined — last 24h stat
       {
         type   = "metric"
-        x      = 6
-        y      = 6
-        width  = 6
+        x      = 8
+        y      = 7
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            ["AWS/States", "ExecutionThrottled", "StateMachineArn", aws_sfn_state_machine.etl.arn]
+            [local.quality_namespace, "RecordsQuarantined", { label = "Quarantined" }]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Step Function Execution Throttled"
-          period = 60
+          title  = "Records Quarantined (Last 24h)"
+          period = 86400
           stat   = "Sum"
         }
       },
 
-      # CloudTrail Unauthorized API Calls
+      # Quality failures — time series showing quarantine trend
       {
         type   = "metric"
-        x      = 12
-        y      = 6
-        width  = 6
+        x      = 16
+        y      = 7
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            ["CloudTrailMetrics", "UnauthorizedAPICallCount"]
+            [local.quality_namespace, "RecordsQuarantined", { label = "Quarantined" }],
+            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "fx_rates", { label = "FX Failures" }],
+            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "economic_indicators", { label = "Econ Failures" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Unauthorized API Calls (CloudTrail)"
-          period = 60
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = true
+          region  = var.aws_region
+          title   = "Quality Events (30-day trend)"
+          period  = 86400
+          stat    = "Sum"
         }
       },
 
-      # SNS Notifications Delivered
-      {
-        type   = "metric"
-        x      = 18
-        y      = 6
-        width  = 6
-        height = 6
-        properties = {
-          metrics = [
-            ["AWS/SNS", "NumberOfNotificationsDelivered", "TopicName", aws_sns_topic.alerts.name]
-          ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "SNS Notifications Delivered"
-          period = 60
-          stat   = "Sum"
-        }
-      },
+      ###################################
+      # Row 3 — Data Freshness (y=14)
+      ###################################
 
-      # Data Quality — Checks Failed (FX Rates)
+      # Stale FX data — 30-day time series
       {
         type   = "metric"
         x      = 0
-        y      = 12
-        width  = 6
+        y      = 14
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "fx_rates"]
+            [local.athena_namespace, "StaleFXData", { label = "Stale Data Events" }],
+            [local.athena_namespace, "EmptyQueryResults", { label = "Empty Results" }]
           ]
-          view   = "singleValue"
-          region = var.aws_region
-          title  = "Quality Checks Failed (FX)"
-          period = 300
-          stat   = "Sum"
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Data Freshness Issues"
+          period  = 86400
+          stat    = "Sum"
         }
       },
 
-      # Data Quality — Checks Failed (Economic)
+      # Ingestion latency per source (Lambda duration as proxy) — 30-day time series
       {
         type   = "metric"
-        x      = 6
-        y      = 12
-        width  = 6
+        x      = 8
+        y      = 14
+        width  = 8
         height = 6
         properties = {
           metrics = [
-            [local.quality_namespace, "DataQualityChecksFailed", "Domain", "economic_indicators"]
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.fx_ingest.function_name, { label = "FX", stat = "p90" }],
+            ["...", module.ecb_ingest.function_name, { label = "ECB", stat = "p90" }],
+            ["...", module.fred_ingest.function_name, { label = "FRED", stat = "p90" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Ingestion Latency per Source (p90)"
+          period  = 86400
+          yAxis   = { left = { label = "ms" } }
+        }
+      },
+
+      # Current freshness stats
+      {
+        type   = "metric"
+        x      = 16
+        y      = 14
+        width  = 8
+        height = 6
+        properties = {
+          metrics = [
+            [local.athena_namespace, "StaleFXData", { label = "Stale FX" }],
+            [local.athena_namespace, "EmptyQueryResults", { label = "Empty Results" }],
+            [local.athena_namespace, "QueryFailed", "WorkGroup", aws_athena_workgroup.fxlake.name, { label = "Query Failures" }]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Quality Checks Failed (Econ)"
-          period = 300
+          title  = "Current Freshness & Query Status"
+          period = 86400
           stat   = "Sum"
         }
       },
 
-      # Data Quality — Records Quarantined
+      ###################################
+      # Row 4 — Cost & Operations (y=21)
+      ###################################
+
+      # Lambda duration by function — 30-day time series
+      {
+        type   = "metric"
+        x      = 0
+        y      = 21
+        width  = 8
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Duration", "FunctionName", aws_lambda_function.fx_ingest.function_name, { label = "FX Ingest" }],
+            ["...", module.ecb_ingest.function_name, { label = "ECB Ingest" }],
+            ["...", module.fred_ingest.function_name, { label = "FRED Ingest" }],
+            ["...", aws_lambda_function.check_query_results.function_name, { label = "Validation" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Lambda Duration by Function (p50)"
+          period  = 86400
+          stat    = "p50"
+          yAxis   = { left = { label = "ms" } }
+        }
+      },
+
+      # dbt CodeBuild metrics — time series
+      {
+        type   = "metric"
+        x      = 8
+        y      = 21
+        width  = 8
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/CodeBuild", "Duration", "ProjectName", aws_codebuild_project.dbt_transform.name, { label = "Build Duration", stat = "p90" }],
+            ["AWS/CodeBuild", "FailedBuilds", "ProjectName", aws_codebuild_project.dbt_transform.name, { label = "Failed Builds" }],
+            ["AWS/CodeBuild", "SucceededBuilds", "ProjectName", aws_codebuild_project.dbt_transform.name, { label = "Succeeded Builds" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "dbt Transform (CodeBuild) Performance"
+          period  = 86400
+          stat    = "Sum"
+        }
+      },
+
+      # Operational stats — errors, SNS, unauthorized
+      {
+        type   = "metric"
+        x      = 16
+        y      = 21
+        width  = 8
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.fx_ingest.function_name, { label = "FX Errors" }],
+            ["...", module.ecb_ingest.function_name, { label = "ECB Errors" }],
+            ["...", module.fred_ingest.function_name, { label = "FRED Errors" }],
+            ["AWS/SNS", "NumberOfNotificationsDelivered", "TopicName", aws_sns_topic.alerts.name, { label = "SNS Delivered" }],
+            ["CloudTrailMetrics", "UnauthorizedAPICallCount", { label = "Unauth API Calls" }]
+          ]
+          view   = "singleValue"
+          region = var.aws_region
+          title  = "Errors & Alerts"
+          period = 86400
+          stat   = "Sum"
+        }
+      },
+
+      ###################################
+      # Row 5 — SLA Compliance (y=28)
+      ###################################
+
+      # SLA compliance — 30-day time series with 99.5% target
+      {
+        type   = "metric"
+        x      = 0
+        y      = 28
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            [local.sla_namespace, "PipelineSLACompliance", "Environment", "production", { label = "SLA Compliance", stat = "Average" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Pipeline SLA Compliance (target: 99.5%)"
+          period  = 86400
+          yAxis   = { left = { min = 0, max = 1, label = "Compliance" } }
+          annotations = {
+            horizontal = [
+              { label = "SLA Target (99.5%)", value = 0.995, color = "#d62728" }
+            ]
+          }
+        }
+      },
+
+      # SLA composite alarm status
       {
         type   = "metric"
         x      = 12
-        y      = 12
-        width  = 6
+        y      = 28
+        width  = 12
         height = 6
         properties = {
           metrics = [
-            [local.quality_namespace, "RecordsQuarantined"]
+            [local.sla_namespace, "PipelineSLACompliance", "Environment", "production", { label = "Current SLA" }]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Records Quarantined"
-          period = 300
-          stat   = "Sum"
+          title  = "Current SLA Status"
+          period = 86400
+          stat   = "Average"
         }
       },
 
-      # Data Freshness — Stale FX Data
+      ###################################
+      # Row 6 — DLQ & Recovery (y=35)
+      ###################################
+
+      # DLQ depth — failed executions pending replay
       {
         type   = "metric"
-        x      = 18
-        y      = 12
-        width  = 6
+        x      = 0
+        y      = 35
+        width  = 12
         height = 6
         properties = {
           metrics = [
-            [local.athena_namespace, "StaleFXData"]
+            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.pipeline_dlq.name, { label = "Failed Executions" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "DLQ Depth (Failed Executions Pending Replay)"
+          period  = 300
+          stat    = "Maximum"
+          yAxis   = { left = { min = 0 } }
+          annotations = {
+            horizontal = [
+              { label = "Alert threshold", value = 1, color = "#ff6961" }
+            ]
+          }
+        }
+      },
+
+      ###################################
+      # Row 7 — Iceberg Maintenance (y=41)
+      ###################################
+
+      {
+        type   = "metric"
+        x      = 0
+        y      = 41
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            [local.maintenance_namespace, "MaintenanceJobFailed", { label = "Failed Operations", color = "#ff6961" }],
+            [local.maintenance_namespace, "MaintenanceOperationsTotal", { label = "Total Operations", color = "#2ca02c" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Iceberg Maintenance (Weekly Compaction & Vacuum)"
+          period  = 604800
+          stat    = "Sum"
+          yAxis   = { left = { min = 0 } }
+        }
+      },
+
+      ###################################
+      # Row 8 — Cross-Source Validation (y=48)
+      ###################################
+
+      {
+        type   = "metric"
+        x      = 0
+        y      = 48
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSourceDiscrepancy", { label = "Total Discrepancies", color = "#d62728" }],
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSource_rate_consistency", { label = "Rate Mismatches", color = "#ff7f0e" }],
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSource_temporal_consistency", { label = "Temporal Gap (days)", color = "#1f77b4" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Cross-Source Validation (FX vs ECB)"
+          period  = 86400
+          stat    = "Maximum"
+          yAxis   = { left = { min = 0 } }
+          annotations = {
+            horizontal = [
+              { label = "Rate threshold (1%)", value = 0.01, color = "#d62728" }
+            ]
+          }
+        }
+      },
+
+      {
+        type   = "metric"
+        x      = 12
+        y      = 48
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["${var.metric_namespace_prefix}/CrossValidation", "CrossSource_volume_consistency", { label = "Max Volume Deviation %" }]
           ]
           view   = "singleValue"
           region = var.aws_region
-          title  = "Stale FX Data (>2 days)"
-          period = 300
-          stat   = "Sum"
+          title  = "Volume Consistency (Last 24h)"
+          period = 86400
+          stat   = "Maximum"
+        }
+      },
+
+      ###################################
+      # Row 9 — Anomaly Detection (y=55)
+      ###################################
+
+      {
+        type   = "metric"
+        x      = 0
+        y      = 55
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            [local.anomaly_namespace, "ZScore", "Environment", "production", { label = "Max Z-Score", color = "#d62728" }],
+            [local.anomaly_namespace, "AnomalyDetected", "Environment", "production", { label = "Anomaly Count", color = "#ff7f0e" }]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = var.aws_region
+          title   = "Anomaly Detection — Z-Score & Alert Count"
+          period  = 86400
+          stat    = "Maximum"
+          yAxis   = { left = { min = 0 } }
+          annotations = {
+            horizontal = [
+              { label = "Alert threshold (3.0)", value = 3.0, color = "#d62728" },
+              { label = "Warning threshold (2.0)", value = 2.0, color = "#ff7f0e" }
+            ]
+          }
+        }
+      },
+
+      {
+        type   = "metric"
+        x      = 12
+        y      = 55
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            [local.anomaly_namespace, "AnomalyDetected", "Environment", "production", { label = "Anomalies Detected" }],
+            [local.anomaly_namespace, "ZScore", "Environment", "production", { label = "Max Z-Score" }]
+          ]
+          view   = "singleValue"
+          region = var.aws_region
+          title  = "Anomaly Detection Status (Last 24h)"
+          period = 86400
+          stat   = "Maximum"
         }
       }
     ]

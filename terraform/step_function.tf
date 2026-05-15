@@ -2,7 +2,7 @@ resource "aws_sfn_state_machine" "etl" {
   name     = "fxlake-etl-state-machine"
   role_arn = aws_iam_role.sfn_role.arn
   definition = jsonencode({
-    Comment = "FXLake ETL: Parallel Lambda-Glue-Athena Pipeline",
+    Comment = "FXLake ETL: Parallel Ingestion → Iceberg Write → dbt Transform → Validation",
     StartAt = "Parallel-Ingestion",
     States = {
       # Runs Frankfurter, ECB, and FRED ingestion concurrently.
@@ -96,9 +96,6 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Check-New-Data"
       },
-      # Skip to Succeed only when ALL THREE sources are already up to date.
-      # If any source has new data the pipeline runs Glue → Update-State → Athena.
-      # Choice states cannot have Retry/Catch — error handling is in Parallel-Ingestion above.
       Check-New-Data = {
         Type = "Choice",
         Choices = [
@@ -120,22 +117,30 @@ resource "aws_sfn_state_machine" "etl" {
             Next = "Pipeline-Already-Up-To-Date"
           }
         ],
-        Default = "Glue-JSON-to-Parquet"
+        Default = "Write-FX-Iceberg"
       },
       Pipeline-Already-Up-To-Date = {
         Type = "Succeed"
       },
-      Glue-JSON-to-Parquet = {
-        Type       = "Task",
-        Resource   = "arn:aws:states:::glue:startJobRun.sync",
-        Parameters = { JobName = aws_glue_job.transform.name },
-        # ResultPath preserves $.parallel_results so Lambda-Update-*-State can read end_date.
-        ResultPath     = "$.glue",
-        TimeoutSeconds = 600,
+      Write-FX-Iceberg = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = module.iceberg_writer.function_arn,
+          Payload = {
+            "raw_bucket"    = aws_s3_bucket.raw.bucket,
+            "raw_key.$"     = "$.parallel_results.fx.Payload.key",
+            "target_table"  = "fx_rates",
+            "domain"        = "fx_rates",
+            "database_name" = aws_glue_catalog_database.fxlake.name
+          }
+        },
+        ResultPath     = "$.iceberg_fx_write",
+        TimeoutSeconds = 330,
         Retry = [
           {
-            ErrorEquals     = ["Glue.ConcurrentRunsExceededException", "States.HeartbeatTimeout"],
-            IntervalSeconds = 10,
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 5,
             MaxAttempts     = 2,
             BackoffRate     = 2.0
           }
@@ -143,11 +148,73 @@ resource "aws_sfn_state_machine" "etl" {
         Catch = [
           {
             ErrorEquals = ["States.ALL"],
-            Next        = "Transform-Failed",
+            Next        = "Write-FX-Iceberg-Failed",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
+        Next = "Write-Economic-Iceberg"
+      },
+      Write-Economic-Iceberg = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = module.iceberg_writer.function_arn,
+          Payload = {
+            "raw_bucket"    = aws_s3_bucket.raw.bucket,
+            "raw_key.$"     = "$.parallel_results.fred.Payload.key",
+            "target_table"  = "economic_indicators",
+            "domain"        = "economic_indicators",
+            "database_name" = aws_glue_catalog_database.fxlake.name
+          }
+        },
+        ResultPath     = "$.iceberg_econ_write",
+        TimeoutSeconds = 330,
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 5,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Write-Economic-Iceberg-Failed",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
+        Next = "dbt-Transform"
+      },
+      dbt-Transform = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::codebuild:startBuild.sync",
+        Parameters = {
+          ProjectName = aws_codebuild_project.dbt_transform.name
+        },
+        ResultPath     = "$.dbt",
+        TimeoutSeconds = 600,
+        Retry = [
+          {
+            ErrorEquals     = ["States.TaskFailed"],
+            IntervalSeconds = 10,
+            MaxAttempts     = 1,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "dbt-Transform-Failed",
             ResultPath  = "$.errorInfo"
           }
         ],
         Next = "Check-Backfill-Mode"
+      },
+      dbt-Transform-Failed = {
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
       },
       # Backfill runs must NOT update DynamoDB state — skip straight to Athena.
       # The "mode" key is only present in backfill payloads (see _perform_ingest).
@@ -156,15 +223,21 @@ resource "aws_sfn_state_machine" "etl" {
         Comment = "Skip state updates for backfill executions to protect the incremental watermark.",
         Choices = [
           {
-            Variable     = "$.parallel_results.fx.Payload.mode",
-            StringEquals = "backfill",
-            Next         = "Athena-Sample-Query"
+            And = [
+              {
+                Variable  = "$.parallel_results.fx.Payload.mode",
+                IsPresent = true
+              },
+              {
+                Variable     = "$.parallel_results.fx.Payload.mode",
+                StringEquals = "backfill"
+              }
+            ],
+            Next = "Athena-Sample-Query"
           }
         ],
         Default = "Lambda-Update-FX-State"
       },
-      # Commit Frankfurter last_processed_date to DynamoDB only after Glue succeeds.
-      # Prevents state corruption if Glue fails after ingestion writes the raw file.
       Lambda-Update-FX-State = {
         Type     = "Task",
         Resource = "arn:aws:states:::lambda:invoke",
@@ -194,7 +267,6 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Lambda-Update-ECB-State"
       },
-      # Commit ECB last_processed_date to DynamoDB after FX state is committed.
       Lambda-Update-ECB-State = {
         Type     = "Task",
         Resource = "arn:aws:states:::lambda:invoke",
@@ -224,7 +296,6 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Lambda-Update-FRED-State"
       },
-      # Commit FRED last_processed_date to DynamoDB after ECB state is committed.
       Lambda-Update-FRED-State = {
         Type     = "Task",
         Resource = "arn:aws:states:::lambda:invoke",
@@ -254,9 +325,6 @@ resource "aws_sfn_state_machine" "etl" {
         ],
         Next = "Athena-Sample-Query"
       },
-      # Data freshness query: verifies Glue wrote Parquet and checks how recent the data is.
-      # Queries fx_rates only — FX rates are the core product; economic_indicators validated
-      # implicitly by Glue success. Validation Lambda parses latest_date + total_records.
       Athena-Sample-Query = {
         Type     = "Task",
         Resource = "arn:aws:states:::athena:startQueryExecution.sync",
@@ -320,14 +388,81 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
+        Next = "Cross-Source-Validation"
+      },
+      Cross-Source-Validation = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = module.cross_validator.function_arn,
+          Payload = {
+            "database_name" = aws_glue_catalog_database.fxlake.name
+          }
+        },
+        ResultPath     = "$.cross_validation",
+        TimeoutSeconds = 300,
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 3,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Cross-Validation-Failed",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
+        Next = "Anomaly-Detection"
+      },
+      Anomaly-Detection = {
+        Type     = "Task",
+        Resource = "arn:aws:states:::lambda:invoke",
+        Parameters = {
+          FunctionName = module.anomaly_detector.function_arn,
+          Payload = {
+            "database_name" = aws_glue_catalog_database.fxlake.name
+          }
+        },
+        ResultPath     = "$.anomaly_detection",
+        TimeoutSeconds = 300,
+        Retry = [
+          {
+            ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+            IntervalSeconds = 3,
+            MaxAttempts     = 2,
+            BackoffRate     = 2.0
+          }
+        ],
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"],
+            Next        = "Anomaly-Detection-Error-Handled",
+            ResultPath  = "$.errorInfo"
+          }
+        ],
         End = true
+      },
+      Anomaly-Detection-Error-Handled = {
+        Type       = "Pass",
+        Result     = "Anomaly detection failed but pipeline continues",
+        ResultPath = "$.anomaly_detection_note",
+        End        = true
       },
       Ingestion-Failed = {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"
       },
-      Transform-Failed = {
+      Write-FX-Iceberg-Failed = {
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
+      },
+      Write-Economic-Iceberg-Failed = {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"
@@ -356,9 +491,18 @@ resource "aws_sfn_state_machine" "etl" {
         Type      = "Fail",
         ErrorPath = "$.errorInfo.Error",
         CausePath = "$.errorInfo.Cause"
-      }
+      },
+      Cross-Validation-Failed = {
+        Type      = "Fail",
+        ErrorPath = "$.errorInfo.Error",
+        CausePath = "$.errorInfo.Cause"
+      },
     }
   })
+
+  tags = {
+    component = "orchestration"
+  }
 
   logging_configuration {
     include_execution_data = true

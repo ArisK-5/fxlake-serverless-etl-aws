@@ -1,0 +1,43 @@
+version: 2
+
+sources:
+  - name: fxlake
+    database: awsdatacatalog
+    schema: fxlake
+    description: Raw Iceberg tables written by the FXLake ingestion pipeline via Athena CTAS/INSERT.
+    freshness:
+      warn_after:
+        count: 24
+        period: hour
+      error_after:
+        count: 48
+        period: hour
+    loaded_at_field: "cast(date as timestamp)"
+    tables:
+      - name: fx_rates
+        description: Daily foreign exchange rates from Frankfurter and ECB sources.
+        tags: ["frankfurter", "ecb"]
+        columns:
+          - name: date
+            description: Trading date (ISO 8601 string).
+          - name: source
+            description: Data source identifier (frankfurter, ecb).
+          - name: base_currency
+            description: Base currency code (e.g. EUR).
+          - name: target_currency
+            description: Target currency code (e.g. USD, GBP).
+          - name: rate
+            description: Exchange rate value.
+
+      - name: economic_indicators
+        description: Economic indicator observations from FRED.
+        tags: ["fred"]
+        columns:
+          - name: date
+            description: Observation date (ISO 8601 string).
+          - name: source
+            description: Data source identifier (fred).
+          - name: series_id
+            description: Indicator series identifier (e.g. UNRATE).
+          - name: value
+            description: Observation value.

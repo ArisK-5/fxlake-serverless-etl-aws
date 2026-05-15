@@ -88,15 +88,19 @@ variable "lambda_validation_name" {
   default = "fxlake-results-check-lambda"
 }
 
-variable "glue_job_name" {
+variable "lambda_iceberg_writer_name" {
   type    = string
-  default = "fxlake-glue-transform-job"
+  default = "fxlake-iceberg-writer-lambda"
 }
 
-variable "glue_script_s3_key" {
-  description = "S3 key for Glue job script"
-  type        = string
-  default     = "glue/glue_transform.py"
+variable "lambda_data_validator_name" {
+  type    = string
+  default = "fxlake-data-validator-lambda"
+}
+
+variable "lambda_iceberg_maintenance_name" {
+  type    = string
+  default = "fxlake-iceberg-maintenance-lambda"
 }
 
 variable "fx_base_api_url" {
@@ -129,12 +133,29 @@ variable "dynamodb_state_table_name" {
   default     = "fxlake-pipeline-state"
 }
 
-variable "fx_output_format" {
-  description = "Output format for processed exchange rate data (csv or parquet)"
-  type        = string
-  default     = "parquet"
-  validation {
-    condition     = contains(["csv", "parquet"], var.fx_output_format)
-    error_message = "fx_output_format must be either 'csv' or 'parquet'"
-  }
+variable "lambda_cross_validator_name" {
+  type    = string
+  default = "fxlake-cross-validator-lambda"
 }
+
+variable "lambda_anomaly_detector_name" {
+  type    = string
+  default = "fxlake-anomaly-detector-lambda"
+}
+
+variable "lambda_dlq_auto_retry_name" {
+  type    = string
+  default = "fxlake-dlq-auto-retry"
+}
+
+variable "lambda_stale_data_backfill_name" {
+  type    = string
+  default = "fxlake-stale-data-backfill"
+}
+
+variable "deployer_role_arn" {
+  description = "IAM role ARN used by CI/CD (GitHub Actions OIDC) to deploy infrastructure"
+  type        = string
+  sensitive   = true
+}
+

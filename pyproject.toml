@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "boto3>=1.40.72",
-    "diagrams>=0.24.4",
+    "graphviz>=0.20",
 ]
 
 [dependency-groups]
@@ -14,15 +14,15 @@ dev = [
     "pytest>=8.0",
     "moto[s3,cloudwatch,athena,dynamodb]>=5.0",
     "responses>=0.25",
-    "polars>=0.18.8",
-    "pyarrow>=14.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.8",
+    "dbt-core>=1.8.0",
+    "dbt-athena-community>=1.8.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["lambda", "glue"]
+pythonpath = ["lambda"]
 markers = ["integration: end-to-end pipeline integration tests (moto + responses)"]
 
 [tool.ruff]

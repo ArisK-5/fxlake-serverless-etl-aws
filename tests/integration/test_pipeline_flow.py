@@ -1,11 +1,11 @@
-"""Integration tests: full pipeline flow Ingestion → Transform → Validate.
+"""Integration tests: full pipeline flow Ingestion → Iceberg Write → Validate.
 
 Uses moto to mock S3, DynamoDB, CloudWatch, and Athena so the entire pipeline
 runs locally without any AWS credentials.  HTTP calls to external APIs
 (Frankfurter, ECB, FRED) are intercepted by the ``responses`` library.
+Athena query execution is patched since moto cannot run real INSERT INTO queries.
 """
 
-import io
 import json
 import os
 from datetime import date
@@ -13,8 +13,6 @@ from typing import Any
 from unittest.mock import patch
 
 import boto3
-import polars as pl
-import pyarrow.parquet as pq
 import pytest
 import responses
 from botocore.exceptions import ClientError
@@ -123,10 +121,46 @@ def _s3_keys(s3_client: Any, bucket: str, prefix: str = "") -> list[str]:
     return [obj["Key"] for obj in resp.get("Contents", [])]
 
 
-def _read_parquet(s3_client: Any, bucket: str, key: str) -> pl.DataFrame:
-    obj = s3_client.get_object(Bucket=bucket, Key=key)
-    table = pq.read_table(io.BytesIO(obj["Body"].read()))
-    return pl.from_arrow(table)
+def _domain_for_key(key: str) -> str:
+    """Determine the Iceberg writer domain from a raw S3 key prefix."""
+    if key.startswith("fred_"):
+        return "economic_indicators"
+    return "fx_rates"
+
+
+def _call_iceberg_writer(
+    raw_key: str,
+    domain: str | None = None,
+    captured_queries: list[str] | None = None,
+) -> dict:
+    """Call the Iceberg writer Lambda with Athena execution patched.
+
+    Quality checks, S3 reads/writes, and quarantine run against moto.
+    Athena INSERT execution is stubbed since moto cannot run real queries.
+    """
+    import lambda_iceberg_writer as writer_mod
+
+    resolved_domain = domain or _domain_for_key(raw_key)
+
+    def fake_execute(athena_client: Any, query: str, database: str,
+                     output_location: str, workgroup: str) -> str:
+        if captured_queries is not None:
+            captured_queries.append(query)
+        return "fake-query-id"
+
+    def fake_poll(athena_client: Any, query_execution_id: str,
+                  poll_interval: int = 2, max_attempts: int = 90) -> dict:
+        return {"QueryExecution": {"Status": {"State": "SUCCEEDED"}}}
+
+    event = {
+        "raw_bucket": TEST_RAW_BUCKET,
+        "raw_key": raw_key,
+        "domain": resolved_domain,
+    }
+
+    with patch.object(writer_mod, "_execute_athena_query", side_effect=fake_execute), \
+         patch.object(writer_mod, "_poll_query_completion", side_effect=fake_poll):
+        return writer_mod.lambda_handler(event, None)
 
 
 # ---------------------------------------------------------------------------
@@ -134,24 +168,21 @@ def _read_parquet(s3_client: Any, bucket: str, key: str) -> pl.DataFrame:
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
 class TestFullPipelineFlow:
-    """Ingestion → Transform → Validate: one source end-to-end."""
+    """Ingestion → Iceberg Write → Validate: one source end-to-end."""
 
     @responses.activate
-    def test_frankfurter_ingest_transform_produces_partitioned_parquet(
+    def test_frankfurter_ingest_and_iceberg_write(
         self, integration_aws, monkeypatch
     ):
-        """Frankfurter ingestion writes raw JSON, Glue transform produces partitioned Parquet."""
+        """Frankfurter ingestion writes raw JSON, Iceberg writer processes and inserts."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
-        # No DynamoDB state → get_last_processed returns start_date (2024-01-01),
-        # _incremental_ingest adds 1 day → fetch_start = 2024-01-02
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
 
-        # --- Stage 1: Ingestion ---
         import lambda_fx_ingestion as fx_mod
 
         result = fx_mod.lambda_handler({}, None)
@@ -161,7 +192,6 @@ class TestFullPipelineFlow:
         assert len(raw_keys) == 1
         assert raw_keys[0].startswith("exchange_rates_EUR_")
 
-        # Verify raw JSON content
         raw_obj = integration_aws["s3"].get_object(
             Bucket=TEST_RAW_BUCKET, Key=raw_keys[0]
         )
@@ -169,34 +199,31 @@ class TestFullPipelineFlow:
         assert raw_data["base"] == "EUR"
         assert "2024-01-02" in raw_data["rates"]
 
-        # --- Stage 2: Transform (Glue) ---
-        import glue_transform
+        captured: list[str] = []
+        write_result = _call_iceberg_writer(raw_keys[0], captured_queries=captured)
 
-        glue_transform.process_key(raw_keys[0])
+        assert write_result["status"] == "ok"
+        assert write_result["domain"] == "fx_rates"
+        assert write_result["rows_inserted"] == 4  # 2 dates × 2 currencies
 
-        processed_keys = _s3_keys(integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/year=")
-        assert len(processed_keys) == 2  # 2 dates → 2 partitions
+        assert len(captured) >= 1
+        assert "INSERT INTO fx_rates" in captured[0]
+        for col in ("date", "source", "base_currency", "target_currency", "rate"):
+            assert col in captured[0]
 
-        # Verify Parquet schema
-        df = _read_parquet(integration_aws["s3"], TEST_PROCESSED_BUCKET, processed_keys[0])
-        assert set(df.columns) == {"date", "source", "base_currency", "target_currency", "rate"}
-        assert df["source"][0] == "frankfurter"
-
-        # Verify quality report was written
         quality_keys = _s3_keys(
             integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/quality_reports/"
         )
         assert len(quality_keys) == 1
 
     @responses.activate
-    def test_fred_ingest_transform_produces_economic_indicators(
+    def test_fred_ingest_and_iceberg_write(
         self, integration_aws, monkeypatch
     ):
-        """FRED ingestion → Glue transform routes to economic_indicators domain."""
+        """FRED ingestion → Iceberg writer routes to economic_indicators domain."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         responses.add(responses.GET, FRED_API_URL, json=SAMPLE_FRED_RESPONSE, status=200)
 
-        # --- Ingestion ---
         import lambda_fred_ingestion as fred_mod
 
         result = fred_mod.lambda_handler({}, None)
@@ -206,25 +233,22 @@ class TestFullPipelineFlow:
 
         fred_key = next(k for k in raw_keys if k.startswith("fred_"))
 
-        # --- Transform ---
-        import glue_transform
+        captured: list[str] = []
+        write_result = _call_iceberg_writer(fred_key, captured_queries=captured)
 
-        glue_transform.process_key(fred_key)
+        assert write_result["status"] == "ok"
+        assert write_result["domain"] == "economic_indicators"
+        assert write_result["rows_inserted"] == 2
 
-        econ_keys = _s3_keys(
-            integration_aws["s3"], TEST_PROCESSED_BUCKET, "economic_indicators/year="
-        )
-        assert len(econ_keys) == 2  # 2024-01-01 and 2024-02-01
-
-        df = _read_parquet(integration_aws["s3"], TEST_PROCESSED_BUCKET, econ_keys[0])
-        assert set(df.columns) == {"date", "source", "series_id", "value"}
-        assert df["source"][0] == "fred"
+        assert "INSERT INTO economic_indicators" in captured[0]
+        for col in ("date", "source", "series_id", "value"):
+            assert col in captured[0]
 
     @responses.activate
-    def test_ecb_ingest_transform_tags_source_ecb(
+    def test_ecb_ingest_and_iceberg_write(
         self, integration_aws, monkeypatch
     ):
-        """ECB ingestion → Transform correctly detects source='ecb'."""
+        """ECB ingestion → Iceberg writer correctly inserts source='ecb'."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         responses.add(responses.GET, ECB_API_URL, json=SAMPLE_ECB_RESPONSE, status=200)
 
@@ -236,17 +260,12 @@ class TestFullPipelineFlow:
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
         ecb_key = next(k for k in raw_keys if k.startswith("ecb_"))
 
-        import glue_transform
+        captured: list[str] = []
+        write_result = _call_iceberg_writer(ecb_key, captured_queries=captured)
 
-        glue_transform.process_key(ecb_key)
-
-        processed_keys = _s3_keys(
-            integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/year="
-        )
-        assert len(processed_keys) >= 1
-
-        df = _read_parquet(integration_aws["s3"], TEST_PROCESSED_BUCKET, processed_keys[0])
-        assert df["source"][0] == "ecb"
+        assert write_result["status"] == "ok"
+        assert write_result["domain"] == "fx_rates"
+        assert "'ecb'" in captured[0]
 
 
 @pytest.mark.integration
@@ -254,14 +273,13 @@ class TestBackfillPipeline:
     """Backfill mode: ingestion with explicit dates, no DynamoDB state mutation."""
 
     @responses.activate
-    def test_frankfurter_backfill_ingests_and_transforms(
+    def test_frankfurter_backfill_ingests_and_writes_iceberg(
         self, integration_aws, monkeypatch
     ):
-        """Backfill ingestion writes raw JSON, Glue produces Parquet, DynamoDB untouched."""
+        """Backfill ingestion writes raw JSON, Iceberg writer inserts, DynamoDB untouched."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         ddb = integration_aws["dynamodb"]
 
-        # Seed existing state — backfill must NOT change it
         ddb.put_item(
             TableName=TEST_STATE_TABLE,
             Item={
@@ -290,21 +308,13 @@ class TestBackfillPipeline:
         assert result["start_date"] == "2023-06-01"
         assert result["end_date"] == "2023-06-30"
 
-        # Raw data written to S3
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
         assert len(raw_keys) == 1
 
-        # Transform produces partitioned Parquet
-        import glue_transform
+        write_result = _call_iceberg_writer(raw_keys[0])
+        assert write_result["status"] == "ok"
+        assert write_result["domain"] == "fx_rates"
 
-        glue_transform.process_key(raw_keys[0])
-
-        processed_keys = _s3_keys(
-            integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/year="
-        )
-        assert len(processed_keys) >= 1
-
-        # DynamoDB state must be unchanged (backfill never touches it)
         item = ddb.get_item(
             TableName=TEST_STATE_TABLE,
             Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
@@ -315,7 +325,7 @@ class TestBackfillPipeline:
     def test_fred_backfill_routes_to_economic_domain(
         self, integration_aws, monkeypatch
     ):
-        """FRED backfill → Glue transform routes to economic_indicators domain."""
+        """FRED backfill → Iceberg writer routes to economic_indicators domain."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
 
         responses.add(responses.GET, FRED_API_URL, json=SAMPLE_FRED_RESPONSE, status=200)
@@ -333,18 +343,14 @@ class TestBackfillPipeline:
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
         fred_key = next(k for k in raw_keys if k.startswith("fred_"))
 
-        import glue_transform
+        captured: list[str] = []
+        write_result = _call_iceberg_writer(fred_key, captured_queries=captured)
 
-        glue_transform.process_key(fred_key)
-
-        econ_keys = _s3_keys(
-            integration_aws["s3"], TEST_PROCESSED_BUCKET, "economic_indicators/year="
-        )
-        assert len(econ_keys) >= 1
-
-        df = _read_parquet(integration_aws["s3"], TEST_PROCESSED_BUCKET, econ_keys[0])
-        assert set(df.columns) == {"date", "source", "series_id", "value"}
-        assert df["source"][0] == "fred"
+        assert write_result["status"] == "ok"
+        assert write_result["domain"] == "economic_indicators"
+        assert "INSERT INTO economic_indicators" in captured[0]
+        for col in ("date", "source", "series_id", "value"):
+            assert col in captured[0]
 
     @responses.activate
     def test_backfill_api_failure_does_not_corrupt_state(
@@ -378,7 +384,6 @@ class TestBackfillPipeline:
                 None,
             )
 
-        # DynamoDB unchanged
         item = ddb.get_item(
             TableName=TEST_STATE_TABLE,
             Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
@@ -398,7 +403,6 @@ class TestDynamoDBStateManagement:
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         ddb = integration_aws["dynamodb"]
 
-        # Seed DynamoDB with an existing state
         ddb.put_item(
             TableName=TEST_STATE_TABLE,
             Item={
@@ -410,7 +414,7 @@ class TestDynamoDBStateManagement:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-15..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-15..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
@@ -421,20 +425,17 @@ class TestDynamoDBStateManagement:
         assert ingest_result["status"] == "ok"
         assert ingest_result["start_date"] == "2024-01-15"
 
-        # State NOT yet updated (deferred to Step Functions post-Glue)
         item = ddb.get_item(
             TableName=TEST_STATE_TABLE,
             Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
         )["Item"]
         assert item["last_processed_date"]["S"] == "2024-01-14"
 
-        # Simulate Step Functions calling update_state after Glue succeeds
         update_result = fx_mod.lambda_handler(
             {"action": "update_state", "end_date": ingest_result["end_date"]}, None
         )
         assert update_result["status"] == "state_updated"
 
-        # Now DynamoDB is updated
         item = ddb.get_item(
             TableName=TEST_STATE_TABLE,
             Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
@@ -449,7 +450,6 @@ class TestDynamoDBStateManagement:
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         ddb = integration_aws["dynamodb"]
 
-        # Seed different dates per source
         for source, last_date in [
             ("frankfurter", "2024-01-10"),
             ("ecb", "2024-01-12"),
@@ -464,10 +464,9 @@ class TestDynamoDBStateManagement:
                 },
             )
 
-        # Stub all three APIs
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-11..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
@@ -482,12 +481,10 @@ class TestDynamoDBStateManagement:
         ecb_result = ecb_mod.lambda_handler({}, None)
         fred_result = fred_mod.lambda_handler({}, None)
 
-        # Each source started from its own last_processed_date + 1 day
         assert fx_result["start_date"] == "2024-01-11"
         assert ecb_result["start_date"] == "2024-01-13"
         assert fred_result["start_date"] == "2024-01-09"
 
-        # Update state for each source independently
         for mod, end_date, source in [
             (fx_mod, fx_result["end_date"], "frankfurter"),
             (ecb_mod, ecb_result["end_date"], "ecb"),
@@ -507,14 +504,14 @@ class TestCloudWatchMetrics:
     """Verify quality reports and freshness metrics published during transform and validation."""
 
     @responses.activate
-    def test_quality_report_written_during_transform(
+    def test_quality_report_written_during_iceberg_write(
         self, integration_aws, monkeypatch
     ):
-        """Transform writes a quality report JSON for every processed file."""
+        """Iceberg writer writes a quality report JSON for every processed file."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
@@ -523,9 +520,7 @@ class TestCloudWatchMetrics:
 
         result = fx_mod.lambda_handler({}, None)
 
-        import glue_transform
-
-        glue_transform.process_key(result["key"])
+        _call_iceberg_writer(result["key"])
 
         quality_keys = _s3_keys(
             integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/quality_reports/"
@@ -547,25 +542,20 @@ class TestCloudWatchMetrics:
         """Validation Lambda publishes EmptyQueryResults and StaleFXData metrics."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
 
-        # Set up a fake Athena query execution that returns fresh data
         athena = integration_aws["athena"]
         today_str = date.today().isoformat()
 
-        # Start a query execution to get a valid ID
         start_resp = athena.start_query_execution(
             QueryString="SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates",
             ResultConfiguration={"OutputLocation": "s3://test-athena-results/results/"},
         )
         query_id = start_resp["QueryExecutionId"]
 
-        # Patch athena client in validation module to use our mocked one
         import lambda_validation_function as val_mod
 
         with patch.object(val_mod, "athena", athena), patch.object(
             val_mod, "cloudwatch", integration_aws["cloudwatch"]
         ):
-            # moto's Athena mock returns QUEUED state — patch get_query_execution
-            # to return SUCCEEDED with a result set
             mock_execution = {
                 "QueryExecution": {
                     "Status": {"State": "SUCCEEDED"},
@@ -611,7 +601,7 @@ class TestPipelineSagaPattern:
     def test_state_not_updated_when_transform_skipped(
         self, integration_aws, monkeypatch
     ):
-        """If Glue transform is never called, DynamoDB state remains unchanged."""
+        """If Iceberg write is never called, DynamoDB state remains unchanged."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         ddb = integration_aws["dynamodb"]
 
@@ -626,7 +616,7 @@ class TestPipelineSagaPattern:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-11..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
@@ -635,7 +625,6 @@ class TestPipelineSagaPattern:
 
         fx_mod.lambda_handler({}, None)
 
-        # Without calling update_state, DynamoDB retains old value
         item = ddb.get_item(
             TableName=TEST_STATE_TABLE,
             Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
@@ -650,14 +639,13 @@ class TestPipelineSagaPattern:
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         ddb = integration_aws["dynamodb"]
 
-        # Set all sources to END_DATE so there's nothing to fetch
         for source in ("frankfurter", "ecb", "fred"):
             ddb.put_item(
                 TableName=TEST_STATE_TABLE,
                 Item={
                     "pipeline_id": {"S": "fxlake"},
                     "source": {"S": source},
-                    "last_processed_date": {"S": "2024-01-31"},
+                    "last_processed_date": {"S": date.today().isoformat()},
                 },
             )
 
@@ -673,7 +661,6 @@ class TestPipelineSagaPattern:
         assert ecb_result["status"] == "no_new_data"
         assert fred_result["status"] == "no_new_data"
 
-        # No raw files written
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
         assert raw_keys == []
 
@@ -682,7 +669,6 @@ class TestPipelineSagaPattern:
 # Error-path tests
 # ---------------------------------------------------------------------------
 
-# Frankfurter response with negative rates → triggers CRITICAL check_positive_values failure
 SAMPLE_FRANKFURTER_BAD_RATES = {
     "base": "EUR",
     "start_date": "2024-01-02",
@@ -699,11 +685,13 @@ class TestCriticalQualityFailure:
     """CRITICAL quality check → quarantine + metrics + saga rollback."""
 
     @responses.activate
-    def test_negative_rates_quarantined_and_state_not_updated(
+    def test_negative_rates_rejected_by_schema_and_state_not_updated(
         self, integration_aws, monkeypatch
     ):
-        """Negative FX rates trigger CRITICAL failure: quarantine written, ValueError raised,
+        """Negative FX rates fail schema validation at ingestion: data never reaches S3,
         DynamoDB state unchanged (saga rollback)."""
+        from common.schema_validation import SchemaValidationError
+
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         ddb = integration_aws["dynamodb"]
 
@@ -718,49 +706,19 @@ class TestCriticalQualityFailure:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-11..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_BAD_RATES,
             status=200,
         )
 
         import lambda_fx_ingestion as fx_mod
 
-        result = fx_mod.lambda_handler({}, None)
-        assert result["status"] == "ok"
+        with pytest.raises(SchemaValidationError):
+            fx_mod.lambda_handler({}, None)
 
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
-        assert len(raw_keys) == 1
+        assert len(raw_keys) == 0
 
-        # Glue transform should raise ValueError on CRITICAL quality failure
-        import glue_transform
-
-        with pytest.raises(ValueError, match="CRITICAL"):
-            glue_transform.process_key(raw_keys[0])
-
-        # Quarantine bucket should contain the bad records
-        quarantine_keys = _s3_keys(integration_aws["s3"], TEST_QUARANTINE_BUCKET, "fx_rates/")
-        assert len(quarantine_keys) == 1
-        assert "quarantine" in quarantine_keys[0]
-
-        # Quality report should still be written (before quarantine raises)
-        quality_keys = _s3_keys(
-            integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/quality_reports/"
-        )
-        assert len(quality_keys) == 1
-        report = json.loads(
-            integration_aws["s3"]
-            .get_object(Bucket=TEST_PROCESSED_BUCKET, Key=quality_keys[0])["Body"]
-            .read()
-        )
-        assert report["overall_passed"] is False
-
-        # No processed Parquet should exist (transform aborted)
-        processed_keys = _s3_keys(
-            integration_aws["s3"], TEST_PROCESSED_BUCKET, "fx_rates/year="
-        )
-        assert processed_keys == []
-
-        # Saga: DynamoDB state must remain at old value (update_state never called)
         item = ddb.get_item(
             TableName=TEST_STATE_TABLE,
             Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
@@ -768,36 +726,26 @@ class TestCriticalQualityFailure:
         assert item["last_processed_date"]["S"] == "2024-01-10"
 
     @responses.activate
-    def test_quarantine_contains_original_data(self, integration_aws, monkeypatch):
-        """Quarantined JSON preserves the original DataFrame records."""
+    def test_negative_rates_never_saved_to_s3(self, integration_aws, monkeypatch):
+        """Schema validation rejects bad data before S3 write."""
+        from common.schema_validation import SchemaValidationError
+
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_BAD_RATES,
             status=200,
         )
 
         import lambda_fx_ingestion as fx_mod
 
-        fx_mod.lambda_handler({}, None)
+        with pytest.raises(SchemaValidationError):
+            fx_mod.lambda_handler({}, None)
+
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
-
-        import glue_transform
-
-        with pytest.raises(ValueError):
-            glue_transform.process_key(raw_keys[0])
-
-        quarantine_keys = _s3_keys(integration_aws["s3"], TEST_QUARANTINE_BUCKET, "fx_rates/")
-        obj = integration_aws["s3"].get_object(
-            Bucket=TEST_QUARANTINE_BUCKET, Key=quarantine_keys[0]
-        )
-        quarantined = json.loads(obj["Body"].read())
-        # Should be a list of record dicts with negative rates
-        assert isinstance(quarantined, list)
-        assert len(quarantined) > 0
-        assert any(rec["rate"] < 0 for rec in quarantined)
+        assert len(raw_keys) == 0
 
 
 @pytest.mark.integration
@@ -811,7 +759,7 @@ class TestAPIErrorPropagation:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-02..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-02..{date.today().isoformat()}",
             json={"error": "internal server error"},
             status=500,
         )
@@ -821,7 +769,6 @@ class TestAPIErrorPropagation:
         with pytest.raises(Exception):
             fx_mod.lambda_handler({}, None)
 
-        # No raw files should be written on API failure
         raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
         assert raw_keys == []
 
@@ -874,7 +821,7 @@ class TestAPIErrorPropagation:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-11..{date.today().isoformat()}",
             json={"error": "server error"},
             status=500,
         )
@@ -892,14 +839,14 @@ class TestAPIErrorPropagation:
 
 
 @pytest.mark.integration
-class TestGlueFailureSagaRollback:
-    """Glue transform failure must prevent state advancement."""
+class TestIcebergWriteFailureSagaRollback:
+    """Iceberg writer failure must prevent state advancement."""
 
     @responses.activate
     def test_transform_error_prevents_state_update(
         self, integration_aws, monkeypatch
     ):
-        """If process_key raises, update_state must not be called — state unchanged."""
+        """If Iceberg writer raises, update_state must not be called — state unchanged."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         ddb = integration_aws["dynamodb"]
 
@@ -914,27 +861,30 @@ class TestGlueFailureSagaRollback:
 
         responses.add(
             responses.GET,
-            f"{FRANKFURTER_API_URL}/2024-01-11..2024-01-31",
+            f"{FRANKFURTER_API_URL}/2024-01-11..{date.today().isoformat()}",
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
 
         import lambda_fx_ingestion as fx_mod
+        import lambda_iceberg_writer as writer_mod
 
         ingest_result = fx_mod.lambda_handler({}, None)
         assert ingest_result["status"] == "ok"
 
-        # Simulate Glue failure by patching process_key to raise
-        import glue_transform
-
         with patch.object(
-            glue_transform, "process_key", side_effect=RuntimeError("Glue OOM")
+            writer_mod, "_execute_athena_query", side_effect=RuntimeError("Athena timeout")
         ):
-            with pytest.raises(RuntimeError, match="Glue OOM"):
-                glue_transform.process_key(ingest_result["key"])
+            with pytest.raises(RuntimeError, match="Athena timeout"):
+                writer_mod.lambda_handler(
+                    {
+                        "raw_bucket": TEST_RAW_BUCKET,
+                        "raw_key": ingest_result["key"],
+                        "domain": "fx_rates",
+                    },
+                    None,
+                )
 
-        # Step Functions would NOT call update_state after Glue failure.
-        # Verify DynamoDB state is still at original value.
         item = ddb.get_item(
             TableName=TEST_STATE_TABLE,
             Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
@@ -944,7 +894,6 @@ class TestGlueFailureSagaRollback:
     @responses.activate
     def test_update_state_without_state_table_raises(self, integration_aws):
         """Calling update_state when STATE_TABLE is not set raises RuntimeError."""
-        # STATE_TABLE not set → handler is in static mode
         import lambda_fx_ingestion as fx_mod
 
         with pytest.raises(RuntimeError, match="STATE_TABLE"):

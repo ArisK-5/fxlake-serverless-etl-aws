@@ -21,6 +21,11 @@ resource "aws_lambda_function" "fx_ingest" {
       STATE_TABLE   = aws_dynamodb_table.pipeline_state.name
     }
   }
+
+  tags = {
+    component = "ingestion"
+    source    = "frankfurter"
+  }
 }
 
 # ECB and FRED Lambdas use the reusable module (dedicated IAM role per function)
@@ -57,6 +62,11 @@ module "ecb_ingest" {
 
   s3_bucket_arns         = [aws_s3_bucket.raw.arn]
   additional_policy_json = local.dynamodb_policy_json
+
+  tags = {
+    component = "ingestion"
+    source    = "ecb"
+  }
 }
 
 module "fred_ingest" {
@@ -79,6 +89,422 @@ module "fred_ingest" {
 
   s3_bucket_arns         = [aws_s3_bucket.raw.arn]
   additional_policy_json = local.dynamodb_policy_json
+
+  tags = {
+    component = "ingestion"
+    source    = "fred"
+  }
+}
+
+module "iceberg_writer" {
+  source = "./modules/lambda_function"
+
+  function_name = var.lambda_iceberg_writer_name
+  description   = "Writes transformed data to Iceberg tables via Athena INSERT INTO with quality gates"
+  handler       = "lambda_iceberg_writer.lambda_handler"
+  filename      = "../lambda/lambda_iceberg_writer.zip"
+  timeout       = 300
+
+  env_vars = {
+    DATABASE_NAME         = aws_glue_catalog_database.fxlake.name
+    ATHENA_RESULTS_BUCKET = aws_s3_bucket.athena_results.bucket
+    ATHENA_WORKGROUP      = aws_athena_workgroup.fxlake.name
+    RAW_BUCKET            = aws_s3_bucket.raw.bucket
+    PROCESSED_BUCKET      = aws_s3_bucket.processed.bucket
+    QUARANTINE_BUCKET     = aws_s3_bucket.quarantine.bucket
+    METRIC_NAMESPACE      = "${var.metric_namespace_prefix}/Quality"
+  }
+
+  s3_bucket_arns = [
+    aws_s3_bucket.raw.arn,
+    aws_s3_bucket.athena_results.arn,
+    aws_s3_bucket.processed.arn,
+    aws_s3_bucket.quarantine.arn,
+  ]
+
+  additional_policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution"
+        ]
+        Resource = aws_athena_workgroup.fxlake.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetTable",
+          "glue:GetPartitions",
+          "glue:UpdateTable"
+        ]
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.metric_namespace_prefix}/Quality"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    component = "transform"
+    source    = "iceberg"
+  }
+}
+
+module "data_validator" {
+  source = "./modules/lambda_function"
+
+  function_name = var.lambda_data_validator_name
+  description   = "Validates Iceberg table data integrity — row counts, null checks, expected values"
+  handler       = "lambda_data_validator.lambda_handler"
+  filename      = "../lambda/lambda_data_validator.zip"
+  timeout       = 300
+
+  env_vars = {
+    DATABASE_NAME         = aws_glue_catalog_database.fxlake.name
+    ATHENA_RESULTS_BUCKET = aws_s3_bucket.athena_results.bucket
+    ATHENA_WORKGROUP      = aws_athena_workgroup.fxlake.name
+    METRIC_NAMESPACE      = "${var.metric_namespace_prefix}/Validation"
+  }
+
+  s3_bucket_arns = [
+    aws_s3_bucket.athena_results.arn,
+    aws_s3_bucket.processed.arn,
+  ]
+
+  additional_policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults"
+        ]
+        Resource = aws_athena_workgroup.fxlake.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetTable",
+          "glue:GetPartitions"
+        ]
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.metric_namespace_prefix}/Validation"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    component = "validation"
+    source    = "iceberg"
+  }
+}
+
+module "cross_validator" {
+  source = "./modules/lambda_function"
+
+  function_name = var.lambda_cross_validator_name
+  description   = "Cross-source validation — compares FX rates across Frankfurter and ECB for consistency"
+  handler       = "lambda_cross_validator.lambda_handler"
+  filename      = "../lambda/lambda_cross_validator.zip"
+  timeout       = 300
+
+  env_vars = {
+    DATABASE_NAME         = aws_glue_catalog_database.fxlake.name
+    ATHENA_RESULTS_BUCKET = aws_s3_bucket.athena_results.bucket
+    ATHENA_WORKGROUP      = aws_athena_workgroup.fxlake.name
+    METRIC_NAMESPACE      = "${var.metric_namespace_prefix}/CrossValidation"
+  }
+
+  s3_bucket_arns = [
+    aws_s3_bucket.athena_results.arn,
+    aws_s3_bucket.processed.arn,
+  ]
+
+  additional_policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults"
+        ]
+        Resource = aws_athena_workgroup.fxlake.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetTable",
+          "glue:GetPartitions"
+        ]
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.metric_namespace_prefix}/CrossValidation"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    component = "validation"
+    source    = "cross-source"
+  }
+}
+
+module "anomaly_detector" {
+  source = "./modules/lambda_function"
+
+  function_name = var.lambda_anomaly_detector_name
+  description   = "Statistical anomaly detection for FX rates and economic indicators using z-score analysis"
+  handler       = "lambda_anomaly_detector.lambda_handler"
+  filename      = "../lambda/lambda_anomaly_detector.zip"
+  timeout       = 300
+
+  env_vars = {
+    DATABASE_NAME         = aws_glue_catalog_database.fxlake.name
+    ATHENA_RESULTS_BUCKET = aws_s3_bucket.athena_results.bucket
+    ATHENA_WORKGROUP      = aws_athena_workgroup.fxlake.name
+    METRIC_NAMESPACE      = "${var.metric_namespace_prefix}/AnomalyDetection"
+    SNS_TOPIC_ARN         = aws_sns_topic.alerts.arn
+  }
+
+  s3_bucket_arns = [
+    aws_s3_bucket.athena_results.arn,
+    aws_s3_bucket.processed.arn,
+  ]
+
+  additional_policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults"
+        ]
+        Resource = aws_athena_workgroup.fxlake.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetTable",
+          "glue:GetPartitions"
+        ]
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:database/${aws_glue_catalog_database.fxlake.name}",
+          "arn:aws:glue:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${aws_glue_catalog_database.fxlake.name}/*"
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.metric_namespace_prefix}/AnomalyDetection"
+          }
+        }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sns:Publish"]
+        Resource = aws_sns_topic.alerts.arn
+      }
+    ]
+  })
+
+  tags = {
+    component = "validation"
+    source    = "anomaly-detection"
+  }
+}
+
+module "dlq_auto_retry" {
+  source = "./modules/lambda_function"
+
+  function_name = var.lambda_dlq_auto_retry_name
+  description   = "Auto-retries transient DLQ failures, alerts on permanent failures"
+  handler       = "lambda_dlq_auto_retry.lambda_handler"
+  filename      = "../lambda/lambda_dlq_auto_retry.zip"
+  timeout       = 60
+
+  env_vars = {
+    STATE_MACHINE_ARN = aws_sfn_state_machine.etl.arn
+    SNS_TOPIC_ARN     = aws_sns_topic.alerts.arn
+    MAX_RETRIES       = "3"
+    METRIC_NAMESPACE  = "${var.metric_namespace_prefix}/SelfHealing"
+  }
+
+  additional_policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = aws_sqs_queue.pipeline_dlq.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["states:StartExecution"]
+        Resource = aws_sfn_state_machine.etl.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sns:Publish"]
+        Resource = aws_sns_topic.alerts.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.metric_namespace_prefix}/SelfHealing"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    component = "self-healing"
+    source    = "dlq-auto-retry"
+  }
+}
+
+resource "aws_lambda_event_source_mapping" "dlq_auto_retry" {
+  event_source_arn                   = aws_sqs_queue.pipeline_dlq.arn
+  function_name                      = module.dlq_auto_retry.function_arn
+  batch_size                         = 1
+  function_response_types            = ["ReportBatchItemFailures"]
+  maximum_batching_window_in_seconds = 0
+}
+
+module "stale_data_backfill" {
+  source = "./modules/lambda_function"
+
+  function_name = var.lambda_stale_data_backfill_name
+  description   = "Detects stale data sources and auto-triggers backfill executions"
+  handler       = "lambda_stale_data_backfill.lambda_handler"
+  filename      = "../lambda/lambda_stale_data_backfill.zip"
+  timeout       = 60
+
+  env_vars = {
+    STATE_TABLE          = aws_dynamodb_table.pipeline_state.name
+    STATE_MACHINE_ARN    = aws_sfn_state_machine.etl.arn
+    PIPELINE_ID          = "fxlake"
+    STALE_THRESHOLD_DAYS = "2"
+    METRIC_NAMESPACE     = "${var.metric_namespace_prefix}/SelfHealing"
+  }
+
+  additional_policy_json = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem"
+        ]
+        Resource = aws_dynamodb_table.pipeline_state.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["states:StartExecution"]
+        Resource = aws_sfn_state_machine.etl.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:PutMetricData"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.metric_namespace_prefix}/SelfHealing"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    component = "self-healing"
+    source    = "stale-data-backfill"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "stale_data_check" {
+  name                = "fxlake-stale-data-check"
+  description         = "Hourly check for stale data sources"
+  schedule_expression = "rate(1 hour)"
+
+  tags = {
+    component = "self-healing"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "stale_data_backfill" {
+  rule      = aws_cloudwatch_event_rule.stale_data_check.name
+  target_id = "stale-data-backfill"
+  arn       = module.stale_data_backfill.function_arn
+}
+
+resource "aws_lambda_permission" "stale_data_eventbridge" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.stale_data_backfill.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.stale_data_check.arn
 }
 
 resource "aws_lambda_function" "check_query_results" {
@@ -98,7 +524,12 @@ resource "aws_lambda_function" "check_query_results" {
     variables = {
       METRIC_NAMESPACE = "${var.metric_namespace_prefix}/Athena"
       PIPELINE         = var.pipeline
+      SLA_NAMESPACE    = "${var.metric_namespace_prefix}/SLA"
     }
+  }
+
+  tags = {
+    component = "validation"
   }
 }
 
@@ -107,6 +538,10 @@ resource "aws_cloudwatch_event_rule" "daily" {
   name                = "fxlake-daily-ingest"
   description         = "Daily trigger for FXLake ETL Step Functions pipeline"
   schedule_expression = "rate(1 day)"
+
+  tags = {
+    component = "orchestration"
+  }
 }
 
 resource "aws_cloudwatch_event_target" "invoke_step_function" {

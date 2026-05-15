@@ -191,14 +191,15 @@ class TestLambdaHandlerIncremental:
                 "last_processed_date": {"S": "2024-01-14"},
             },
         )
-        fetch_url = "https://api.frankfurter.app/2024-01-15..2024-01-31"
+        today = date.today().isoformat()
+        fetch_url = f"https://api.frankfurter.app/2024-01-15..{today}"
         responses.add(responses.GET, fetch_url, json=SAMPLE_API_RESPONSE, status=200)
 
         result = ingestion.lambda_handler({}, None)
 
         assert result["status"] == "ok"
         assert result["start_date"] == "2024-01-15"
-        assert result["end_date"] == "2024-01-31"
+        assert result["end_date"] == today
 
         # DynamoDB must NOT be updated
         item = aws_mock["dynamodb"].get_item(
@@ -210,8 +211,9 @@ class TestLambdaHandlerIncremental:
     @responses.activate
     def test_first_run_uses_start_date(self, aws_mock, monkeypatch):
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        today = date.today().isoformat()
         # No DynamoDB entry — should default to START_DATE="2024-01-01"
-        fetch_url = "https://api.frankfurter.app/2024-01-02..2024-01-31"
+        fetch_url = f"https://api.frankfurter.app/2024-01-02..{today}"
         responses.add(responses.GET, fetch_url, json=SAMPLE_API_RESPONSE, status=200)
 
         result = ingestion.lambda_handler({}, None)
@@ -220,21 +222,22 @@ class TestLambdaHandlerIncremental:
         assert result["start_date"] == "2024-01-02"
 
     @responses.activate
-    def test_no_new_data_when_last_processed_equals_end_date(self, aws_mock, monkeypatch):
+    def test_no_new_data_when_last_processed_is_today(self, aws_mock, monkeypatch):
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        today = date.today().isoformat()
         aws_mock["dynamodb"].put_item(
             TableName=TEST_STATE_TABLE,
             Item={
                 "pipeline_id": {"S": "fxlake"},
                 "source": {"S": "frankfurter"},
-                "last_processed_date": {"S": "2024-01-31"},  # == END_DATE
+                "last_processed_date": {"S": today},
             },
         )
 
         result = ingestion.lambda_handler({}, None)
 
         assert result["status"] == "no_new_data"
-        assert result["last_processed_date"] == "2024-01-31"
+        assert result["last_processed_date"] == today
 
 
 # ---------------------------------------------------------------------------
