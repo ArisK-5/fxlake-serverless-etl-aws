@@ -1,6 +1,6 @@
 <mxfile host="Electron" compressed="false">
   <diagram name="FXLake Cloud Architecture" id="fxlake-arch">
-    <mxGraphModel dx="2417" dy="1620" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1600" background="none" math="0" shadow="0">
+    <mxGraphModel dx="483" dy="324" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1600" background="none" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -146,13 +146,14 @@
         <mxCell id="e_cw_sns" edge="1" parent="grp_monitoring" source="cloudwatch" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;strokeColor=#E7157B;strokeWidth=2;labelBackgroundColor=default;" target="sns" value="alerts">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e_sf_ingest" edge="1" parent="grp_aws" source="stepfn" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;strokeColor=#D6B656;strokeWidth=1;dashed=1;labelBackgroundColor=default;" value="orchestrates">
+        <mxCell id="e_sf_ingest" edge="1" parent="grp_aws" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;strokeColor=#D6B656;strokeWidth=1;dashed=1;labelBackgroundColor=default;" value="orchestrates">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="390" y="109" />
               <mxPoint x="390" y="210" />
               <mxPoint x="180" y="210" />
             </Array>
+            <mxPoint x="430" y="109" as="sourcePoint" />
             <mxPoint x="180" y="240" as="targetPoint" />
           </mxGeometry>
         </mxCell>
@@ -160,21 +161,33 @@
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="490" y="210" />
-              <mxPoint x="760" y="210" />
+              <mxPoint x="780" y="210" />
             </Array>
             <mxPoint x="490" y="109" as="sourcePoint" />
             <mxPoint x="604" y="240" as="targetPoint" />
           </mxGeometry>
         </mxCell>
         <mxCell id="e_fx_s3" edge="1" parent="grp_aws" source="lambda_fx" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;strokeColor=#3F8624;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;labelBackgroundColor=default;" target="s3_raw" value="raw JSON">
-          <mxGeometry relative="1" as="geometry" />
+          <mxGeometry relative="1" x="-0.227" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
         </mxCell>
         <mxCell id="e_ecb_s3" edge="1" parent="grp_aws" source="lambda_ecb" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#3F8624;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" target="s3_raw" value="">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
+        <mxCell id="U777ZDC5Nog14rFQYDsr-2" connectable="0" parent="e_ecb_s3" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="&lt;span style=&quot;font-size: 9px;&quot;&gt;raw JSON&lt;/span&gt;" vertex="1">
+          <mxGeometry relative="1" x="0.3114" as="geometry">
+            <mxPoint x="10" as="offset" />
+          </mxGeometry>
+        </mxCell>
         <mxCell id="e_fred_s3" edge="1" parent="grp_aws" source="lambda_fred" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#3F8624;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" value="">
           <mxGeometry relative="1" as="geometry">
             <mxPoint x="404" y="520" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="U777ZDC5Nog14rFQYDsr-3" connectable="0" parent="e_fred_s3" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="&lt;span style=&quot;font-size: 9px;&quot;&gt;raw JSON&lt;/span&gt;" vertex="1">
+          <mxGeometry relative="1" x="-0.2076" y="-3" as="geometry">
+            <mxPoint x="5" y="-3" as="offset" />
           </mxGeometry>
         </mxCell>
         <mxCell id="e_s3_iceberg" edge="1" parent="grp_aws" source="s3_raw" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#3F8624;strokeWidth=2;" target="lambda_iceberg" value="">
@@ -324,9 +337,6 @@
               <mxPoint x="130" y="1200" />
             </Array>
           </mxGeometry>
-        </mxCell>
-        <mxCell id="2" edge="1" parent="1" source="grp_aws" style="edgeStyle=none;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" target="grp_aws">
-          <mxGeometry relative="1" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>

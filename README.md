@@ -12,6 +12,7 @@ Terraform · S3 · Lambda · Athena · Apache Iceberg · dbt Core · CodeBuild �
 - [Overview](#overview)
   - [Repo Structure](#repo-structure)
   - [Cloud Architecture](#cloud-architecture)
+  - [Step Function DAG](#step-function-dag)
   - [CI/CD Workflow](#cicd-workflow)
   - [Features](#features)
   - [Skills Demonstrated](#skills-demonstrated)
