@@ -14,6 +14,7 @@ Terraform · S3 · Lambda · Athena · Apache Iceberg · dbt Core · CodeBuild �
   - [Cloud Architecture](#cloud-architecture)
   - [Step Function DAG](#step-function-dag)
   - [CI/CD Workflow](#cicd-workflow)
+  - [dbt Lineage](#dbt-lineage)
   - [Features](#features)
   - [Skills Demonstrated](#skills-demonstrated)
 - [Getting Started](#getting-started)
@@ -167,6 +168,10 @@ Diagrams are maintained as [Draw.io](https://www.drawio.com) files in `assets/di
 ### CI/CD Workflow
 
 ![FXLake — CI/CD Workflow](/assets/diagrams/cicd-workflow.png "CI/CD workflow diagram")
+
+### dbt Lineage
+
+![FXLake — dbt Lineage](/assets/diagrams/dbt-lineage.png "dbt lineage diagram")
 
 ### Features
 
