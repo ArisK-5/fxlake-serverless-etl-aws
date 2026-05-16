@@ -117,10 +117,22 @@ resource "aws_sfn_state_machine" "etl" {
             Next = "Pipeline-Already-Up-To-Date"
           }
         ],
-        Default = "Write-FX-Iceberg"
+        Default = "Check-FX-Data"
       },
       Pipeline-Already-Up-To-Date = {
         Type = "Succeed"
+      },
+      Check-FX-Data = {
+        Type    = "Choice",
+        Comment = "Skip FX Iceberg write when Frankfurter returned no new data.",
+        Choices = [
+          {
+            Variable     = "$.parallel_results.fx.Payload.status",
+            StringEquals = "no_new_data",
+            Next         = "Check-Economic-Data"
+          }
+        ],
+        Default = "Write-FX-Iceberg"
       },
       Write-FX-Iceberg = {
         Type     = "Task",
@@ -152,7 +164,19 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
-        Next = "Write-Economic-Iceberg"
+        Next = "Check-Economic-Data"
+      },
+      Check-Economic-Data = {
+        Type    = "Choice",
+        Comment = "Skip Economic Iceberg write when FRED returned no new data.",
+        Choices = [
+          {
+            Variable     = "$.parallel_results.fred.Payload.status",
+            StringEquals = "no_new_data",
+            Next         = "dbt-Transform"
+          }
+        ],
+        Default = "Write-Economic-Iceberg"
       },
       Write-Economic-Iceberg = {
         Type     = "Task",
@@ -236,6 +260,18 @@ resource "aws_sfn_state_machine" "etl" {
             Next = "Athena-Sample-Query"
           }
         ],
+        Default = "Check-FX-State-Update"
+      },
+      Check-FX-State-Update = {
+        Type    = "Choice",
+        Comment = "Skip FX state update when Frankfurter returned no new data.",
+        Choices = [
+          {
+            Variable     = "$.parallel_results.fx.Payload.status",
+            StringEquals = "no_new_data",
+            Next         = "Check-ECB-State-Update"
+          }
+        ],
         Default = "Lambda-Update-FX-State"
       },
       Lambda-Update-FX-State = {
@@ -265,7 +301,19 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
-        Next = "Lambda-Update-ECB-State"
+        Next = "Check-ECB-State-Update"
+      },
+      Check-ECB-State-Update = {
+        Type    = "Choice",
+        Comment = "Skip ECB state update when ECB returned no new data.",
+        Choices = [
+          {
+            Variable     = "$.parallel_results.ecb.Payload.status",
+            StringEquals = "no_new_data",
+            Next         = "Check-FRED-State-Update"
+          }
+        ],
+        Default = "Lambda-Update-ECB-State"
       },
       Lambda-Update-ECB-State = {
         Type     = "Task",
@@ -294,7 +342,19 @@ resource "aws_sfn_state_machine" "etl" {
             ResultPath  = "$.errorInfo"
           }
         ],
-        Next = "Lambda-Update-FRED-State"
+        Next = "Check-FRED-State-Update"
+      },
+      Check-FRED-State-Update = {
+        Type    = "Choice",
+        Comment = "Skip FRED state update when FRED returned no new data.",
+        Choices = [
+          {
+            Variable     = "$.parallel_results.fred.Payload.status",
+            StringEquals = "no_new_data",
+            Next         = "Athena-Sample-Query"
+          }
+        ],
+        Default = "Lambda-Update-FRED-State"
       },
       Lambda-Update-FRED-State = {
         Type     = "Task",
