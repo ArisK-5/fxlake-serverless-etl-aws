@@ -345,7 +345,6 @@ class TestLambdaHandlerIncremental:
         assert item["last_processed_date"]["S"] == "2024-01-31"
 
     @responses.activate
-    @responses.activate
     def test_empty_api_response_returns_no_new_data(self, aws_mock, monkeypatch):
         """ECB API empty body (no data for period) returns no_new_data."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
@@ -363,6 +362,12 @@ class TestLambdaHandlerIncremental:
 
         assert result["status"] == "no_new_data"
         assert result["source"] == "ecb"
+        # Verify DynamoDB state was NOT advanced
+        item = aws_mock["dynamodb"].get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "ecb"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-05-10"
 
     @responses.activate
     def test_ecb_reads_only_its_own_dynamodb_row(self, aws_mock, monkeypatch):

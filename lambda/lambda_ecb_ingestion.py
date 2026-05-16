@@ -67,10 +67,17 @@ class ECBHandler(BaseIngestionHandler):
 
         # JSON decode — ECB API returns HTTP 200 with empty body when no data
         # exists for the requested period (e.g., only weekends/holidays in range)
-        if not resp.content:
+        if not resp.content or not resp.content.strip():
             logger.info(
                 "ECB API returned empty response body (no data for period)",
-                extra={"url": url, "start_date": start_date, "end_date": end_date},
+                extra={
+                    "url": url,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "status_code": resp.status_code,
+                    "content_type": resp.headers.get("Content-Type"),
+                    "content_length": len(resp.content),
+                },
             )
             return None
         try:
