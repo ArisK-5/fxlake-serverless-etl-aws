@@ -66,8 +66,12 @@ class BaseIngestionHandler(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def fetch_data(self, start_date: str, end_date: str) -> dict:
-        """Fetch raw data from the source for the given date range."""
+    def fetch_data(self, start_date: str, end_date: str) -> dict | None:
+        """Fetch raw data from the source for the given date range.
+
+        Returns None if the source has no data for the requested range (e.g.,
+        monthly series with no new release). Callers treat None as no_new_data.
+        """
 
     @abstractmethod
     def make_filename(self, start_date: str, end_date: str) -> str:
@@ -338,6 +342,21 @@ class BaseIngestionHandler(ABC):
             and "mode" only for backfill).
         """
         data = self.fetch_data(start_date, end_date)
+        if data is None:
+            logger.info(
+                "Source returned no data for range",
+                extra={
+                    "source": self.source_name,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
+            )
+            return {
+                "status": "no_new_data",
+                "start_date": start_date,
+                "end_date": end_date,
+                "source": self.source_name,
+            }
         validate_data(data)
         filename = self.make_filename(start_date, end_date)
         self.save_to_s3(data, filename, start_date=start_date, end_date=end_date)

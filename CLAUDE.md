@@ -349,7 +349,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 628 tests (596 unit + 32 integration), 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 629 tests (597 unit + 32 integration), 97% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
@@ -401,7 +401,7 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 | `test_base_handler.py` | `BaseIngestionHandler` — save_to_s3, DynamoDB state, orchestration, saga pattern, backfill validation, _perform_ingest (55 tests) |
 | `test_lambda_fx_ingestion.py` | `FrankfurterHandler` — API calls, filename, integration via `lambda_handler` (19 tests) |
 | `test_lambda_ecb_ingestion.py` | `ECBHandler` — SDMX parsing, API calls, integration (20 tests) |
-| `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (23 tests) |
+| `test_lambda_fred_ingestion.py` | `FREDHandler` — parse/sentinel drop, fetch, filename, static/incremental `lambda_handler` (24 tests) |
 | `test_data_quality.py` | Pure quality checks — each check function, domain runners, report builder, invariant validation (29 tests) |
 | `test_lambda_validation.py` | Validation Lambda — freshness check, staleness metric, empty results, malformed rows (16 tests) |
 | `test_structured_logging.py` | Structured logging — JSON formatter, request ID filter, configure_logger, inject_request_id, Timer (18 tests) |

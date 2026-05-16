@@ -112,12 +112,12 @@ class TestParseFredResponse:
         with pytest.raises(KeyError):
             handler._parse_fred_response(raw)
 
-    def test_empty_observations_list_raises(self):
+    def test_empty_observations_list_returns_none(self):
         raw = {"observations": []}
         handler = FREDHandler()
 
-        with pytest.raises(ValueError, match="no valid observations"):
-            handler._parse_fred_response(raw)
+        result = handler._parse_fred_response(raw)
+        assert result is None
 
     def test_series_id_from_env(self):
         """series_id in output must match FRED_SERIES env var."""
@@ -330,3 +330,23 @@ class TestLambdaHandlerIncremental:
 
         assert result["status"] == "no_new_data"
         assert "end_date" in result
+
+    @responses.activate
+    def test_empty_api_response_returns_no_new_data(self, aws_mock, monkeypatch):
+        """Monthly series with no new release returns no_new_data instead of raising."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "fred"},
+                "last_processed_date": {"S": "2024-04-30"},
+            },
+        )
+        empty_response = {"observations": []}
+        responses.add(responses.GET, FRED_API_URL, json=empty_response, status=200)
+
+        result = fred_module.lambda_handler({}, None)
+
+        assert result["status"] == "no_new_data"
+        assert result["source"] == "fred"

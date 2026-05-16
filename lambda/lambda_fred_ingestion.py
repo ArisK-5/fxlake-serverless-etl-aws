@@ -36,7 +36,7 @@ class FREDHandler(BaseIngestionHandler):
         self.api_key = os.environ["FRED_API_KEY"]
         self.series_id = os.environ["FRED_SERIES"]
 
-    def fetch_data(self, start_date: str, end_date: str) -> dict:
+    def fetch_data(self, start_date: str, end_date: str) -> dict | None:
         """Fetch and normalise economic observations from the FRED API."""
         url = f"{self.fred_base_url}/series/observations"
         params = {
@@ -88,6 +88,16 @@ class FREDHandler(BaseIngestionHandler):
         # Structural parse
         try:
             result = self._parse_fred_response(raw)
+            if result is None:
+                logger.info(
+                    "No observations available from FRED API for date range",
+                    extra={
+                        "series": self.series_id,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                    },
+                )
+                return None
             record_count = len(result.get("observations", {}))
             logger.info(
                 "Fetched observations from FRED API",
@@ -114,7 +124,7 @@ class FREDHandler(BaseIngestionHandler):
             )
             raise
 
-    def _parse_fred_response(self, raw: dict) -> dict:
+    def _parse_fred_response(self, raw: dict) -> dict | None:
         """Parse FRED API JSON into normalised ``{date: value}`` observations.
 
         FRED uses ``"."`` as a sentinel for missing or unreleased data points —
@@ -124,7 +134,9 @@ class FREDHandler(BaseIngestionHandler):
             raw: Parsed JSON from FRED ``/series/observations`` endpoint.
 
         Returns:
-            ``{"source": "fred", "series_id": <series>, "observations": {date: float}}``.
+            ``{"source": "fred", "series_id": <series>, "observations": {date: float}}``,
+            or ``None`` if the API returned an empty observations list (no data
+            available for the requested date range — normal for monthly series).
 
         Raises:
             ValueError: If the response has no ``observations`` key, or all
@@ -161,6 +173,8 @@ class FREDHandler(BaseIngestionHandler):
             )
 
         if not observations:
+            if len(observations_list) == 0:
+                return None
             raise ValueError(
                 f"FRED response contained no valid observations for series={self.series_id}. "
                 f"All {len(observations_list)} observations had missing values ('.'). "
