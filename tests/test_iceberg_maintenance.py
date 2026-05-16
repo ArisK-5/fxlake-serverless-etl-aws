@@ -9,13 +9,13 @@ class TestMaintenanceResult:
         from lambda_iceberg_maintenance import MaintenanceResult
 
         result = MaintenanceResult(
-            table="fx_rates_v3",
+            table="fx_rates",
             operation="OPTIMIZE",
             success=True,
             duration_ms=1234.5,
             detail="Completed",
         )
-        assert result.table == "fx_rates_v3"
+        assert result.table == "fx_rates"
         assert result.operation == "OPTIMIZE"
         assert result.success is True
         assert result.duration_ms == 1234.5
@@ -25,7 +25,7 @@ class TestMaintenanceResult:
         from lambda_iceberg_maintenance import MaintenanceResult
 
         result = MaintenanceResult(
-            table="fx_rates_v3",
+            table="fx_rates",
             operation="OPTIMIZE",
             success=True,
             duration_ms=100.0,
@@ -49,7 +49,7 @@ class TestExecuteStatement:
 
         result = _execute_statement(
             mock_client,
-            "OPTIMIZE fx_rates_v3 REWRITE DATA USING BIN_PACK",
+            "OPTIMIZE fx_rates REWRITE DATA USING BIN_PACK",
             "fxlake",
             "s3://bucket/results/",
             "fxlake",
@@ -95,7 +95,7 @@ class TestExecuteStatement:
 
         result = _execute_statement(
             mock_client,
-            "VACUUM fx_rates_v3",
+            "VACUUM fx_rates",
             "fxlake",
             "s3://bucket/results/",
             "fxlake",
@@ -117,7 +117,7 @@ class TestExecuteStatement:
 
         result = _execute_statement(
             mock_client,
-            "OPTIMIZE fx_rates_v3 REWRITE DATA USING BIN_PACK",
+            "OPTIMIZE fx_rates REWRITE DATA USING BIN_PACK",
             "fxlake",
             "s3://bucket/results/",
             "fxlake",
@@ -141,7 +141,7 @@ class TestExecuteStatement:
 
         result = _execute_statement(
             mock_client,
-            "OPTIMIZE fx_rates_v3 REWRITE DATA USING BIN_PACK",
+            "OPTIMIZE fx_rates REWRITE DATA USING BIN_PACK",
             "fxlake",
             "s3://bucket/results/",
             "fxlake",
@@ -319,7 +319,7 @@ class TestLambdaHandler:
         }
 
         result = lambda_handler(
-            {"tables": ["fx_rates_v3"]}, MagicMock()
+            {"tables": ["fx_rates"]}, MagicMock()
         )
         assert result["total_operations"] == 2
-        assert all("fx_rates_v3" in r["table"] for r in result["results"])
+        assert all("fx_rates" in r["table"] for r in result["results"])

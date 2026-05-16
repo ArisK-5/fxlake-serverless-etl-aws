@@ -98,9 +98,9 @@ build_lambda() {
 # -----------------------------------------------------------
 # Build each Lambda
 # -----------------------------------------------------------
-build_lambda lambda_fx_ingestion.py       lambda_fx_ingestion.zip   requirements.txt "" ../schemas
-build_lambda lambda_ecb_ingestion.py      lambda_ecb_ingestion.zip  requirements.txt "" ../schemas
-build_lambda lambda_fred_ingestion.py     lambda_fred_ingestion.zip requirements.txt "" ../schemas
+build_lambda lambda_fx_ingestion.py       lambda_fx_ingestion.zip   requirements.txt manylinux2014_x86_64 ../schemas
+build_lambda lambda_ecb_ingestion.py      lambda_ecb_ingestion.zip  requirements.txt manylinux2014_x86_64 ../schemas
+build_lambda lambda_fred_ingestion.py     lambda_fred_ingestion.zip requirements.txt manylinux2014_x86_64 ../schemas
 build_lambda lambda_validation_function.py lambda_validation_function.zip requirements_validation.txt
 build_lambda lambda_iceberg_writer.py     lambda_iceberg_writer.zip requirements_iceberg_writer.txt manylinux2014_x86_64
 

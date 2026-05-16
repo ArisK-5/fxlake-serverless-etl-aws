@@ -6,16 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FXLake is a serverless ETL pipeline on AWS that fetches daily financial data from three independent sources (Frankfurter API, ECB Statistics Data Warehouse, FRED), writes to Apache Iceberg tables via Athena, transforms with dbt Core, enforces data quality checks, and makes it queryable via Athena. Infrastructure is managed entirely with Terraform.
 
-### v3 Roadmap
+### Architecture History
 
-FXLake v3 is a 20-day phased enhancement (see `docs/planning/implementation_plan_v3.md`). Key changes:
-- **Apache Iceberg** replaces plain Parquet for ACID transactions, schema evolution, and time travel
-- **Athena CTAS/INSERT** replaces Glue Python Shell as the Iceberg write path
-- **dbt Core** replaces monolithic `glue_transform.py` with modular SQL models and built-in lineage
-- **Step Functions** orchestration is preserved
-- **Branch strategy:** all v3 work develops on the `v3` branch (and feature branches off it); `main` continues running v2 unaffected; merge to `main` is the cutover
-
-Architectural decisions are documented in `docs/planning/decision_log_v3.md`.
+FXLake v3 was a major evolution delivered via a dedicated branch (now merged to `main`). Planning documents in `docs/planning/` record the rationale and phased implementation. Key architectural decisions are documented in `docs/planning/decision_log_v3.md` and individual ADRs in `docs/adr/`.
 
 ## Commands
 
@@ -81,18 +74,21 @@ uv run assets/dbt-lineage.py
 
 The pipeline is orchestrated by **Step Functions** and triggered daily by **EventBridge**, which invokes the Step Functions state machine directly (not the Lambda):
 
-1. **Parallel (Parallel-Ingestion)** — runs Frankfurter, ECB, and FRED ingestion concurrently (3 branches). Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx`, `$.parallel_results.ecb`, and `$.parallel_results.fred`. **Does not update DynamoDB** — deferred to steps 4–6.
+1. **Parallel (Parallel-Ingestion)** — runs Frankfurter, ECB, and FRED ingestion concurrently (3 branches). Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx`, `$.parallel_results.ecb`, and `$.parallel_results.fred`. **Does not update DynamoDB** — deferred to steps 10–12.
 2. **Choice (Check-New-Data)** — routes to `Pipeline-Already-Up-To-Date` only if **all three** sources returned `no_new_data`; otherwise continues to Iceberg write.
-3. **Lambda (Write-FX-Iceberg)** — reads raw FX JSON from S3, runs quality checks, writes to the `fx_rates` Iceberg table via batched Athena `INSERT INTO` queries.
-4. **Lambda (Write-Economic-Iceberg)** — reads raw FRED JSON from S3, runs quality checks, writes to the `economic_indicators` Iceberg table via batched Athena `INSERT INTO` queries.
-5. **CodeBuild (dbt-Transform)** — runs dbt models via CodeBuild (`.sync` integration — Step Functions blocks until build completes). Staging views deduplicate and prioritize sources; mart tables materialise as Iceberg. Pipeline **fails** if dbt fails.
-6. **Choice (Check-Backfill-Mode)** — skips state updates for backfill executions to protect the incremental watermark.
-7. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB. Calls the `fx_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
-8. **Lambda (Update-ECB-State)** — commits ECB `last_processed_date` to DynamoDB. Calls the `ecb_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.ecb.Payload.end_date"}`.
-9. **Lambda (Update-FRED-State)** — commits FRED `last_processed_date` to DynamoDB. Calls the `fred_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fred.Payload.end_date"}`.
-10. **Athena (Athena-Sample-Query)** — runs a data freshness query (`SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates`) via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
-11. **Lambda (Validation)** — parses `latest_date` and `total_records` from Athena results, checks if `latest_date` is within 2 days (freshness threshold), publishes `EmptyQueryResults` and `StaleFXData` CloudWatch metrics
-12. **Lambda (Cross-Source-Validation)** — compares FX rates from Frankfurter and ECB for consistency: rate deviation (>1% threshold), temporal alignment (>1 day gap), and volume distribution (>50% deviation from mean). Publishes `CrossSource_rate_consistency`, `CrossSource_temporal_consistency`, `CrossSource_volume_consistency`, and `CrossSourceDiscrepancy` metrics to CloudWatch
+3. **Choice (Check-FX-Data)** — skips `Write-FX-Iceberg` when Frankfurter returned `no_new_data`.
+4. **Lambda (Write-FX-Iceberg)** — reads raw FX JSON from S3, runs quality checks, writes to the `fx_rates` Iceberg table via batched Athena `INSERT INTO` queries.
+5. **Choice (Check-Economic-Data)** — skips `Write-Economic-Iceberg` when FRED returned `no_new_data`.
+6. **Lambda (Write-Economic-Iceberg)** — reads raw FRED JSON from S3, runs quality checks, writes to the `economic_indicators` Iceberg table via batched Athena `INSERT INTO` queries.
+7. **CodeBuild (dbt-Transform)** — runs dbt models via CodeBuild (`.sync` integration — Step Functions blocks until build completes). Staging views deduplicate and prioritize sources; mart tables materialise as Iceberg. Pipeline **fails** if dbt fails.
+8. **Choice (Check-Backfill-Mode)** — skips state updates for backfill executions to protect the incremental watermark.
+9. **Choice (Check-FX-State-Update / Check-ECB-State-Update / Check-FRED-State-Update)** — each skips the corresponding state update when that source returned `no_new_data`.
+10. **Lambda (Update-FX-State)** — commits Frankfurter `last_processed_date` to DynamoDB. Calls the `fx_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fx.Payload.end_date"}`.
+11. **Lambda (Update-ECB-State)** — commits ECB `last_processed_date` to DynamoDB. Calls the `ecb_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.ecb.Payload.end_date"}`.
+12. **Lambda (Update-FRED-State)** — commits FRED `last_processed_date` to DynamoDB. Calls the `fred_ingest` Lambda with `{"action": "update_state", "end_date": "$.parallel_results.fred.Payload.end_date"}`.
+13. **Athena (Athena-Sample-Query)** — runs a data freshness query (`SELECT MAX(date) AS latest_date, COUNT(*) AS total_records FROM fx_rates`) via Glue Data Catalog; results go to a dedicated S3 bucket with 1-day lifecycle TTL
+14. **Lambda (Validation)** — parses `latest_date` and `total_records` from Athena results, checks if `latest_date` is within 2 days (freshness threshold), publishes `EmptyQueryResults` and `StaleFXData` CloudWatch metrics
+15. **Lambda (Cross-Source-Validation)** — compares FX rates from Frankfurter and ECB for consistency: rate deviation (>1% threshold), temporal alignment (>1 day gap), and volume distribution (>50% deviation from mean). Publishes `CrossSource_rate_consistency`, `CrossSource_temporal_consistency`, `CrossSource_volume_consistency`, and `CrossSourceDiscrepancy` metrics to CloudWatch
 
 ### Self-Healing Mechanisms
 
@@ -170,7 +166,7 @@ Every state has Retry and Catch blocks:
 - **Athena state**: retry on `Athena.InternalServerException`, `Athena.TooManyRequestsException`
 - **All Catch blocks**: `ResultPath = "$.errorInfo"` preserves the actual error; Fail states use `ErrorPath`/`CausePath` to surface the real cause in execution history
 
-### Iceberg Writer Lambda (v3)
+### Iceberg Writer Lambda
 
 `lambda/lambda_iceberg_writer.py` replaces `glue_transform.py` as the write path. Reads raw JSON from S3, runs quality checks (reusing `common/quality.py`), builds batched `INSERT INTO` SQL, and executes via Athena against Iceberg tables.
 
@@ -182,7 +178,7 @@ Every state has Retry and Catch blocks:
 - Table name validated against `^[a-zA-Z_][a-zA-Z0-9_]*$` regex (SQL injection prevention)
 - Env vars: `PROCESSED_BUCKET` and `QUARANTINE_BUCKET` required (`os.environ[]`); `DATABASE_NAME`, `ATHENA_RESULTS_BUCKET`, `ATHENA_WORKGROUP`, `RAW_BUCKET`, `METRIC_NAMESPACE` optional with defaults
 
-### dbt Layer (v3)
+### dbt Layer
 
 dbt Core 1.11.8 with `dbt-athena-community` 1.10.0 adapter. Project lives in `dbt/`.
 
@@ -253,7 +249,7 @@ dbt/
 
 | File | What it defines |
 |------|----------------|
-| `step_function.tf` | ASL definition for 12-stage orchestration: Parallel-Ingestion (3 branches) → Check-New-Data → Write-FX-Iceberg → Write-Economic-Iceberg → dbt-Transform (CodeBuild .sync) → Check-Backfill-Mode → Update-FX-State → Update-ECB-State → Update-FRED-State → Athena → Validation → Cross-Source-Validation, with Retry/Catch + Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. `Check-Backfill-Mode` skips Update-State steps for backfill executions to protect the incremental watermark. |
+| `step_function.tf` | ASL definition for 15-stage orchestration: Parallel-Ingestion (3 branches) → Check-New-Data → Check-FX-Data → Write-FX-Iceberg → Check-Economic-Data → Write-Economic-Iceberg → dbt-Transform (CodeBuild .sync) → Check-Backfill-Mode → Check-{FX,ECB,FRED}-State-Update → Update-{FX,ECB,FRED}-State → Athena → Validation → Cross-Source-Validation, with Retry/Catch + Fail states + Succeed state. `ResultSelector` shapes Parallel output to named keys (`fx`, `ecb`, `fred`); `ResultPath` preserves state across all stages. Per-source Choice states skip Iceberg writes and state updates when that source returned `no_new_data`. `Check-Backfill-Mode` skips all state updates for backfill executions to protect the incremental watermark. |
 | `dynamodb.tf` | `fxlake-pipeline-state` table for incremental processing state (partition: `pipeline_id`, sort: `source`) |
 | `lambda.tf` | Frankfurter + validation Lambdas (inline), ECB + FRED Lambdas (via `modules/lambda_function`), Iceberg writer + data validator Lambdas, DLQ auto-retry + stale data backfill Lambdas, EventBridge rule/target (→ Step Functions), SQS event source mapping, hourly EventBridge rule |
 | `dlq.tf` | SQS DLQ + EventBridge failure capture rule + queue policy + CloudWatch alarm |
@@ -459,11 +455,11 @@ ADRs live in `docs/adr/` and document foundational choices:
 | [ADR-006](docs/adr/ADR-006-dbt-core-transformation-layer.md) | dbt Core transformation layer | Modular SQL models + lineage vs additional tool in stack |
 | [ADR-007](docs/adr/ADR-007-athena-ctas-over-glue-spark.md) | Athena CTAS over Glue Spark | Near-zero cost at <1 MB/day vs SQL-only transformations |
 
-**Note:** ADR-001 (Polars) and ADR-004 (quality in Glue) are superseded by v3 — Glue Python Shell has been removed; the Iceberg writer Lambda and dbt Core now handle writes and transforms. See `docs/planning/decision_log_v3.md` for the full v3 decision log.
+**Note:** ADR-001 (Polars) and ADR-004 (quality in Glue) are superseded — Glue Python Shell has been removed; the Iceberg writer Lambda and dbt Core now handle writes and transforms. See `docs/planning/decision_log_v3.md` for the full decision log.
 
-## Planning
+## Planning (Historical)
 
-v3 planning documents in `docs/planning/`:
-- `implementation_plan_v3.md` — 20-day phased implementation plan with session prompts
+The v3 planning documents in `docs/planning/` record the architectural evolution from Parquet/Glue to Iceberg/dbt (now complete and live on `main`):
+- `implementation_plan_v3.md` — 20-day phased implementation plan
 - `decision_log_v3.md` — 7 architectural decisions (Iceberg, Athena CTAS, dbt Core, preserve Step Functions, branch-based migration, CloudWatch composite alarms, resource tags)
 - `analysis_summary_v3.md` — scalability analysis, production gaps, Iceberg evaluation, target architecture
