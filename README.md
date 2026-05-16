@@ -94,7 +94,7 @@ Terraform · S3 · Lambda · Athena · Apache Iceberg · dbt Core · CodeBuild �
 ├── terraform/
 │   ├── bootstrap/main.tf                   # Remote state backend bootstrap
 │   ├── modules/lambda_function/            # Reusable Lambda module
-│   ├── step_function.tf                    # 12-stage Step Functions ASL
+│   ├── step_function.tf                    # 15-stage Step Functions ASL
 │   ├── lambda.tf                           # Lambda definitions + EventBridge + SQS mapping
 │   ├── dlq.tf                              # SQS DLQ + EventBridge failure capture
 │   ├── dynamodb.tf                         # Pipeline state table
@@ -143,14 +143,14 @@ Terraform · S3 · Lambda · Athena · Apache Iceberg · dbt Core · CodeBuild �
 
 ### Cloud Architecture
 
-The pipeline orchestrates a 12-stage serverless ETL flow using AWS services:
+The pipeline orchestrates a 15-stage serverless ETL flow using AWS services:
 
 - **3 ingestion Lambdas** (Python 3.12) fetch data from [Frankfurter API](https://frankfurter.dev), [ECB Statistics Data Warehouse](https://data.ecb.europa.eu), and [FRED](https://fred.stlouisfed.org) in parallel, storing raw JSON in S3.
 - **DynamoDB** tracks the last-processed date per source for incremental processing — each Lambda only fetches data newer than its watermark.
 - **Iceberg writer Lambdas** read raw JSON from S3, run quality checks, and write to **Apache Iceberg** tables via batched Athena `INSERT INTO` queries. ACID transactions, schema evolution, and time travel replace plain Parquet.
 - **dbt Core** (via **CodeBuild**) transforms data with modular SQL models — staging views deduplicate and prioritize sources; mart tables materialise as Iceberg.
 - **Amazon Athena** queries the transformed data via Glue Data Catalog with partition projection.
-- **AWS Step Functions** coordinate the full workflow: Parallel Ingestion → Check New Data → Write FX Iceberg → Write Economic Iceberg → dbt Transform → Check Backfill Mode → Update State (3 steps) → Athena → Validation → Cross-Source Validation.
+- **AWS Step Functions** coordinate the full workflow: Parallel Ingestion → Check New Data → Check FX Data → Write FX Iceberg → Check Economic Data → Write Economic Iceberg → dbt Transform → Check Backfill Mode → Check/Update State (per source) → Athena → Validation → Cross-Source Validation. Per-source Choice states skip writes and state updates when that source has no new data.
 - **Self-healing Lambdas** provide automated recovery: DLQ auto-retry classifies and replays transient failures; hourly stale data backfill detects gaps and triggers catch-up executions.
 - **Amazon EventBridge** triggers the pipeline daily + hourly stale data checks.
 - **CloudWatch** provides 11 alarms (including data quality, staleness, and DLQ depth), a dashboard, and structured JSON logging. **X-Ray** traces all Lambda and SDK calls.
