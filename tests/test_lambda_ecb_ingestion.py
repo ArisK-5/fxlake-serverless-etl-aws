@@ -259,6 +259,14 @@ class TestFetchData:
         assert result is None
 
     @responses.activate
+    def test_whitespace_only_body_raises_value_error(self):
+        """Whitespace-only response is suspicious — must raise, not return None."""
+        responses.add(responses.GET, ECB_API_URL, body=b"   \n\t  ", status=200)
+
+        with pytest.raises(ValueError, match="whitespace-only"):
+            ECBHandler().fetch_data("2024-01-06", "2024-01-07")
+
+    @responses.activate
     def test_malformed_sdmx_raises_key_error(self):
         responses.add(responses.GET, ECB_API_URL, json={"structure": {}}, status=200)
 
@@ -396,3 +404,23 @@ class TestLambdaHandlerIncremental:
 
         # ECB must have read source="ecb" (last_processed=2024-01-14), not "frankfurter"
         assert result["start_date"] == "2024-01-15"
+
+
+# ---------------------------------------------------------------------------
+# lambda_handler() — backfill mode
+# ---------------------------------------------------------------------------
+class TestLambdaHandlerBackfill:
+    @responses.activate
+    def test_backfill_empty_response_returns_no_new_data(self, s3_mock):
+        """Backfill with empty ECB response returns no_new_data, no S3 write."""
+        responses.add(responses.GET, ECB_API_URL, body=b"", status=200)
+
+        result = ecb_module.lambda_handler(
+            {"mode": "backfill", "start_date": "2024-05-11", "end_date": "2024-05-12"},
+            None,
+        )
+
+        assert result["status"] == "no_new_data"
+        assert result["source"] == "ecb"
+        objs = s3_mock.list_objects_v2(Bucket="test-raw-bucket")
+        assert objs.get("KeyCount", 0) == 0
