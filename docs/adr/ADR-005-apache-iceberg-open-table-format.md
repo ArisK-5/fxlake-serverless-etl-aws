@@ -51,4 +51,4 @@ Write path: `lambda/lambda_iceberg_writer.py` reads raw JSON from S3, runs quali
 - `terraform/athena.tf` — Iceberg table definitions with partition projection
 - `lambda/lambda_iceberg_writer.py` — write path implementation
 - `lambda/lambda_iceberg_maintenance.py` — compaction and vacuum scheduling
-- `docs/planning/decision_log_v3.md` — DL-001
+- Decision log DL-001 (see git history: `docs/planning/decision_log_v3.md`)

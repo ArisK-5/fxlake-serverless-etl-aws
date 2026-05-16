@@ -58,4 +58,4 @@ Use **dbt Core 1.11.8** with the `dbt-athena-community 1.10.0` adapter. dbt runs
 - `dbt/` — full dbt project (models, tests, macros, profiles)
 - `terraform/codebuild.tf` — CodeBuild project for dbt execution
 - `lambda/common/quality.py` — preserved for CRITICAL pre-write quality gates
-- `docs/planning/decision_log_v3.md` — DL-003
+- Decision log DL-003 (see git history: `docs/planning/decision_log_v3.md`)

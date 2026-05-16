@@ -351,4 +351,5 @@ Key design decisions are documented as ADRs in [`docs/adr/`](docs/adr/):
 - Add more economic data series from FRED (GDP, CPI, interest rates).
 - Add a lightweight API layer (API Gateway + Lambda) for on-demand queries.
 - Introduce environment-specific deployments (dev, staging, prod) with Terraform workspaces.
-- Migrate to Glue Spark with Iceberg connector if data volumes grow past ~100 MB/day (see ADR-007).
+- Automate Iceberg table maintenance (OPTIMIZE/VACUUM scheduling via EventBridge).
+- Historical data backfill for additional currency pairs.

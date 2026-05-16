@@ -51,4 +51,4 @@ If data volumes grow past ~100 MB/day, reassess in favor of Glue Spark with the 
 
 - `lambda/lambda_iceberg_writer.py` — Athena INSERT implementation
 - `terraform/athena.tf` — Athena workgroup and Iceberg table definitions
-- `docs/planning/decision_log_v3.md` — DL-002
+- Decision log DL-002 (see git history: `docs/planning/decision_log_v3.md`)

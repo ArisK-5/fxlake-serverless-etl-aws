@@ -1,7 +1,8 @@
 # ADR-004: Data quality checks in Glue vs separate Lambda
 
-**Status:** Accepted
+**Status:** Superseded — quality checks now run in Lambda (common/quality.py) and dbt tests
 **Date:** 2026-03-28
+**Superseded:** 2026-04-22 — Glue removed in v3; quality checks moved to Iceberg writer Lambda pre-INSERT and dbt generic tests.
 
 ## Context
 

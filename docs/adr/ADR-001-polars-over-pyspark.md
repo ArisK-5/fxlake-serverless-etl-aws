@@ -1,7 +1,8 @@
 # ADR-001: Use Polars over PySpark for transformation
 
-**Status:** Accepted
+**Status:** Superseded by Athena CTAS + Lambda (see ADR-007)
 **Date:** 2026-03-28
+**Superseded:** 2026-04-22 — Glue Python Shell removed in v3; writes now handled by Iceberg writer Lambda via Athena INSERT INTO.
 
 ## Context
 
