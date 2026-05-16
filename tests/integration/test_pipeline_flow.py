@@ -1318,12 +1318,6 @@ class TestPartialNoNewDataRouting:
             ]
             if result["status"] == "ok"
         ]
-        sources_caught_up = [
-            result
-            for result in [fx_result, ecb_result, fred_result]
-            if result["status"] == "no_new_data"
-        ]
-
         for mod, result in sources_with_data:
             mod.lambda_handler(
                 {"action": "update_state", "end_date": result["end_date"]}, None
