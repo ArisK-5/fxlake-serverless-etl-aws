@@ -23,7 +23,7 @@ class FrankfurterHandler(BaseIngestionHandler):
         self.base_api_url = os.environ["BASE_API_URL"]
         self.base_currency = os.environ["BASE_CURRENCY"]
 
-    def fetch_data(self, start_date: str, end_date: str) -> dict:
+    def fetch_data(self, start_date: str, end_date: str) -> dict | None:
         """Fetch exchange rates from the Frankfurter API for the given date range."""
         api_url = f"{self.base_api_url}/{start_date}..{end_date}"
         params = {"base": self.base_currency}

@@ -251,6 +251,22 @@ class TestFetchData:
             ECBHandler().fetch_data("2024-01-02", "2024-01-05")
 
     @responses.activate
+    def test_empty_body_returns_none(self):
+        """ECB API returns HTTP 200 with empty body when no data for period."""
+        responses.add(responses.GET, ECB_API_URL, body=b"", status=200)
+
+        result = ECBHandler().fetch_data("2024-01-06", "2024-01-07")
+        assert result is None
+
+    @responses.activate
+    def test_whitespace_only_body_raises_value_error(self):
+        """Whitespace-only response is suspicious — must raise, not return None."""
+        responses.add(responses.GET, ECB_API_URL, body=b"   \n\t  ", status=200)
+
+        with pytest.raises(ValueError, match="whitespace-only"):
+            ECBHandler().fetch_data("2024-01-06", "2024-01-07")
+
+    @responses.activate
     def test_malformed_sdmx_raises_key_error(self):
         responses.add(responses.GET, ECB_API_URL, json={"structure": {}}, status=200)
 
@@ -337,6 +353,31 @@ class TestLambdaHandlerIncremental:
         assert item["last_processed_date"]["S"] == "2024-01-31"
 
     @responses.activate
+    def test_empty_api_response_returns_no_new_data(self, aws_mock, monkeypatch):
+        """ECB API empty body (no data for period) returns no_new_data."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "ecb"},
+                "last_processed_date": {"S": "2024-05-10"},
+            },
+        )
+        responses.add(responses.GET, ECB_API_URL, body=b"", status=200)
+
+        result = ecb_module.lambda_handler({}, None)
+
+        assert result["status"] == "no_new_data"
+        assert result["source"] == "ecb"
+        # Verify DynamoDB state was NOT advanced
+        item = aws_mock["dynamodb"].get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "ecb"}},
+        )["Item"]
+        assert item["last_processed_date"]["S"] == "2024-05-10"
+
+    @responses.activate
     def test_ecb_reads_only_its_own_dynamodb_row(self, aws_mock, monkeypatch):
         """ECB handler must only read source='ecb' row, not source='frankfurter'."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
@@ -363,3 +404,23 @@ class TestLambdaHandlerIncremental:
 
         # ECB must have read source="ecb" (last_processed=2024-01-14), not "frankfurter"
         assert result["start_date"] == "2024-01-15"
+
+
+# ---------------------------------------------------------------------------
+# lambda_handler() — backfill mode
+# ---------------------------------------------------------------------------
+class TestLambdaHandlerBackfill:
+    @responses.activate
+    def test_backfill_empty_response_returns_no_new_data(self, s3_mock):
+        """Backfill with empty ECB response returns no_new_data, no S3 write."""
+        responses.add(responses.GET, ECB_API_URL, body=b"", status=200)
+
+        result = ecb_module.lambda_handler(
+            {"mode": "backfill", "start_date": "2024-05-11", "end_date": "2024-05-12"},
+            None,
+        )
+
+        assert result["status"] == "no_new_data"
+        assert result["source"] == "ecb"
+        objs = s3_mock.list_objects_v2(Bucket="test-raw-bucket")
+        assert objs.get("KeyCount", 0) == 0

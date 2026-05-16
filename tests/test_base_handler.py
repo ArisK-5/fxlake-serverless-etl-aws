@@ -654,3 +654,51 @@ class TestSchemaValidationIntegration:
         with pytest.raises(SchemaValidationError):
             handler._perform_ingest("2024-01-01", "2024-01-31", mode="static")
         handler._s3.put_object.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _perform_ingest — fetch_data returns None (no data for period)
+# ---------------------------------------------------------------------------
+class NoneReturningHandler(BaseIngestionHandler):
+    """Test double that returns None to simulate empty API response."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            source_name="test",
+            raw_bucket=os.environ["RAW_BUCKET"],
+            state_table=os.getenv("STATE_TABLE"),
+            start_date=os.environ["START_DATE"],
+            end_date=os.environ["END_DATE"],
+        )
+
+    def fetch_data(self, start_date: str, end_date: str) -> dict | None:
+        return None
+
+    def make_filename(self, start_date: str, end_date: str) -> str:
+        return f"test_{start_date}_to_{end_date}.json"
+
+
+class TestPerformIngestNoneReturn:
+    """Verify _perform_ingest handles fetch_data() returning None correctly."""
+
+    def test_returns_no_new_data_status(self, s3_mock):
+        handler = NoneReturningHandler()
+        result = handler._perform_ingest("2024-01-01", "2024-01-31", mode="static")
+
+        assert result["status"] == "no_new_data"
+        assert result["start_date"] == "2024-01-01"
+        assert result["end_date"] == "2024-01-31"
+        assert result["source"] == "test"
+
+    def test_does_not_write_to_s3(self, s3_mock):
+        handler = NoneReturningHandler()
+        handler._perform_ingest("2024-01-01", "2024-01-31", mode="static")
+
+        result = s3_mock.list_objects_v2(Bucket="test-raw-bucket")
+        assert result.get("KeyCount", 0) == 0
+
+    def test_backfill_mode_returns_no_new_data(self, s3_mock):
+        handler = NoneReturningHandler()
+        result = handler._perform_ingest("2023-01-01", "2023-06-30", mode="backfill")
+
+        assert result["status"] == "no_new_data"
