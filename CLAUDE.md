@@ -6,16 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FXLake is a serverless ETL pipeline on AWS that fetches daily financial data from three independent sources (Frankfurter API, ECB Statistics Data Warehouse, FRED), writes to Apache Iceberg tables via Athena, transforms with dbt Core, enforces data quality checks, and makes it queryable via Athena. Infrastructure is managed entirely with Terraform.
 
-### v3 Roadmap
+### Architecture History
 
-FXLake v3 is a 20-day phased enhancement (see `docs/planning/implementation_plan_v3.md`). Key changes:
-- **Apache Iceberg** replaces plain Parquet for ACID transactions, schema evolution, and time travel
-- **Athena CTAS/INSERT** replaces Glue Python Shell as the Iceberg write path
-- **dbt Core** replaces monolithic `glue_transform.py` with modular SQL models and built-in lineage
-- **Step Functions** orchestration is preserved
-- **Branch strategy:** all v3 work develops on the `v3` branch (and feature branches off it); `main` continues running v2 unaffected; merge to `main` is the cutover
-
-Architectural decisions are documented in `docs/planning/decision_log_v3.md`.
+FXLake v3 was a major evolution delivered via a dedicated branch (now merged to `main`). Planning documents in `docs/planning/` record the rationale and phased implementation. Key architectural decisions are documented in `docs/planning/decision_log_v3.md` and individual ADRs in `docs/adr/`.
 
 ## Commands
 
@@ -173,7 +166,7 @@ Every state has Retry and Catch blocks:
 - **Athena state**: retry on `Athena.InternalServerException`, `Athena.TooManyRequestsException`
 - **All Catch blocks**: `ResultPath = "$.errorInfo"` preserves the actual error; Fail states use `ErrorPath`/`CausePath` to surface the real cause in execution history
 
-### Iceberg Writer Lambda (v3)
+### Iceberg Writer Lambda
 
 `lambda/lambda_iceberg_writer.py` replaces `glue_transform.py` as the write path. Reads raw JSON from S3, runs quality checks (reusing `common/quality.py`), builds batched `INSERT INTO` SQL, and executes via Athena against Iceberg tables.
 
@@ -185,7 +178,7 @@ Every state has Retry and Catch blocks:
 - Table name validated against `^[a-zA-Z_][a-zA-Z0-9_]*$` regex (SQL injection prevention)
 - Env vars: `PROCESSED_BUCKET` and `QUARANTINE_BUCKET` required (`os.environ[]`); `DATABASE_NAME`, `ATHENA_RESULTS_BUCKET`, `ATHENA_WORKGROUP`, `RAW_BUCKET`, `METRIC_NAMESPACE` optional with defaults
 
-### dbt Layer (v3)
+### dbt Layer
 
 dbt Core 1.11.8 with `dbt-athena-community` 1.10.0 adapter. Project lives in `dbt/`.
 
@@ -462,11 +455,11 @@ ADRs live in `docs/adr/` and document foundational choices:
 | [ADR-006](docs/adr/ADR-006-dbt-core-transformation-layer.md) | dbt Core transformation layer | Modular SQL models + lineage vs additional tool in stack |
 | [ADR-007](docs/adr/ADR-007-athena-ctas-over-glue-spark.md) | Athena CTAS over Glue Spark | Near-zero cost at <1 MB/day vs SQL-only transformations |
 
-**Note:** ADR-001 (Polars) and ADR-004 (quality in Glue) are superseded by v3 — Glue Python Shell has been removed; the Iceberg writer Lambda and dbt Core now handle writes and transforms. See `docs/planning/decision_log_v3.md` for the full v3 decision log.
+**Note:** ADR-001 (Polars) and ADR-004 (quality in Glue) are superseded — Glue Python Shell has been removed; the Iceberg writer Lambda and dbt Core now handle writes and transforms. See `docs/planning/decision_log_v3.md` for the full decision log.
 
-## Planning
+## Planning (Historical)
 
-v3 planning documents in `docs/planning/`:
-- `implementation_plan_v3.md` — 20-day phased implementation plan with session prompts
+The v3 planning documents in `docs/planning/` record the architectural evolution from Parquet/Glue to Iceberg/dbt (now complete and live on `main`):
+- `implementation_plan_v3.md` — 20-day phased implementation plan
 - `decision_log_v3.md` — 7 architectural decisions (Iceberg, Athena CTAS, dbt Core, preserve Step Functions, branch-based migration, CloudWatch composite alarms, resource tags)
 - `analysis_summary_v3.md` — scalability analysis, production gaps, Iceberg evaluation, target architecture

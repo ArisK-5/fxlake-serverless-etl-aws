@@ -338,10 +338,10 @@ Key design decisions are documented as ADRs in [`docs/adr/`](docs/adr/):
 
 | ADR | Decision | Key Trade-off |
 |-----|----------|---------------|
-| [ADR-001](docs/adr/ADR-001-polars-over-pyspark.md) | Polars over PySpark for Glue | 32x cost reduction vs single-node ceiling *(superseded by v3)* |
+| [ADR-001](docs/adr/ADR-001-polars-over-pyspark.md) | Polars over PySpark for Glue | 32x cost reduction vs single-node ceiling *(superseded)* |
 | [ADR-002](docs/adr/ADR-002-dynamodb-for-pipeline-state.md) | DynamoDB for pipeline state | Atomic writes + composite key vs overkill for 3 records |
 | [ADR-003](docs/adr/ADR-003-parallel-ingestion-step-functions.md) | Parallel ingestion via Step Functions | 3x faster ingestion vs all-or-nothing failure mode |
-| [ADR-004](docs/adr/ADR-004-data-quality-in-glue.md) | Data quality checks in Glue | Single-pass efficiency vs coupled deployment *(superseded by v3)* |
+| [ADR-004](docs/adr/ADR-004-data-quality-in-glue.md) | Data quality checks in Glue | Single-pass efficiency vs coupled deployment *(superseded)* |
 | [ADR-005](docs/adr/ADR-005-apache-iceberg-open-table-format.md) | Apache Iceberg open table format | ACID + schema evolution + time travel vs write path complexity |
 | [ADR-006](docs/adr/ADR-006-dbt-core-transformation-layer.md) | dbt Core transformation layer | Modular SQL models + lineage vs additional tool in stack |
 | [ADR-007](docs/adr/ADR-007-athena-ctas-over-glue-spark.md) | Athena CTAS over Glue Spark | Near-zero cost at <1 MB/day vs SQL-only transformations |

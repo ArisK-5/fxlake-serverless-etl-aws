@@ -22,7 +22,7 @@ ATHENA_RESULTS_BUCKET = os.environ["ATHENA_RESULTS_BUCKET"]
 WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "fxlake")
 METRIC_NAMESPACE = os.environ.get("METRIC_NAMESPACE", "FXLake/Maintenance")
 
-TABLES = ("fx_rates_v3", "economic_indicators_v3")
+TABLES = ("fx_rates", "economic_indicators")
 POLL_INTERVAL_SECONDS = 2
 MAX_POLL_ATTEMPTS = 90
 
