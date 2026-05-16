@@ -251,6 +251,14 @@ class TestFetchData:
             ECBHandler().fetch_data("2024-01-02", "2024-01-05")
 
     @responses.activate
+    def test_empty_body_returns_none(self):
+        """ECB API returns HTTP 200 with empty body when no data for period."""
+        responses.add(responses.GET, ECB_API_URL, body=b"", status=200)
+
+        result = ECBHandler().fetch_data("2024-01-06", "2024-01-07")
+        assert result is None
+
+    @responses.activate
     def test_malformed_sdmx_raises_key_error(self):
         responses.add(responses.GET, ECB_API_URL, json={"structure": {}}, status=200)
 
@@ -335,6 +343,26 @@ class TestLambdaHandlerIncremental:
             Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "ecb"}},
         )["Item"]
         assert item["last_processed_date"]["S"] == "2024-01-31"
+
+    @responses.activate
+    @responses.activate
+    def test_empty_api_response_returns_no_new_data(self, aws_mock, monkeypatch):
+        """ECB API empty body (no data for period) returns no_new_data."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        aws_mock["dynamodb"].put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "ecb"},
+                "last_processed_date": {"S": "2024-05-10"},
+            },
+        )
+        responses.add(responses.GET, ECB_API_URL, body=b"", status=200)
+
+        result = ecb_module.lambda_handler({}, None)
+
+        assert result["status"] == "no_new_data"
+        assert result["source"] == "ecb"
 
     @responses.activate
     def test_ecb_reads_only_its_own_dynamodb_row(self, aws_mock, monkeypatch):

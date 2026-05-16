@@ -30,7 +30,7 @@ class ECBHandler(BaseIngestionHandler):
         # local testing without env setup.
         self.base_url = os.getenv("ECB_BASE_URL", _DEFAULT_ECB_BASE_URL)
 
-    def fetch_data(self, start_date: str, end_date: str) -> dict:
+    def fetch_data(self, start_date: str, end_date: str) -> dict | None:
         """Fetch and normalise FX rates from the ECB SDMX-JSON API."""
         url = f"{self.base_url}/EXR/D..EUR.SP00.A"
         params = {
@@ -65,13 +65,24 @@ class ECBHandler(BaseIngestionHandler):
             )
             raise
 
-        # JSON decode
+        # JSON decode — ECB API returns HTTP 200 with empty body when no data
+        # exists for the requested period (e.g., only weekends/holidays in range)
+        if not resp.content:
+            logger.info(
+                "ECB API returned empty response body (no data for period)",
+                extra={"url": url, "start_date": start_date, "end_date": end_date},
+            )
+            return None
         try:
             raw = resp.json()
         except json.JSONDecodeError:
             logger.error(
                 "ECB API returned non-JSON response",
-                extra={"url": url, "status_code": resp.status_code},
+                extra={
+                    "url": url,
+                    "status_code": resp.status_code,
+                    "content_length": len(resp.content),
+                },
                 exc_info=True,
             )
             raise

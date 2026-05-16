@@ -118,7 +118,7 @@ Terraform · S3 · Lambda · Athena · Apache Iceberg · dbt Core · CodeBuild �
 │   │   └── test_multi_source.py            # Multi-source parallel ingestion (7 tests)
 │   ├── test_base_handler.py                # Base handler tests (55 tests)
 │   ├── test_lambda_fx_ingestion.py         # Frankfurter handler (19 tests)
-│   ├── test_lambda_ecb_ingestion.py        # ECB handler (20 tests)
+│   ├── test_lambda_ecb_ingestion.py        # ECB handler (22 tests)
 │   ├── test_lambda_fred_ingestion.py       # FRED handler (24 tests)
 │   ├── test_iceberg_writer.py              # Iceberg writer (38 tests)
 │   ├── test_iceberg_maintenance.py         # Iceberg maintenance (15 tests)
@@ -187,7 +187,7 @@ Diagrams are maintained as [Draw.io](https://www.drawio.com) files in `assets/di
 - **Saga Pattern:** DynamoDB state is only committed after dbt transform succeeds, preventing data corruption on partial failures.
 - **Structured Observability:** JSON logging across all Lambdas, X-Ray tracing, 11 CloudWatch alarms, and a monitoring dashboard.
 - **CI/CD:** GitHub Actions with OIDC authentication — lint + test on PRs, plan + apply on merge.
-- **97% Test Coverage:** 629 tests (597 unit + 32 integration) using pytest, moto, and responses.
+- **97% Test Coverage:** 631 tests (599 unit + 32 integration) using pytest, moto, and responses.
 
 ### Skills Demonstrated
 
