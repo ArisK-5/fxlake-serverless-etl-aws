@@ -345,7 +345,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 640 tests (604 unit + 36 integration), 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 641 tests (604 unit + 37 integration), 97% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
@@ -381,7 +381,7 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 
 | File | What it covers |
 |------|---------------|
-| `test_pipeline_flow.py` | End-to-end: Ingestion → Transform → Validate for each source; DynamoDB state management (incremental + update_state); CloudWatch metrics; saga pattern; CRITICAL quality failure + quarantine; API HTTP 500 propagation; validation Athena errors; backfill pipeline; partial no_new_data routing (29 tests) |
+| `test_pipeline_flow.py` | End-to-end: Ingestion → Transform → Validate for each source; DynamoDB state management (incremental + update_state); CloudWatch metrics; saga pattern; CRITICAL quality failure + quarantine; API HTTP 500 propagation; validation Athena errors; backfill pipeline; partial no_new_data routing (30 tests) |
 | `test_multi_source.py` | All 3 sources ingested in parallel; correct S3 path prefixes; JSON structure per source; S3 metadata tags; distinct FX vs economic schemas; quality reports per domain; Hive partition paths (7 tests) |
 
 **Key patterns:**
@@ -407,7 +407,7 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 | `test_anomaly_detector.py` | Anomaly detection — Z-score calculation, CloudWatch metrics, threshold checks (60 tests) |
 | `test_lambda_dlq_auto_retry.py` | DLQ auto-retry — failure classification, replay execution, transient/permanent routing, SNS alerts, batch failures, metric error paths, stale message guard (47 tests) |
 | `test_lambda_stale_data_backfill.py` | Stale data backfill — staleness detection, backfill triggering, DynamoDB scanning, metric publishing, validation edge cases (22 tests) |
-| `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, validation Athena errors, backfill pipeline, partial no_new_data routing (29 tests) |
+| `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, validation Athena errors, backfill pipeline, partial no_new_data routing (30 tests) |
 | `integration/test_multi_source.py` | Multi-source parallel ingestion, quality reports (7 tests) |
 
 ## CI/CD

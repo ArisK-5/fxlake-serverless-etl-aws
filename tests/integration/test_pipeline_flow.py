@@ -1176,7 +1176,7 @@ class TestPartialNoNewDataRouting:
     def test_fx_and_ecb_have_data_fred_caught_up(
         self, integration_aws, monkeypatch
     ):
-        """FX and ECB have new data; FRED caught up — both FX writes happen, FRED skipped."""
+        """FX and ECB have new data; FRED caught up — both write and update, FRED skipped."""
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         ddb = integration_aws["dynamodb"]
 
@@ -1230,6 +1230,7 @@ class TestPartialNoNewDataRouting:
         assert len(ecb_keys) == 1
 
         _call_iceberg_writer(fx_keys[0], domain="fx_rates")
+        _call_iceberg_writer(ecb_keys[0], domain="fx_rates")
 
         fx_mod.lambda_handler(
             {"action": "update_state", "end_date": fx_result["end_date"]}, None
@@ -1257,6 +1258,74 @@ class TestPartialNoNewDataRouting:
         assert fred_item["last_processed_date"]["S"] == date.today().isoformat()
 
     @responses.activate
+    def test_ecb_has_data_fx_fred_caught_up(
+        self, integration_aws, monkeypatch
+    ):
+        """ECB has new data; FX and FRED are caught up — only ECB write and update."""
+        monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
+        ddb = integration_aws["dynamodb"]
+
+        for source in ("frankfurter", "fred"):
+            ddb.put_item(
+                TableName=TEST_STATE_TABLE,
+                Item={
+                    "pipeline_id": {"S": "fxlake"},
+                    "source": {"S": source},
+                    "last_processed_date": {"S": date.today().isoformat()},
+                },
+            )
+        ddb.put_item(
+            TableName=TEST_STATE_TABLE,
+            Item={
+                "pipeline_id": {"S": "fxlake"},
+                "source": {"S": "ecb"},
+                "last_processed_date": {"S": "2024-01-12"},
+            },
+        )
+
+        responses.add(responses.GET, ECB_API_URL, json=SAMPLE_ECB_RESPONSE, status=200)
+
+        import lambda_ecb_ingestion as ecb_mod
+        import lambda_fred_ingestion as fred_mod
+        import lambda_fx_ingestion as fx_mod
+
+        fx_result = fx_mod.lambda_handler({}, None)
+        ecb_result = ecb_mod.lambda_handler({}, None)
+        fred_result = fred_mod.lambda_handler({}, None)
+
+        assert fx_result["status"] == "no_new_data"
+        assert ecb_result["status"] == "ok"
+        assert fred_result["status"] == "no_new_data"
+
+        raw_keys = _s3_keys(integration_aws["s3"], TEST_RAW_BUCKET)
+        assert len(raw_keys) == 1
+        assert raw_keys[0].startswith("ecb_rates_")
+
+        _call_iceberg_writer(raw_keys[0], domain="fx_rates")
+
+        ecb_mod.lambda_handler(
+            {"action": "update_state", "end_date": ecb_result["end_date"]}, None
+        )
+
+        ecb_item = ddb.get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "ecb"}},
+        )["Item"]
+        assert ecb_item["last_processed_date"]["S"] == ecb_result["end_date"]
+
+        fx_item = ddb.get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "frankfurter"}},
+        )["Item"]
+        assert fx_item["last_processed_date"]["S"] == date.today().isoformat()
+
+        fred_item = ddb.get_item(
+            TableName=TEST_STATE_TABLE,
+            Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "fred"}},
+        )["Item"]
+        assert fred_item["last_processed_date"]["S"] == date.today().isoformat()
+
+    @responses.activate
     def test_partial_no_new_data_does_not_corrupt_caught_up_state(
         self, integration_aws, monkeypatch
     ):
@@ -1264,8 +1333,8 @@ class TestPartialNoNewDataRouting:
         monkeypatch.setenv("STATE_TABLE", TEST_STATE_TABLE)
         ddb = integration_aws["dynamodb"]
 
-        ecb_original_date = "2024-05-15"
-        fred_original_date = "2024-05-14"
+        ecb_original_date = date.today().isoformat()
+        fred_original_date = date.today().isoformat()
 
         ddb.put_item(
             TableName=TEST_STATE_TABLE,
@@ -1298,8 +1367,6 @@ class TestPartialNoNewDataRouting:
             json=SAMPLE_FRANKFURTER_RESPONSE,
             status=200,
         )
-        responses.add(responses.GET, ECB_API_URL, json=SAMPLE_ECB_RESPONSE, status=200)
-        responses.add(responses.GET, FRED_API_URL, json=SAMPLE_FRED_RESPONSE, status=200)
 
         import lambda_ecb_ingestion as ecb_mod
         import lambda_fred_ingestion as fred_mod
@@ -1309,19 +1376,13 @@ class TestPartialNoNewDataRouting:
         ecb_result = ecb_mod.lambda_handler({}, None)
         fred_result = fred_mod.lambda_handler({}, None)
 
-        sources_with_data = [
-            (mod, result)
-            for mod, result in [
-                (fx_mod, fx_result),
-                (ecb_mod, ecb_result),
-                (fred_mod, fred_result),
-            ]
-            if result["status"] == "ok"
-        ]
-        for mod, result in sources_with_data:
-            mod.lambda_handler(
-                {"action": "update_state", "end_date": result["end_date"]}, None
-            )
+        assert fx_result["status"] == "ok"
+        assert ecb_result["status"] == "no_new_data"
+        assert fred_result["status"] == "no_new_data"
+
+        fx_mod.lambda_handler(
+            {"action": "update_state", "end_date": fx_result["end_date"]}, None
+        )
 
         ecb_item = ddb.get_item(
             TableName=TEST_STATE_TABLE,
@@ -1332,11 +1393,5 @@ class TestPartialNoNewDataRouting:
             Key={"pipeline_id": {"S": "fxlake"}, "source": {"S": "fred"}},
         )["Item"]
 
-        assert ecb_item["last_processed_date"]["S"] in (
-            ecb_original_date,
-            ecb_result.get("end_date", ecb_original_date),
-        )
-        assert fred_item["last_processed_date"]["S"] in (
-            fred_original_date,
-            fred_result.get("end_date", fred_original_date),
-        )
+        assert ecb_item["last_processed_date"]["S"] == ecb_original_date
+        assert fred_item["last_processed_date"]["S"] == fred_original_date
