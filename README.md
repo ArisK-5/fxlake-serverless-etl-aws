@@ -114,7 +114,7 @@ Terraform · S3 · Lambda · Athena · Apache Iceberg · dbt Core · CodeBuild �
 ├── tests/
 │   ├── conftest.py                         # Shared fixtures (moto mocks, env setup)
 │   ├── integration/
-│   │   ├── test_pipeline_flow.py           # End-to-end pipeline tests (25 tests)
+│   │   ├── test_pipeline_flow.py           # End-to-end pipeline tests (29 tests)
 │   │   └── test_multi_source.py            # Multi-source parallel ingestion (7 tests)
 │   ├── test_base_handler.py                # Base handler tests (64 tests)
 │   ├── test_lambda_fx_ingestion.py         # Frankfurter handler (19 tests)
@@ -187,7 +187,7 @@ Diagrams are maintained as [Draw.io](https://www.drawio.com) files in `assets/di
 - **Saga Pattern:** DynamoDB state is only committed after dbt transform succeeds, preventing data corruption on partial failures.
 - **Structured Observability:** JSON logging across all Lambdas, X-Ray tracing, 11 CloudWatch alarms, and a monitoring dashboard.
 - **CI/CD:** GitHub Actions with OIDC authentication — lint + test on PRs, plan + apply on merge.
-- **97% Test Coverage:** 636 tests (604 unit + 32 integration) using pytest, moto, and responses.
+- **97% Test Coverage:** 640 tests (604 unit + 36 integration) using pytest, moto, and responses.
 
 ### Skills Demonstrated
 
@@ -197,7 +197,7 @@ Diagrams are maintained as [Draw.io](https://www.drawio.com) files in `assets/di
 - **Serverless Development**: Python Lambdas with shared base class, Athena CTAS for Iceberg writes, CodeBuild for dbt execution.
 - **Data Engineering**: Incremental processing, dual-layer quality checks, cross-source validation, anomaly detection, quarantine flow.
 - **Infrastructure as Code**: 80+ Terraform resources including reusable modules, remote state backend, and bootstrap configuration.
-- **Testing Strategy**: TDD approach with 97% coverage (629 tests), integration tests exercising full pipeline flows with moto.
+- **Testing Strategy**: TDD approach with 97% coverage (640 tests), integration tests exercising full pipeline flows with moto.
 - **CI/CD Pipeline**: GitHub Actions with OIDC, separate lint/test and plan/apply workflows.
 - **Security Best Practices**: Least-privilege IAM, S3 encryption, CloudTrail auditing, OIDC (no stored credentials).
 - **Self-Healing & Resilience**: DLQ auto-retry with failure classification, stale data auto-backfill, CloudWatch alarms with SNS notifications.
