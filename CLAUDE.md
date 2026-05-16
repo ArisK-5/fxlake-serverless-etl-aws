@@ -81,11 +81,11 @@ uv run assets/dbt-lineage.py
 
 The pipeline is orchestrated by **Step Functions** and triggered daily by **EventBridge**, which invokes the Step Functions state machine directly (not the Lambda):
 
-1. **Parallel (Parallel-Ingestion)** — runs Frankfurter, ECB, and FRED ingestion concurrently (3 branches). Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx`, `$.parallel_results.ecb`, and `$.parallel_results.fred`. **Does not update DynamoDB** — deferred to steps 4–6.
+1. **Parallel (Parallel-Ingestion)** — runs Frankfurter, ECB, and FRED ingestion concurrently (3 branches). Each branch reads `last_processed_date` from DynamoDB, computes incremental fetch range, saves raw JSON to S3. Returns `status: "no_new_data"` if already caught up. Output shaped by `ResultSelector` to `$.parallel_results.fx`, `$.parallel_results.ecb`, and `$.parallel_results.fred`. **Does not update DynamoDB** — deferred to steps 10–12.
 2. **Choice (Check-New-Data)** — routes to `Pipeline-Already-Up-To-Date` only if **all three** sources returned `no_new_data`; otherwise continues to Iceberg write.
-3. **Choice (Check-FX-Data)** — skips `Write-FX-Iceberg` when Frankfurter returned `no_new_data` (no `key` in payload).
+3. **Choice (Check-FX-Data)** — skips `Write-FX-Iceberg` when Frankfurter returned `no_new_data`.
 4. **Lambda (Write-FX-Iceberg)** — reads raw FX JSON from S3, runs quality checks, writes to the `fx_rates` Iceberg table via batched Athena `INSERT INTO` queries.
-5. **Choice (Check-Economic-Data)** — skips `Write-Economic-Iceberg` when FRED returned `no_new_data` (no `key` in payload).
+5. **Choice (Check-Economic-Data)** — skips `Write-Economic-Iceberg` when FRED returned `no_new_data`.
 6. **Lambda (Write-Economic-Iceberg)** — reads raw FRED JSON from S3, runs quality checks, writes to the `economic_indicators` Iceberg table via batched Athena `INSERT INTO` queries.
 7. **CodeBuild (dbt-Transform)** — runs dbt models via CodeBuild (`.sync` integration — Step Functions blocks until build completes). Staging views deduplicate and prioritize sources; mart tables materialise as Iceberg. Pipeline **fails** if dbt fails.
 8. **Choice (Check-Backfill-Mode)** — skips state updates for backfill executions to protect the incremental watermark.
