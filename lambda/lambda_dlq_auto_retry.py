@@ -37,6 +37,9 @@ TRANSIENT_ERROR_PATTERNS = (
     "States.TaskFailed",
     "InternalError",
     "ServiceException",
+    "HTTPError",
+    "ConnectionError",
+    "Timeout",
 )
 
 
