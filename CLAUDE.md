@@ -98,7 +98,7 @@ Two autonomous Lambdas detect and recover from pipeline failures without manual 
 - Triggered by SQS messages from the pipeline DLQ (batch size 1, partial batch failure reporting)
 - Classifies failures as transient (ThrottlingException, TooManyRequestsException, ServiceUnavailable, Lambda.ServiceException, Lambda.AWSLambdaException, States.Timeout, States.TaskFailed, InternalError, ServiceException, HTTPError, ConnectionError, Timeout) or permanent
 - Transient failures with `ApproximateReceiveCount < MAX_RETRIES(3)`: replays execution via `sfn.start_execution`, returns empty `batchItemFailures`
-- Permanent failures or max retries exceeded: publishes SNS alert with error details, returns message in `batchItemFailures`
+- Permanent failures or max retries exceeded: publishes SNS alert with error details, consumes message from queue (only returns in `batchItemFailures` if SNS alert itself fails, to retry alerting)
 - Stale message guard: discards SQS messages older than `MAX_MESSAGE_AGE_HOURS` (default 24) to prevent replaying outdated failures after the pipeline recovers
 - Publishes `DLQRetryAttempt`, `DLQPermanentFailure`, and `DLQStaleMessageDiscarded` CloudWatch metrics to `FXLake/SelfHealing` namespace
 - Frozen dataclass `FailureClassification`: `is_transient`, `error_code`, `retry_count` with `__post_init__` validation

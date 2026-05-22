@@ -354,7 +354,7 @@ class TestLambdaHandler:
         sns.publish.assert_called_once()
 
     @patch("lambda_dlq_auto_retry.boto3")
-    def test_returns_batch_item_failures_for_permanent(self, mock_boto3):
+    def test_consumes_message_after_permanent_alert(self, mock_boto3):
         sfn = MagicMock()
         sns = MagicMock()
         cw = MagicMock()
@@ -368,8 +368,8 @@ class TestLambdaHandler:
 
         result = lambda_handler(event, context)
 
-        assert len(result["batchItemFailures"]) == 1
-        assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-001"
+        assert result["batchItemFailures"] == []
+        assert result["alerted"] == 1
 
     @patch("lambda_dlq_auto_retry.boto3")
     def test_empty_batch_item_failures_on_retry(self, mock_boto3):
@@ -500,7 +500,7 @@ class TestLambdaHandler:
         assert EXEC_ARN in call_kwargs["Message"]
 
     @patch("lambda_dlq_auto_retry.boto3")
-    def test_sns_failure_does_not_block_metric_publishing(self, mock_boto3):
+    def test_sns_failure_returns_batch_failure_for_retry(self, mock_boto3):
         sfn = MagicMock()
         sns = MagicMock()
         sns.publish.side_effect = ClientError(
@@ -520,6 +520,8 @@ class TestLambdaHandler:
 
         assert result["errors"] == 1
         assert result["alerted"] == 0
+        assert len(result["batchItemFailures"]) == 1
+        assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-001"
         cw.put_metric_data.assert_called()
 
     @patch("lambda_dlq_auto_retry.boto3")
@@ -607,8 +609,7 @@ class TestLambdaHandler:
 
         assert result["retried"] == 1
         assert result["alerted"] == 1
-        assert len(result["batchItemFailures"]) == 1
-        assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-002"
+        assert result["batchItemFailures"] == []
 
 
 # ---------------------------------------------------------------------------

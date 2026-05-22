@@ -279,8 +279,8 @@ def lambda_handler(event: dict, context: Any) -> dict:
                     },
                 )
                 errors += 1
+                batch_item_failures.append({"itemIdentifier": message_id})
             _publish_metric(cloudwatch_client, "DLQPermanentFailure")
-            batch_item_failures.append({"itemIdentifier": message_id})
 
     logger.info(
         "DLQ auto-retry complete",
