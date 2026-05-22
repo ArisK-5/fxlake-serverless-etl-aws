@@ -468,6 +468,83 @@ class TestLambdaHandler:
 
         assert result["errors"] == 0
         assert result["batchItemFailures"] == []
+        metric_calls = cw.put_metric_data.call_args_list
+        metric_names = [
+            m.kwargs["MetricData"][0]["MetricName"] for m in metric_calls
+        ]
+        assert "DLQMalformedMessageDiscarded" in metric_names
+
+    @patch("lambda_dlq_auto_retry.boto3")
+    def test_retries_malformed_message_at_max_retries_minus_one(self, mock_boto3):
+        sfn = MagicMock()
+        sns = MagicMock()
+        cw = MagicMock()
+        mock_boto3.client.side_effect = lambda svc, **kw: {
+            "stepfunctions": sfn, "sns": sns, "cloudwatch": cw,
+        }[svc]
+
+        event = {
+            "Records": [{
+                "messageId": "msg-bad",
+                "receiptHandle": "receipt-bad",
+                "body": "not-json{{{",
+                "attributes": {"ApproximateReceiveCount": "2"},
+            }],
+        }
+        context = MagicMock(aws_request_id="req-bad-boundary")
+
+        result = lambda_handler(event, context)
+
+        assert result["errors"] == 1
+        assert len(result["batchItemFailures"]) == 1
+        assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-bad"
+
+    @patch("lambda_dlq_auto_retry.boto3")
+    def test_mixed_batch_malformed_and_valid_messages(self, mock_boto3):
+        sfn = MagicMock()
+        sfn.start_execution.return_value = {"executionArn": "arn:new"}
+        sns = MagicMock()
+        cw = MagicMock()
+        mock_boto3.client.side_effect = lambda svc, **kw: {
+            "stepfunctions": sfn, "sns": sns, "cloudwatch": cw,
+        }[svc]
+
+        transient_detail = _make_detail(
+            cause="ThrottlingException", input_data={"mode": "daily"},
+        )
+        now_ms = str(int(time.time() * 1000))
+        event = {
+            "Records": [
+                {
+                    "messageId": "msg-malformed",
+                    "receiptHandle": "r-bad",
+                    "body": "not-json{{{",
+                    "attributes": {"ApproximateReceiveCount": "1",
+                                   "SentTimestamp": now_ms},
+                },
+                {
+                    "messageId": "msg-transient",
+                    "receiptHandle": "r-good",
+                    "body": json.dumps({"detail": transient_detail}),
+                    "attributes": {"ApproximateReceiveCount": "1",
+                                   "SentTimestamp": now_ms},
+                },
+            ],
+        }
+        context = MagicMock(aws_request_id="req-mixed")
+
+        result = lambda_handler(event, context)
+
+        assert result["retried"] == 1
+        assert result["errors"] == 1
+        assert len(result["batchItemFailures"]) == 1
+        assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-malformed"
+        sfn.start_execution.assert_called_once()
+        metric_calls = cw.put_metric_data.call_args_list
+        metric_names = [
+            m.kwargs["MetricData"][0]["MetricName"] for m in metric_calls
+        ]
+        assert "DLQRetryAttempt" in metric_names
 
     @patch("lambda_dlq_auto_retry.boto3")
     def test_publishes_retry_metric(self, mock_boto3):

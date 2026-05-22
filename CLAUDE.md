@@ -346,7 +346,7 @@ All source files follow these conventions:
 
 ## Tests
 
-Tests live in `tests/` and use pytest + moto v5 + responses. 646 tests (609 unit + 37 integration), 97% coverage.
+Tests live in `tests/` and use pytest + moto v5 + responses. 648 tests (611 unit + 37 integration), 97% coverage.
 
 ```bash
 make test                # Run unit tests only (ignores tests/integration/)
@@ -406,7 +406,7 @@ Integration tests live in `tests/integration/` and exercise the full pipeline lo
 | `test_iceberg_writer.py` | Iceberg writer — domain routing, batched INSERT, quality checks, Athena polling, quarantine flow (75 tests) |
 | `test_iceberg_maintenance.py` | Iceberg maintenance — OPTIMIZE, VACUUM, Athena polling, error handling (14 tests) |
 | `test_anomaly_detector.py` | Anomaly detection — Z-score calculation, CloudWatch metrics, threshold checks (60 tests) |
-| `test_lambda_dlq_auto_retry.py` | DLQ auto-retry — failure classification, replay execution, transient/permanent routing, SNS alerts, batch failures, metric error paths, stale message guard, malformed message discard (52 tests) |
+| `test_lambda_dlq_auto_retry.py` | DLQ auto-retry — failure classification, replay execution, transient/permanent routing, SNS alerts, batch failures, metric error paths, stale message guard, malformed message discard (54 tests) |
 | `test_lambda_stale_data_backfill.py` | Stale data backfill — staleness detection, backfill triggering, DynamoDB scanning, metric publishing, validation edge cases (22 tests) |
 | `integration/test_pipeline_flow.py` | Full pipeline flow — ingestion → transform → validate, DynamoDB state, saga pattern, CRITICAL quality + quarantine, API 500 errors, validation Athena errors, backfill pipeline, partial no_new_data routing (30 tests) |
 | `integration/test_multi_source.py` | Multi-source parallel ingestion, quality reports (7 tests) |
