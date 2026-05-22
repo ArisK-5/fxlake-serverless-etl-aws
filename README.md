@@ -197,7 +197,7 @@ Diagrams are maintained as [Draw.io](https://www.drawio.com) files in `assets/di
 - **Serverless Development**: Python Lambdas with shared base class, Athena CTAS for Iceberg writes, CodeBuild for dbt execution.
 - **Data Engineering**: Incremental processing, dual-layer quality checks, cross-source validation, anomaly detection, quarantine flow.
 - **Infrastructure as Code**: 80+ Terraform resources including reusable modules, remote state backend, and bootstrap configuration.
-- **Testing Strategy**: TDD approach with 97% coverage (641 tests), integration tests exercising full pipeline flows with moto.
+- **Testing Strategy**: TDD approach with 97% coverage (644 tests), integration tests exercising full pipeline flows with moto.
 - **CI/CD Pipeline**: GitHub Actions with OIDC, separate lint/test and plan/apply workflows.
 - **Security Best Practices**: Least-privilege IAM, S3 encryption, CloudTrail auditing, OIDC (no stored credentials).
 - **Self-Healing & Resilience**: DLQ auto-retry with failure classification, stale data auto-backfill, CloudWatch alarms with SNS notifications.
