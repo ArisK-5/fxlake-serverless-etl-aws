@@ -128,7 +128,7 @@ Terraform · S3 · Lambda · Athena · Apache Iceberg · dbt Core · CodeBuild �
 │   ├── test_data_validator.py              # Data validator (16 tests)
 │   ├── test_lambda_validation.py           # Validation Lambda (16 tests)
 │   ├── test_structured_logging.py          # Logging module (18 tests)
-│   ├── test_lambda_dlq_auto_retry.py       # DLQ auto-retry (32 tests)
+│   ├── test_lambda_dlq_auto_retry.py       # DLQ auto-retry (50 tests)
 │   ├── test_lambda_stale_data_backfill.py  # Stale data backfill (17 tests)
 │   ├── test_schema_validation.py           # Schema validation tests
 │   ├── test_iam_policies.py                # IAM policy tests
@@ -187,7 +187,7 @@ Diagrams are maintained as [Draw.io](https://www.drawio.com) files in `assets/di
 - **Saga Pattern:** DynamoDB state is only committed after dbt transform succeeds, preventing data corruption on partial failures.
 - **Structured Observability:** JSON logging across all Lambdas, X-Ray tracing, 11 CloudWatch alarms, and a monitoring dashboard.
 - **CI/CD:** GitHub Actions with OIDC authentication — lint + test on PRs, plan + apply on merge.
-- **97% Test Coverage:** 641 tests (604 unit + 37 integration) using pytest, moto, and responses.
+- **97% Test Coverage:** 644 tests (607 unit + 37 integration) using pytest, moto, and responses.
 
 ### Skills Demonstrated
 
