@@ -170,6 +170,27 @@ class TestClassifyFailure:
         result = classify_failure(detail, receive_count=1)
         assert result.is_transient is True
 
+    def test_http_error_is_transient(self):
+        detail = _make_detail(
+            cause="522 Server Error: HTTPError for url: https://api.frankfurter.dev/v1/..."
+        )
+        result = classify_failure(detail, receive_count=1)
+        assert result.is_transient is True
+
+    def test_connection_error_is_transient(self):
+        detail = _make_detail(
+            cause="ConnectionError: Connection refused"
+        )
+        result = classify_failure(detail, receive_count=1)
+        assert result.is_transient is True
+
+    def test_request_timeout_is_transient(self):
+        detail = _make_detail(
+            cause="Timeout: Read timed out"
+        )
+        result = classify_failure(detail, receive_count=1)
+        assert result.is_transient is True
+
     def test_validation_error_is_permanent(self):
         detail = _make_detail(cause="ValueError: Invalid input data")
         result = classify_failure(detail, receive_count=1)
