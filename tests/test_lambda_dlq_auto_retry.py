@@ -390,7 +390,7 @@ class TestLambdaHandler:
         assert result["batchItemFailures"] == []
 
     @patch("lambda_dlq_auto_retry.boto3")
-    def test_skips_malformed_message(self, mock_boto3):
+    def test_retries_malformed_message_under_max_retries(self, mock_boto3):
         sfn = MagicMock()
         sns = MagicMock()
         cw = MagicMock()
@@ -413,6 +413,61 @@ class TestLambdaHandler:
         assert result["errors"] == 1
         assert result["retried"] == 0
         assert result["alerted"] == 0
+        assert len(result["batchItemFailures"]) == 1
+        assert result["batchItemFailures"][0]["itemIdentifier"] == "msg-bad"
+
+    @patch("lambda_dlq_auto_retry.boto3")
+    def test_discards_malformed_message_at_max_retries(self, mock_boto3):
+        sfn = MagicMock()
+        sns = MagicMock()
+        cw = MagicMock()
+        mock_boto3.client.side_effect = lambda svc, **kw: {
+            "stepfunctions": sfn, "sns": sns, "cloudwatch": cw,
+        }[svc]
+
+        event = {
+            "Records": [{
+                "messageId": "msg-bad",
+                "receiptHandle": "receipt-bad",
+                "body": "not-json{{{",
+                "attributes": {"ApproximateReceiveCount": "3"},
+            }],
+        }
+        context = MagicMock(aws_request_id="req-bad-max")
+
+        result = lambda_handler(event, context)
+
+        assert result["errors"] == 0
+        assert result["batchItemFailures"] == []
+        metric_calls = cw.put_metric_data.call_args_list
+        metric_names = [
+            m.kwargs["MetricData"][0]["MetricName"] for m in metric_calls
+        ]
+        assert "DLQMalformedMessageDiscarded" in metric_names
+
+    @patch("lambda_dlq_auto_retry.boto3")
+    def test_discards_malformed_message_above_max_retries(self, mock_boto3):
+        sfn = MagicMock()
+        sns = MagicMock()
+        cw = MagicMock()
+        mock_boto3.client.side_effect = lambda svc, **kw: {
+            "stepfunctions": sfn, "sns": sns, "cloudwatch": cw,
+        }[svc]
+
+        event = {
+            "Records": [{
+                "messageId": "msg-bad",
+                "receiptHandle": "receipt-bad",
+                "body": "not-json{{{",
+                "attributes": {"ApproximateReceiveCount": "10"},
+            }],
+        }
+        context = MagicMock(aws_request_id="req-bad-over")
+
+        result = lambda_handler(event, context)
+
+        assert result["errors"] == 0
+        assert result["batchItemFailures"] == []
 
     @patch("lambda_dlq_auto_retry.boto3")
     def test_publishes_retry_metric(self, mock_boto3):
