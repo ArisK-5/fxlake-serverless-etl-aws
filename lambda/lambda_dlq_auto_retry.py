@@ -195,10 +195,19 @@ def lambda_handler(event: dict, context: Any) -> dict:
         except (json.JSONDecodeError, KeyError) as e:
             logger.error(
                 "Malformed SQS message",
-                extra={"message_id": message_id, "error": str(e)},
+                extra={"message_id": message_id, "error": str(e),
+                       "receive_count": receive_count},
             )
-            errors += 1
-            batch_item_failures.append({"itemIdentifier": message_id})
+            if receive_count >= MAX_RETRIES:
+                logger.warning(
+                    "Discarding unrecoverable malformed message",
+                    extra={"message_id": message_id,
+                           "receive_count": receive_count},
+                )
+                _publish_metric(cloudwatch_client, "DLQMalformedMessageDiscarded")
+            else:
+                errors += 1
+                batch_item_failures.append({"itemIdentifier": message_id})
             continue
 
         classification = classify_failure(detail, receive_count)
@@ -274,8 +283,11 @@ def lambda_handler(event: dict, context: Any) -> dict:
                 logger.error(
                     "Failed to send alert",
                     extra={
+                        "message_id": message_id,
                         "error_code": e.response["Error"]["Code"],
+                        "error_message": e.response["Error"].get("Message"),
                         "execution_arn": execution_arn,
+                        "sns_topic_arn": SNS_TOPIC_ARN,
                     },
                 )
                 errors += 1
