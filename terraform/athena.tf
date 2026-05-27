@@ -10,7 +10,8 @@ resource "aws_glue_catalog_database" "fxlake" {
 }
 
 resource "aws_athena_workgroup" "fxlake" {
-  name = "fxlake"
+  name          = "fxlake"
+  force_destroy = true
 
   tags = {
     component = "query"
